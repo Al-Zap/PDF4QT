@@ -249,6 +249,15 @@ public:
     void addSetWorldMatrix(const QTransform& matrix);
     void addSetCompositionMode(QPainter::CompositionMode compositionMode);
 
+    /// Removes the images and the meshes (shadings) from the page, so only
+    /// the vector graphics and the text are drawn. It is used, when the
+    /// drawing must be analyzed without a photo or a scan in the background.
+    void removeImages();
+
+    /// Removes the text from the page, so only the vector graphics
+    /// and the images are drawn
+    void removeText();
+
     /// Optimizes page memory allocation to contain less space
     void optimize();
 

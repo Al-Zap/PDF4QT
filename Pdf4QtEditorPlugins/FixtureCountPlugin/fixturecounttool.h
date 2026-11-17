@@ -27,6 +27,8 @@
 
 #include "pdfwidgettool.h"
 
+#include <functional>
+
 namespace pdfplugin
 {
 
@@ -66,6 +68,11 @@ public:
     /// Sets the size of the placed markers in the page coordinate system
     void setMarkerSize(pdf::PDFReal markerSize);
 
+    /// Sets the function, which returns true, if a marker is at the point of the page.
+    /// A right click removes a marker only there, elsewhere the right click is not
+    /// handled by the tool (so the context menu of the view is displayed).
+    void setMarkerHitTest(std::function<bool(pdf::PDFInteger, const QPointF&)> hitTest);
+
 signals:
     /// Requests a new marker of the current type
     void markerRequested(pdf::PDFInteger pageIndex, QPointF pagePoint);
@@ -99,6 +106,8 @@ private:
     bool m_leftButtonPressed;
     bool m_dragging;
     bool m_selectingSample;
+    bool m_rightButtonHandled;
+    std::function<bool(pdf::PDFInteger, const QPointF&)> m_markerHitTest;
     pdf::PDFInteger m_samplePageIndex;
     QPointF m_sampleStartPoint;
     QPointF m_sampleEndPoint;
