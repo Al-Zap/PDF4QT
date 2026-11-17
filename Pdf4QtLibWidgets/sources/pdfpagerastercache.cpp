@@ -100,6 +100,59 @@ QTransform PDFAsynchronousPageRasterCache::createPageToImageMatrix(const Key& ke
     return key.pageToLocal * QTransform::fromTranslate(-region.left(), -region.top()) * QTransform::fromScale(key.devicePixelRatio, key.devicePixelRatio);
 }
 
+QTransform PDFAsynchronousPageRasterCache::createUniformScaleMatrix(const QTransform& pageToLocal, const QSize& pageSize)
+{
+    // Size of the placed page is rounded to whole pixels, so the horizontal scale
+    // of the matrix differs slightly from the vertical one. Paint engine of Qt
+    // draws thin lines by a fast algorithm only for a uniform scale, otherwise each
+    // line is converted to an outline, which is several times slower. Plan sheets
+    // consist of thin lines, so the scales are unified here - the page is then
+    // smaller than the placed page by less than a pixel.
+    const bool isStraight = qFuzzyIsNull(pageToLocal.m12()) && qFuzzyIsNull(pageToLocal.m21());
+    const bool isQuarterTurn = qFuzzyIsNull(pageToLocal.m11()) && qFuzzyIsNull(pageToLocal.m22());
+
+    if (pageToLocal.type() > QTransform::TxRotate || (!isStraight && !isQuarterTurn))
+    {
+        return pageToLocal;
+    }
+
+    // Elements, which scale the horizontal and the vertical axis of the image
+    const qreal elementX = isStraight ? pageToLocal.m11() : pageToLocal.m21();
+    const qreal elementY = isStraight ? pageToLocal.m22() : pageToLocal.m12();
+    const qreal scaleX = qAbs(elementX);
+    const qreal scaleY = qAbs(elementY);
+
+    if (scaleX == scaleY || qFuzzyIsNull(scaleX) || qFuzzyIsNull(scaleY))
+    {
+        return pageToLocal;
+    }
+
+    const qreal scale = qMin(scaleX, scaleY);
+    const qreal factorX = scale / scaleX;
+    const qreal factorY = scale / scaleY;
+
+    if (pageSize.width() * (1.0 - factorX) > 1.0 || pageSize.height() * (1.0 - factorY) > 1.0)
+    {
+        // Scales are really different
+        return pageToLocal;
+    }
+
+    // Page is shrunk around the center of the placed page
+    const qreal centerX = 0.5 * pageSize.width();
+    const qreal centerY = 0.5 * pageSize.height();
+    const qreal dx = (pageToLocal.dx() - centerX) * factorX + centerX;
+    const qreal dy = (pageToLocal.dy() - centerY) * factorY + centerY;
+    const qreal uniformX = elementX < 0.0 ? -scale : scale;
+    const qreal uniformY = elementY < 0.0 ? -scale : scale;
+
+    if (isStraight)
+    {
+        return QTransform(uniformX, 0.0, 0.0, uniformY, dx, dy);
+    }
+
+    return QTransform(0.0, uniformY, uniformX, 0.0, dx, dy);
+}
+
 QRect PDFAsynchronousPageRasterCache::getRequestedRegion(const PageDrawParameters& parameters) const
 {
     const QRect fullPage(QPoint(0, 0), parameters.pageSize);
