@@ -1074,6 +1074,7 @@ bool PDFAnnotationManipulator::isAngularMeasurement(const PDFAnnotation* annotat
     return polygonalAnnotation &&
            polygonalAnnotation->getType() == AnnotationType::Polyline &&
            polygonalAnnotation->getIntent() == PDFPolygonalGeometryAnnotation::Intent::Dimension &&
+           !polygonalAnnotation->isLengthMeasurement() &&
            getPolygonalPoints(polygonalAnnotation).size() == 3;
 }
 

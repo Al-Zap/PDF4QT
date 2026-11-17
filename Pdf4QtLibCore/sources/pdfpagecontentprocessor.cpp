@@ -4277,9 +4277,13 @@ QVector<qreal> PDFLineDashPattern::createForQPen(qreal penWidthF) const
 {
     QVector<qreal> lineDashPattern(m_dashArray.begin(), m_dashArray.end());
 
-    for (qreal& value : lineDashPattern)
+    // Dashes of QPen are in the units of the width of the pen, zero width is treated as one
+    if (penWidthF > 0.0)
     {
-        value /= penWidthF;
+        for (qreal& value : lineDashPattern)
+        {
+            value /= penWidthF;
+        }
     }
 
     return lineDashPattern;

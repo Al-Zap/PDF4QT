@@ -52,7 +52,41 @@ DimensionTool::DimensionTool(Style style, pdf::PDFDrawWidgetProxy* proxy, QActio
 
 void DimensionTool::setSnapToDrawing(bool snapToDrawing)
 {
+    m_isSnapToDrawing = snapToDrawing;
     m_pickTool->setSnapToPageGeometry(snapToDrawing);
+}
+
+void DimensionTool::updateSnapSuppression(Qt::KeyboardModifiers modifiers)
+{
+    const bool isSnapSuppressed = modifiers.testFlag(Qt::ControlModifier);
+
+    if (m_isSnapSuppressed != isSnapSuppressed)
+    {
+        m_isSnapSuppressed = isSnapSuppressed;
+        m_pickTool->setSnapToPageGeometrySuppressed(isSnapSuppressed);
+    }
+}
+
+void DimensionTool::keyReleaseEvent(QWidget* widget, QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Control)
+    {
+        updateSnapSuppression(event->modifiers() & ~Qt::ControlModifier);
+    }
+
+    BaseClass::keyReleaseEvent(widget, event);
+}
+
+void DimensionTool::mousePressEvent(QWidget* widget, QMouseEvent* event)
+{
+    updateSnapSuppression(event->modifiers());
+    BaseClass::mousePressEvent(widget, event);
+}
+
+void DimensionTool::mouseMoveEvent(QWidget* widget, QMouseEvent* event)
+{
+    updateSnapSuppression(event->modifiers());
+    BaseClass::mouseMoveEvent(widget, event);
 }
 
 bool DimensionTool::isMultiPointStyle() const
@@ -62,6 +96,11 @@ bool DimensionTool::isMultiPointStyle() const
 
 void DimensionTool::keyPressEvent(QWidget* widget, QKeyEvent* event)
 {
+    if (event->key() == Qt::Key_Control)
+    {
+        updateSnapSuppression(event->modifiers() | Qt::ControlModifier);
+    }
+
     if (isMultiPointStyle())
     {
         switch (event->key())
@@ -156,7 +195,7 @@ void DimensionTool::createDimension(pdf::PDFInteger pageIndex, std::vector<QPoin
     {
         // Calibration does not create a dimension, the picked length is only
         // used to derive the scale of the drawing
-        Q_EMIT calibrationLinePicked(measuredValue);
+        Q_EMIT calibrationLinePicked(pageIndex, points, measuredValue);
     }
     else
     {
@@ -240,6 +279,12 @@ void DimensionTool::drawPage(QPainter* painter,
             {
                 text += QChar('\n');
                 text += tr("Double click or Enter to finish, Backspace to undo a point");
+            }
+
+            if (m_isSnapToDrawing)
+            {
+                text += QChar('\n');
+                text += m_isSnapSuppressed ? tr("Snapping to the drawing is off while Ctrl is held") : tr("Hold Ctrl to place a point freely");
             }
 
             const QPointF cursorPoint = m_pickTool->getSnappedPoint();
@@ -386,7 +431,12 @@ pdf::PDFReal DimensionTool::getMeasuredValue(pdf::PDFInteger pageIndex, const st
     const pdf::PDFPage* page = getDocument()->getCatalog()->getPage(pageIndex);
     Q_ASSERT(page);
 
-    switch (getDimensionType())
+    return Dimension::computeMeasuredValue(getDimensionType(), pickedPoints, page->getUserUnit());
+}
+
+pdf::PDFReal Dimension::computeMeasuredValue(Type type, const std::vector<QPointF>& pickedPoints, pdf::PDFReal userUnit)
+{
+    switch (type)
     {
         case Dimension::Linear:
         case Dimension::Perimeter:
@@ -400,7 +450,7 @@ pdf::PDFReal DimensionTool::getMeasuredValue(pdf::PDFInteger pageIndex, const st
                 length += qSqrt(QPointF::dotProduct(vector, vector));
             }
 
-            return length * page->getUserUnit();
+            return length * userUnit;
         }
 
         case Dimension::Area:
@@ -418,12 +468,16 @@ pdf::PDFReal DimensionTool::getMeasuredValue(pdf::PDFInteger pageIndex, const st
             }
 
             area = qAbs(area) * 0.5;
-            return area * page->getUserUnit() * page->getUserUnit();
+            return area * userUnit * userUnit;
         }
 
         case Dimension::Angular:
         {
-            Q_ASSERT(pickedPoints.size() == 3);
+            if (pickedPoints.size() != 3)
+            {
+                return 0.0;
+            }
+
             QLineF line1(pickedPoints[1], pickedPoints.front());
             QLineF line2(pickedPoints[1], pickedPoints.back());
             return line1.angleTo(line2);

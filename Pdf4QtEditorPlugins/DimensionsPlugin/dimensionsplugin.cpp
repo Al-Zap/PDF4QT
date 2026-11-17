@@ -39,12 +39,17 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QFile>
+#include <QRegularExpression>
+#include <QFileInfo>
+#include <QDir>
 #include <QFileDialog>
 #include <QFontMetricsF>
 #include <QLocale>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPainter>
+#include <QPushButton>
+#include <QSignalBlocker>
 #include <QTextStream>
 
 namespace pdfplugin
@@ -56,7 +61,7 @@ namespace dimensionsplugin
 /// Escapes the field so it can be written to a csv file
 QString escapeCsvField(const QString& text)
 {
-    if (text.contains(QChar(';')) || text.contains(QChar('"')) || text.contains(QChar('\n')) || text.contains(QChar('\r')))
+    if (text.contains(QChar(',')) || text.contains(QChar(';')) || text.contains(QChar('"')) || text.contains(QChar('\n')) || text.contains(QChar('\r')))
     {
         QString escapedText = text;
         escapedText.replace(QChar('"'), QString("\"\""));
@@ -64,6 +69,65 @@ QString escapeCsvField(const QString& text)
     }
 
     return text;
+}
+
+/// Splits the text of a measurement (for example "A = 10,837.38 sq. ft" or
+/// "L = 12'-6 1/2\"") to its numeric value and its unit, so the exported
+/// values can be summed in a spreadsheet. Feet and inches are converted
+/// to decimal feet. Returns false, if no number was recognized.
+bool splitMeasurementText(const QString& text, const QLocale& locale, double& value, QString& unit)
+{
+    // Feet and inches with an optional fraction of an inch
+    static const QRegularExpression feetAndInchesExpression(QStringLiteral("(-?)(\\d+)'-(\\d+)(?: (\\d+)/(\\d+))?\""));
+    const QRegularExpressionMatch feetAndInchesMatch = feetAndInchesExpression.match(text);
+
+    if (feetAndInchesMatch.hasMatch())
+    {
+        double inches = feetAndInchesMatch.captured(3).toDouble();
+        const double denominator = feetAndInchesMatch.captured(5).toDouble();
+
+        if (denominator > 0.0)
+        {
+            inches += feetAndInchesMatch.captured(4).toDouble() / denominator;
+        }
+
+        value = feetAndInchesMatch.captured(2).toDouble() + inches / 12.0;
+
+        if (!feetAndInchesMatch.captured(1).isEmpty())
+        {
+            value = -value;
+        }
+
+        unit = QStringLiteral("ft");
+        return true;
+    }
+
+    // The symbol of the quantity ("A = ") is skipped, the number is formatted
+    // by the locale, the rest is the unit
+    QString valueText = text;
+    const qsizetype equalSignIndex = valueText.indexOf(QChar('='));
+    if (equalSignIndex != -1)
+    {
+        valueText = valueText.mid(equalSignIndex + 1);
+    }
+    valueText = valueText.trimmed();
+
+    qsizetype numberLength = 0;
+    while (numberLength < valueText.size() && !valueText[numberLength].isSpace())
+    {
+        ++numberLength;
+    }
+
+    bool ok = false;
+    value = locale.toDouble(valueText.left(numberLength), &ok);
+
+    if (!ok)
+    {
+        return false;
+    }
+
+    unit = valueText.mid(numberLength).trimmed();
+    return true;
 }
 
 }   // namespace dimensionsplugin
@@ -81,6 +145,7 @@ DimensionsPlugin::DimensionsPlugin() :
     m_settingsAction(nullptr),
     m_scaleMenu(nullptr),
     m_scalePerSheetAction(nullptr),
+    m_snapToDrawingAction(nullptr),
     m_statusBarScaleButton(nullptr),
     m_statusBarPageIndex(-1)
 {
@@ -201,6 +266,22 @@ void DimensionsPlugin::setWidget(pdf::PDFWidget* widget)
         m_settingsStorage.save();
     });
 
+    m_snapToDrawingAction = new QAction(tr("Snap to &Drawing"), this);
+    m_snapToDrawingAction->setObjectName("dimensiontool_SnapToDrawingAction");
+    m_snapToDrawingAction->setCheckable(true);
+    m_snapToDrawingAction->setToolTip(tr("Picked points snap to the end points, intersections, midpoints and lines of the drawing. "
+                                         "Hold Ctrl to place a single point freely."));
+    connect(m_snapToDrawingAction, &QAction::toggled, this, [this](bool checked)
+    {
+        m_settingsStorage.getSettings().isSnapToDrawing = checked;
+        m_settingsStorage.save();
+
+        for (DimensionTool* tool : m_dimensionTools)
+        {
+            tool->setSnapToDrawing(checked);
+        }
+    });
+
     connect(m_showDimensionsAction, &QAction::triggered, this, &DimensionsPlugin::onShowDimensionsTriggered);
     connect(m_clearDimensionsAction, &QAction::triggered, this, &DimensionsPlugin::onClearDimensionsTriggered);
     connect(m_convertToAnnotationsAction, &QAction::triggered, this, &DimensionsPlugin::onConvertToAnnotationsTriggered);
@@ -210,6 +291,16 @@ void DimensionsPlugin::setWidget(pdf::PDFWidget* widget)
     m_settingsStorage.load();
     m_scale = getSettings().defaultScale;
     m_scalePerSheetAction->setChecked(getSettings().isScaleAppliedPerSheet);
+    {
+        // The settings were just loaded, they need not be stored again
+        const QSignalBlocker blocker(m_snapToDrawingAction);
+        m_snapToDrawingAction->setChecked(getSettings().isSnapToDrawing);
+    }
+
+    for (DimensionTool* tool : m_dimensionTools)
+    {
+        tool->setSnapToDrawing(getSettings().isSnapToDrawing);
+    }
 
     m_widget->getDrawWidgetProxy()->registerDrawInterface(this);
     connect(m_widget->getDrawWidgetProxy(), &pdf::PDFDrawWidgetProxy::drawSpaceChanged, this, &DimensionsPlugin::onDrawSpaceChanged);
@@ -243,6 +334,10 @@ void DimensionsPlugin::createStatusBarButton()
     m_statusBarScaleButton->setMenu(m_scaleMenu);
     mainWindow->statusBar()->addPermanentWidget(m_statusBarScaleButton);
 
+    // The title of the main window changes, when the document is saved under
+    // a new name, which is not announced to the plugins otherwise
+    connect(mainWindow, &QWidget::windowTitleChanged, this, &DimensionsPlugin::onWindowTitleChanged);
+
     updateScaleAction();
 }
 
@@ -264,12 +359,185 @@ pdf::PDFInteger DimensionsPlugin::getCurrentPageIndex() const
     }
 
     const std::vector<pdf::PDFInteger> currentPages = m_widget->getDrawWidget()->getCurrentPages();
-    return currentPages.empty() ? -1 : currentPages.front();
+    if (currentPages.empty())
+    {
+        return -1;
+    }
+
+    // The first of the visible pages can be just a thin strip at the top of
+    // the view, the sheet, which the user looks at, is in the middle of it
+    pdf::PDFDrawWidgetProxy* proxy = m_widget->getDrawWidgetProxy();
+    const QRect viewRect = m_widget->getDrawWidget()->getWidget()->rect();
+    const pdf::PDFInteger centerPageIndex = proxy->getPageUnderPoint(viewRect.center(), nullptr);
+
+    if (centerPageIndex >= 0)
+    {
+        return centerPageIndex;
+    }
+
+    // The middle of the view is between the pages, the page, which occupies
+    // the largest part of the view, is used
+    pdf::PDFInteger bestPageIndex = currentPages.front();
+    qreal bestArea = -1.0;
+
+    for (const pdf::PDFWidgetSnapshot::SnapshotItem& item : proxy->getSnapshot().items)
+    {
+        const QRectF visibleRect = item.rect.intersected(viewRect);
+        const qreal area = visibleRect.width() * visibleRect.height();
+
+        if (area > bestArea)
+        {
+            bestArea = area;
+            bestPageIndex = item.pageIndex;
+        }
+    }
+
+    return bestPageIndex;
+}
+
+QString DimensionsPlugin::getPageKey(pdf::PDFInteger pageIndex) const
+{
+    if (!m_document || pageIndex < 0 || size_t(pageIndex) >= m_document->getCatalog()->getPageCount())
+    {
+        return QString();
+    }
+
+    if (m_pageKeys.size() != m_document->getCatalog()->getPageCount())
+    {
+        m_pageKeys.assign(m_document->getCatalog()->getPageCount(), QString());
+    }
+
+    QString& pageKey = m_pageKeys[size_t(pageIndex)];
+    if (pageKey.isEmpty())
+    {
+        pageKey = DocumentIdentity::createPageKey(m_document, pageIndex);
+    }
+
+    return pageKey;
+}
+
+const SheetScale* DimensionsPlugin::findPageScale(pdf::PDFInteger pageIndex) const
+{
+    if (m_pageScales.empty())
+    {
+        return nullptr;
+    }
+
+    auto it = m_pageScales.find(getPageKey(pageIndex));
+    return it != m_pageScales.cend() ? &it->second : nullptr;
+}
+
+pdf::PDFReal DimensionsPlugin::getDrawingCorrection(pdf::PDFInteger pageIndex) const
+{
+    const SheetScale* pageScale = findPageScale(pageIndex);
+
+    if (pageScale && pageScale->hasDrawingCorrection())
+    {
+        return pageScale->drawingCorrection;
+    }
+
+    return m_drawingCorrection > 0.0 ? m_drawingCorrection : 1.0;
+}
+
+bool DimensionsPlugin::isDrawingCorrected(pdf::PDFInteger pageIndex) const
+{
+    return !qFuzzyCompare(getDrawingCorrection(pageIndex), 1.0);
+}
+
+DimensionScale DimensionsPlugin::applyDrawingCorrection(const DimensionScale& scale, pdf::PDFReal correction)
+{
+    if (!scale.isValid() || correction <= 0.0 || qFuzzyCompare(correction, 1.0))
+    {
+        return scale;
+    }
+
+    // The scales of the drawings are defined for a single point of the paper,
+    // the corrected scale is displayed for a unit of the paper used on drawings
+    return DimensionScale(scale.getPaperValue(), scale.getPaperUnitId(), scale.getRealValue() * correction, scale.getRealUnitId()).getReadable();
+}
+
+DimensionScale DimensionsPlugin::getRawViewportScale(const pdf::PDFViewport& viewport, pdf::PDFReal userUnit, bool* isUnitAssumed)
+{
+    if (isUnitAssumed)
+    {
+        *isUnitAssumed = false;
+    }
+
+    // CAD applications plot also viewports, which are just a sliver - nothing
+    // can be measured in them, but they would be reported as a scale of the sheet
+    const pdf::PDFReal minimalViewportSize = 4.0;
+    const QRectF boundingBox = viewport.getBoundingBox();
+
+    if (boundingBox.width() < minimalViewportSize || boundingBox.height() < minimalViewportSize)
+    {
+        return DimensionScale();
+    }
+
+    return DimensionScale::createFromMeasure(viewport.getMeasure(), userUnit, isUnitAssumed);
+}
+
+DimensionScale DimensionsPlugin::getSingleRawViewportScale(pdf::PDFInteger pageIndex) const
+{
+    if (!m_document || pageIndex < 0 || size_t(pageIndex) >= m_document->getCatalog()->getPageCount())
+    {
+        return DimensionScale();
+    }
+
+    const pdf::PDFObjectStorage& storage = m_document->getStorage();
+    const pdf::PDFPage* page = m_document->getCatalog()->getPage(size_t(pageIndex));
+
+    DimensionScale result;
+    for (const pdf::PDFViewport& viewport : pdf::PDFViewport::parseViewports(&storage, page->getViewports(&storage)))
+    {
+        DimensionScale scale = getRawViewportScale(viewport, page->getUserUnit());
+
+        if (!scale.isValid())
+        {
+            continue;
+        }
+
+        if (result.isValid() && !qFuzzyCompare(result.getScaleFactor(), scale.getScaleFactor()))
+        {
+            return DimensionScale();
+        }
+
+        result = qMove(scale);
+    }
+
+    return result;
+}
+
+void DimensionsPlugin::onWindowTitleChanged()
+{
+    if (!m_document || !m_dataExchangeInterface)
+    {
+        return;
+    }
+
+    const DocumentIdentity documentIdentity = DocumentIdentity::create(m_document, m_dataExchangeInterface->getOriginalFileName());
+    if (!documentIdentity.isValid() || documentIdentity == m_documentIdentity || !m_documentIdentity.isValid())
+    {
+        return;
+    }
+
+    // The same document is opened under a new name, so it was saved under it.
+    // The calibration of the document is the calibration of the new file too.
+    if (getSettings().isScaleStoredPerDocument)
+    {
+        m_settingsStorage.copyDocumentScales(m_documentIdentity, documentIdentity);
+        m_settingsStorage.save();
+    }
+
+    m_documentIdentity = documentIdentity;
 }
 
 void DimensionsPlugin::setDocument(const pdf::PDFModifiedDocument& document)
 {
     BaseClass::setDocument(document);
+
+    // Pages may have been moved, inserted or deleted, the keys of the sheets
+    // are computed again, so the scales follow their sheets
+    m_pageKeys.clear();
 
     if (document.hasReset())
     {
@@ -321,6 +589,8 @@ std::vector<QAction*> DimensionsPlugin::getActions() const
         {
             result.push_back(calibrateTool->getAction());
         }
+
+        result.push_back(m_snapToDrawingAction);
 
         result.push_back(nullptr);
         result.push_back(m_showDimensionsAction);
@@ -712,12 +982,26 @@ void DimensionsPlugin::onSettingsTriggered()
 
     if (dialog.exec() == QDialog::Accepted)
     {
+        settings.areUnitsSelectedByUser = settings.areUnitsSelectedByUser ||
+                                          settings.lengthUnit.id != getSettings().lengthUnit.id ||
+                                          settings.areaUnit.id != getSettings().areaUnit.id;
         m_settingsStorage.setSettings(qMove(settings));
 
-        // The dialog edits the default scale, the scale in effect is re-selected,
-        // so a document with its own scale keeps it
-        applyDocumentScale();
+        // The dialog edits the default scale. Only a document, which has no scale
+        // of its own, takes it - the calibration of the current document is kept,
+        // even if it cannot be remembered (it has no identity or the scales are
+        // not remembered for the documents).
+        if (m_scaleSource == ScaleSource::Default)
+        {
+            m_scale = getSettings().defaultScale.isValid() ? getSettings().defaultScale : DimensionScale::createIdentity();
+        }
+        else if (m_scaleSource == ScaleSource::Document && getSettings().isScaleStoredPerDocument)
+        {
+            // The calibration of this session is remembered, if it was just enabled
+            storeDocumentScale(true);
+        }
 
+        updateScaleAction();
         m_settingsStorage.save();
         updateActions();
         updateGraphics();
@@ -726,19 +1010,24 @@ void DimensionsPlugin::onSettingsTriggered()
 
 void DimensionsPlugin::onCustomScaleTriggered()
 {
-    ScaleDialog dialog(m_widget, getScaleForPage(getCurrentPageIndex()), ScaleDialog::Mode::Edit);
-    execScaleDialog(dialog);
-}
-
-void DimensionsPlugin::execScaleDialog(ScaleDialog& dialog)
-{
     const pdf::PDFInteger pageIndex = getCurrentPageIndex();
 
+    // A sheet, which defines a single scale by itself, displays it, and the
+    // entered scale overrides it
+    const DimensionScale drawingScale = getSingleRawViewportScale(pageIndex);
+    const DimensionScale currentScale = drawingScale.isValid() ? applyDrawingCorrection(drawingScale, getDrawingCorrection(pageIndex)).getReadable() : getScaleForPage(pageIndex);
+
+    ScaleDialog dialog(m_widget, currentScale, ScaleDialog::Mode::Edit);
+    execScaleDialog(dialog, pageIndex, drawingScale, false);
+}
+
+void DimensionsPlugin::execScaleDialog(ScaleDialog& dialog, pdf::PDFInteger pageIndex, const DimensionScale& drawingScale, bool isCalibration)
+{
     if (m_document && m_document->getCatalog()->getPageCount() > 1 && pageIndex >= 0)
     {
         // The user decides, whether the sheet is an exception, or whether
         // the whole set is drawn in this scale
-        dialog.setApplyToSheetChoice(getSettings().isScaleAppliedPerSheet || m_pageScales.count(pageIndex), int(pageIndex + 1));
+        dialog.setApplyToSheetChoice(getSettings().isScaleAppliedPerSheet || findPageScale(pageIndex), int(pageIndex + 1));
     }
 
     if (dialog.exec() == QDialog::Accepted)
@@ -752,7 +1041,14 @@ void DimensionsPlugin::execScaleDialog(ScaleDialog& dialog)
                 m_settingsStorage.addPreset(scale);
             }
 
-            setScale(scale, dialog.isAppliedToThisSheetOnly());
+            if (isCalibration && scale.getName().isEmpty())
+            {
+                // The calibrated scale is defined by the picked distance (216 pt = 45 ft),
+                // it is displayed as people read it (1 in = 15 ft)
+                scale = scale.getReadable();
+            }
+
+            setScale(scale, dialog.isAppliedToThisSheetOnly(), pageIndex, drawingScale);
         }
     }
 }
@@ -768,7 +1064,7 @@ void DimensionsPlugin::onManagePresetsTriggered()
     }
 }
 
-void DimensionsPlugin::onCalibrationLinePicked(pdf::PDFReal measuredLength)
+void DimensionsPlugin::onCalibrationLinePicked(pdf::PDFInteger pageIndex, std::vector<QPointF> points, pdf::PDFReal measuredLength)
 {
     if (DimensionTool* calibrateTool = m_dimensionTools[DimensionTool::Calibrate])
     {
@@ -782,7 +1078,13 @@ void DimensionsPlugin::onCalibrationLinePicked(pdf::PDFReal measuredLength)
         return;
     }
 
-    DimensionScale currentScale = getScaleForPage(getCurrentPageIndex());
+    // If the line lies in a part of the drawing, which defines its own scale,
+    // then the calibration corrects that scale (for example a sheet printed at
+    // the half size), otherwise it sets the scale of the sheet
+    const QPointF lineCenter = points.empty() ? QPointF() : (points.front() + points.back()) * 0.5;
+    const DimensionScale drawingScale = points.empty() ? DimensionScale() : getRawScaleFromViewport(pageIndex, lineCenter);
+
+    DimensionScale currentScale = drawingScale.isValid() ? applyDrawingCorrection(drawingScale, getDrawingCorrection(pageIndex)).getReadable() : getScaleForPage(pageIndex);
     if (currentScale.getRealUnitId() == currentScale.getPaperUnitId())
     {
         // A scale like 1 mm = 1 mm says nothing about the units of the drawing,
@@ -792,7 +1094,7 @@ void DimensionsPlugin::onCalibrationLinePicked(pdf::PDFReal measuredLength)
     }
 
     ScaleDialog dialog(m_widget, measuredLength, currentScale);
-    execScaleDialog(dialog);
+    execScaleDialog(dialog, pageIndex, drawingScale, true);
 }
 
 void DimensionsPlugin::onScaleMenuAboutToShow()
@@ -803,7 +1105,9 @@ void DimensionsPlugin::onScaleMenuAboutToShow()
     currentScaleAction->setEnabled(false);
     m_scaleMenu->addSeparator();
 
-    const DimensionScale currentScale = getScaleForPage(getCurrentPageIndex());
+    const pdf::PDFInteger pageIndex = getCurrentPageIndex();
+    const DimensionScale drawingScale = getSingleRawViewportScale(pageIndex);
+    const DimensionScale currentScale = drawingScale.isValid() ? applyDrawingCorrection(drawingScale, getDrawingCorrection(pageIndex)) : getScaleForPage(pageIndex);
 
     for (const DimensionScale& preset : m_settingsStorage.getPresets())
     {
@@ -816,7 +1120,7 @@ void DimensionsPlugin::onScaleMenuAboutToShow()
         // the ratio is compared here
         action->setChecked(qFuzzyCompare(preset.getScaleFactor(), currentScale.getScaleFactor()));
 
-        connect(action, &QAction::triggered, this, [this, preset]() { setScale(preset, getSettings().isScaleAppliedPerSheet); });
+        connect(action, &QAction::triggered, this, [this, preset, pageIndex, drawingScale]() { setScale(preset, getSettings().isScaleAppliedPerSheet, pageIndex, drawingScale); });
     }
 
     m_scaleMenu->addSeparator();
@@ -834,18 +1138,37 @@ void DimensionsPlugin::onScaleMenuAboutToShow()
 
     m_scaleMenu->addSeparator();
     m_scaleMenu->addAction(m_scalePerSheetAction);
+    m_scaleMenu->addAction(m_snapToDrawingAction);
 
-    const pdf::PDFInteger pageIndex = getCurrentPageIndex();
-    if (m_pageScales.count(pageIndex))
+    const QString pageKey = getPageKey(pageIndex);
+    if (findPageScale(pageIndex))
     {
         QAction* resetSheetScaleAction = m_scaleMenu->addAction(tr("Use the Scale of the Whole Document on This Sheet"));
-        connect(resetSheetScaleAction, &QAction::triggered, this, [this, pageIndex]()
+        connect(resetSheetScaleAction, &QAction::triggered, this, [this, pageKey]()
         {
-            m_pageScales.erase(pageIndex);
-            m_settingsStorage.setPageScale(m_documentIdentity, pageIndex, DimensionScale());
+            const std::vector<MeasurementAnnotation> annotations = getMeasurementAnnotations();
+            m_pageScales.erase(pageKey);
+            m_settingsStorage.setPageScale(m_documentIdentity, pageKey, SheetScale());
             m_settingsStorage.save();
             updateScaleAction();
             updateGraphics();
+            offerMeasurementAnnotationsUpdate(annotations);
+        });
+    }
+
+    if (m_drawingCorrection > 0.0 && !findPageScale(pageIndex) && getSingleRawViewportScale(pageIndex).isValid())
+    {
+        QAction* resetCorrectionAction = m_scaleMenu->addAction(tr("Use the Scales Defined by the Drawing"));
+        resetCorrectionAction->setToolTip(tr("Removes the calibration of the scales defined by the drawings of this document"));
+        connect(resetCorrectionAction, &QAction::triggered, this, [this]()
+        {
+            const std::vector<MeasurementAnnotation> annotations = getMeasurementAnnotations();
+            m_drawingCorrection = 0.0;
+            storeDocumentScale(true);
+            m_settingsStorage.save();
+            updateScaleAction();
+            updateGraphics();
+            offerMeasurementAnnotationsUpdate(annotations);
         });
     }
 }
@@ -871,7 +1194,16 @@ void DimensionsPlugin::onExportTriggered()
         return;
     }
 
-    QString fileName = QFileDialog::getSaveFileName(m_widget, tr("Export Measurements"), QString(), tr("Comma separated values (*.csv)"));
+    // The file is offered next to the document, named after it
+    QString defaultFileName;
+    const QString documentFileName = m_dataExchangeInterface ? m_dataExchangeInterface->getOriginalFileName() : QString();
+    if (!documentFileName.isEmpty())
+    {
+        const QFileInfo documentFileInfo(documentFileName);
+        defaultFileName = documentFileInfo.dir().filePath(tr("%1 - measurements.csv").arg(documentFileInfo.completeBaseName()));
+    }
+
+    QString fileName = QFileDialog::getSaveFileName(m_widget, tr("Export Measurements"), defaultFileName, tr("Comma separated values (*.csv)"));
 
     if (fileName.isEmpty())
     {
@@ -880,7 +1212,7 @@ void DimensionsPlugin::onExportTriggered()
 
     QFile file(fileName);
 
-    if (!file.open(QFile::WriteOnly | QFile::Truncate | QFile::Text))
+    if (!file.open(QFile::WriteOnly | QFile::Truncate))
     {
         QMessageBox::critical(m_widget, tr("Export Measurements"), tr("File '%1' cannot be opened for writing.").arg(fileName));
         return;
@@ -890,19 +1222,30 @@ void DimensionsPlugin::onExportTriggered()
     stream.setEncoding(QStringConverter::Utf8);
     stream.setGenerateByteOrderMark(true);
 
-    stream << escapeCsvField(tr("Page")) << ";"
-           << escapeCsvField(tr("Type")) << ";"
-           << escapeCsvField(tr("Measurement")) << ";"
-           << escapeCsvField(tr("Scale")) << "\n";
+    // Comma separated, with CRLF line endings and plain numbers, so the file
+    // opens in columns in a spreadsheet and the values can be summed
+    stream << escapeCsvField(tr("Page")) << ","
+           << escapeCsvField(tr("Type")) << ","
+           << escapeCsvField(tr("Value")) << ","
+           << escapeCsvField(tr("Unit")) << ","
+           << escapeCsvField(tr("Measurement")) << ","
+           << escapeCsvField(tr("Scale")) << "\r\n";
 
+    const QLocale locale;
     for (const QStringList& row : rows)
     {
+        double value = 0.0;
+        QString unit;
+        const bool hasValue = splitMeasurementText(row[2], locale, value, unit);
+
         QStringList escapedRow;
-        for (const QString& field : row)
-        {
-            escapedRow << escapeCsvField(field);
-        }
-        stream << escapedRow.join(QChar(';')) << "\n";
+        escapedRow << escapeCsvField(row[0]);
+        escapedRow << escapeCsvField(row[1]);
+        escapedRow << (hasValue ? QString::number(value, 'g', 12) : QString());
+        escapedRow << escapeCsvField(unit);
+        escapedRow << escapeCsvField(row[2]);
+        escapedRow << escapeCsvField(row[3]);
+        stream << escapedRow.join(QChar(',')) << "\r\n";
     }
 
     file.close();
@@ -1090,7 +1433,10 @@ bool DimensionsPlugin::createDimensionAnnotation(pdf::PDFDocumentBuilder* builde
     const pdf::PDFObjectReference pageReference = page->getPageReference();
     const std::vector<QPointF>& polygon = dimension.getPolygon();
 
-    constexpr pdf::PDFReal lineWidth = 1.0;
+    // The measurements must be visible on a dense plan. The width is also
+    // deliberately not 1.0 - the PDF engine of Qt, which creates the appearance
+    // streams, draws the lines of the width exactly 1.0 as hairlines (0.1 pt).
+    constexpr pdf::PDFReal lineWidth = 1.5;
 
     // The interior color of an annotation is a plain color array without an alpha
     // channel. The transparency of the background color is therefore expressed
@@ -1173,6 +1519,15 @@ bool DimensionsPlugin::createDimensionAnnotation(pdf::PDFDocumentBuilder* builde
     factory.beginDictionaryItem("Measure");
     factory << createMeasureDictionary(dimension);
     factory.endDictionaryItem();
+
+    if (dimension.getType() == Dimension::Polyline)
+    {
+        // A dimension polyline with three points is an angle by convention,
+        // so the measured length is marked explicitly
+        factory.beginDictionaryItem(pdf::PDFPolygonalGeometryAnnotation::MEASURED_QUANTITY_KEY);
+        factory << pdf::WrapName(pdf::PDFPolygonalGeometryAnnotation::MEASURED_LENGTH);
+        factory.endDictionaryItem();
+    }
 
     if (isAnnotationFilled)
     {
@@ -1290,34 +1645,92 @@ pdf::PDFObject DimensionsPlugin::createMeasureDictionary(const Dimension& dimens
     return factory.takeObject();
 }
 
-void DimensionsPlugin::setScale(const DimensionScale& scale, bool isThisSheetOnly)
+void DimensionsPlugin::setScale(const DimensionScale& scale, bool isThisSheetOnly, pdf::PDFInteger pageIndex, const DimensionScale& drawingScale)
 {
     if (!scale.isValid())
     {
         return;
     }
 
-    const pdf::PDFInteger pageIndex = getCurrentPageIndex();
-
-    if (isThisSheetOnly && pageIndex >= 0)
+    // The scale overrides the scale of the drawing, the scales of the drawing
+    // are corrected in the same ratio (a plan with details in other scales
+    // printed at the half size has all the scales two times smaller)
+    pdf::PDFReal drawingCorrection = 0.0;
+    if (drawingScale.isValid() && drawingScale.getScaleFactor() > 0.0)
     {
-        m_pageScales[pageIndex] = scale;
+        drawingCorrection = scale.getScaleFactor() / drawingScale.getScaleFactor();
+
+        if (qAbs(drawingCorrection - 1.0) < 1e-9)
+        {
+            drawingCorrection = 1.0;
+        }
+    }
+
+    const QString pageKey = getPageKey(pageIndex);
+    bool keepPageScales = true;
+
+    if (!isThisSheetOnly || pageKey.isEmpty())
+    {
+        if (!m_pageScales.empty())
+        {
+            // The sheets with their own scale may be deliberate exceptions (details,
+            // sheets in other scales), so they are not discarded silently
+            QMessageBox messageBox(QMessageBox::Question, tr("Scale"),
+                                   tr("%n sheet(s) of this document have their own scale. Should the new scale apply to them too?", nullptr, int(m_pageScales.size())),
+                                   QMessageBox::NoButton, m_widget);
+            QPushButton* keepButton = messageBox.addButton(tr("&Keep Their Scales"), QMessageBox::AcceptRole);
+            QPushButton* replaceButton = messageBox.addButton(tr("&Apply to All Sheets"), QMessageBox::DestructiveRole);
+            messageBox.addButton(QMessageBox::Cancel);
+            messageBox.setDefaultButton(keepButton);
+            messageBox.exec();
+
+            if (messageBox.clickedButton() == replaceButton)
+            {
+                keepPageScales = false;
+            }
+            else if (messageBox.clickedButton() != keepButton)
+            {
+                return;
+            }
+        }
+    }
+
+    const std::vector<MeasurementAnnotation> annotations = getMeasurementAnnotations();
+
+    if (isThisSheetOnly && !pageKey.isEmpty())
+    {
+        SheetScale& pageScale = m_pageScales[pageKey];
+        pageScale.scale = scale;
+
+        if (drawingCorrection > 0.0)
+        {
+            // A calibration outside of the drawing keeps the correction of the drawing
+            pageScale.drawingCorrection = drawingCorrection;
+        }
 
         if (getSettings().isScaleStoredPerDocument)
         {
-            m_settingsStorage.setPageScale(m_documentIdentity, pageIndex, scale);
+            m_settingsStorage.setPageScale(m_documentIdentity, pageKey, pageScale);
         }
     }
     else
     {
-        // The scale applies to all sheets, so the exceptions are removed
         m_scale = scale;
         m_scaleSource = ScaleSource::Document;
-        m_pageScales.clear();
+
+        if (drawingCorrection > 0.0)
+        {
+            m_drawingCorrection = drawingCorrection;
+        }
+
+        if (!keepPageScales)
+        {
+            m_pageScales.clear();
+        }
 
         if (getSettings().isScaleStoredPerDocument)
         {
-            m_settingsStorage.setDocumentScale(m_documentIdentity, scale);
+            storeDocumentScale(keepPageScales);
         }
         else
         {
@@ -1331,20 +1744,240 @@ void DimensionsPlugin::setScale(const DimensionScale& scale, bool isThisSheetOnl
 
     updateScaleAction();
     updateGraphics();
+
+    offerMeasurementAnnotationsUpdate(annotations);
+}
+
+std::vector<DimensionsPlugin::MeasurementAnnotation> DimensionsPlugin::getMeasurementAnnotations() const
+{
+    std::vector<MeasurementAnnotation> result;
+
+    if (!m_document)
+    {
+        return result;
+    }
+
+    const pdf::PDFObjectStorage* storage = &m_document->getStorage();
+    const pdf::PDFCatalog* catalog = m_document->getCatalog();
+
+    for (size_t pageIndex = 0; pageIndex < catalog->getPageCount(); ++pageIndex)
+    {
+        const pdf::PDFPage* page = catalog->getPage(pageIndex);
+
+        for (const pdf::PDFObjectReference& annotationReference : page->getAnnotations())
+        {
+            const pdf::PDFAnnotationPtr annotation = pdf::PDFAnnotation::parse(storage, annotationReference);
+            if (!annotation || annotation->getContents().isEmpty())
+            {
+                continue;
+            }
+
+            std::vector<QPointF> points;
+            std::vector<Dimension::Type> types;
+
+            switch (annotation->getType())
+            {
+                case pdf::AnnotationType::Line:
+                {
+                    const pdf::PDFLineAnnotation* lineAnnotation = static_cast<const pdf::PDFLineAnnotation*>(annotation.data());
+                    if (lineAnnotation->getIntent() == pdf::PDFLineAnnotation::Intent::Dimension)
+                    {
+                        points = { lineAnnotation->getLine().p1(), lineAnnotation->getLine().p2() };
+                        types = { Dimension::Linear };
+                    }
+                    break;
+                }
+
+                case pdf::AnnotationType::Polygon:
+                case pdf::AnnotationType::Polyline:
+                {
+                    const pdf::PDFPolygonalGeometryAnnotation* polygonalAnnotation = static_cast<const pdf::PDFPolygonalGeometryAnnotation*>(annotation.data());
+                    if (polygonalAnnotation->getIntent() == pdf::PDFPolygonalGeometryAnnotation::Intent::Dimension && polygonalAnnotation->getVertices().size() >= 2)
+                    {
+                        points = polygonalAnnotation->getVertices();
+
+                        if (annotation->getType() == pdf::AnnotationType::Polygon)
+                        {
+                            // The vertices of a polygon are closed implicitly
+                            points.push_back(points.front());
+                            types = { Dimension::Perimeter, Dimension::Area };
+                        }
+                        else
+                        {
+                            // Angles do not depend on the scale
+                            types = { Dimension::Polyline };
+                        }
+                    }
+                    break;
+                }
+
+                default:
+                    break;
+            }
+
+            if (types.empty())
+            {
+                continue;
+            }
+
+            const DimensionScale scale = getScaleForPoint(pdf::PDFInteger(pageIndex), points.front());
+            for (Dimension::Type type : types)
+            {
+                Dimension dimension(type, pdf::PDFInteger(pageIndex), Dimension::computeMeasuredValue(type, points, page->getUserUnit()), points);
+                dimension.setScale(scale);
+
+                // Only the annotations displaying exactly the value computed by this
+                // plugin are recognized, a text edited by the user is never replaced
+                if (getDimensionText(dimension) == annotation->getContents())
+                {
+                    result.push_back(MeasurementAnnotation{ annotationReference, qMove(dimension), annotation->getContents() });
+                    break;
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+void DimensionsPlugin::offerMeasurementAnnotationsUpdate(const std::vector<MeasurementAnnotation>& annotations)
+{
+    if (annotations.empty() || !canCreateAnnotations())
+    {
+        return;
+    }
+
+    // The measured values are computed again with the scale now in effect
+    std::vector<MeasurementAnnotation> changedAnnotations;
+    for (const MeasurementAnnotation& annotation : annotations)
+    {
+        Dimension dimension = annotation.dimension;
+        dimension.setScale(getScaleForPoint(dimension.getPageIndex(), dimension.getPolygon().front()));
+
+        if (getDimensionText(dimension) != annotation.contents)
+        {
+            changedAnnotations.push_back(MeasurementAnnotation{ annotation.reference, qMove(dimension), annotation.contents });
+        }
+    }
+
+    if (changedAnnotations.empty())
+    {
+        return;
+    }
+
+    if (QMessageBox::question(m_widget, tr("Scale"),
+                              tr("%n saved measurement(s) were made with the previous scale. Update them to the new scale?", nullptr, int(changedAnnotations.size())),
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    // All the measurements are updated in a single modification, so the update
+    // is a single step in the undo history
+    pdf::PDFDocumentModifier modifier(m_document);
+    pdf::PDFDocumentBuilder* builder = modifier.getBuilder();
+
+    for (const MeasurementAnnotation& annotation : changedAnnotations)
+    {
+        pdf::PDFObjectFactory factory;
+        factory.beginDictionary();
+        factory.beginDictionaryItem("Contents");
+        factory << getDimensionText(annotation.dimension);
+        factory.endDictionaryItem();
+        factory.beginDictionaryItem("Measure");
+        factory << createMeasureDictionary(annotation.dimension);
+        factory.endDictionaryItem();
+        factory.endDictionary();
+
+        builder->mergeTo(annotation.reference, factory.takeObject());
+        builder->updateAnnotationAppearanceStreams(annotation.reference);
+    }
+
+    modifier.markAnnotationsChanged();
+    if (modifier.finalize())
+    {
+        Q_EMIT m_widget->getToolManager()->documentModified(pdf::PDFModifiedDocument(modifier.getDocument(), nullptr, modifier.getFlags()));
+    }
+}
+
+void DimensionsPlugin::storeDocumentScale(bool keepPageScales)
+{
+    if (!getSettings().isScaleStoredPerDocument)
+    {
+        return;
+    }
+
+    SheetScale documentScale;
+    documentScale.scale = (m_scaleSource == ScaleSource::Document) ? m_scale : DimensionScale();
+    documentScale.drawingCorrection = m_drawingCorrection;
+
+    if (documentScale.isValid())
+    {
+        m_settingsStorage.setDocumentScale(m_documentIdentity, documentScale, keepPageScales);
+    }
+    else
+    {
+        // Nothing is set for the whole document, but the record must not keep
+        // the scale or the correction, which were removed
+        m_settingsStorage.setDocumentScale(m_documentIdentity, SheetScale{ DimensionScale(), 0.0 }, keepPageScales);
+    }
+
+    for (const auto& [pageKey, pageScale] : m_pageScales)
+    {
+        m_settingsStorage.setPageScale(m_documentIdentity, pageKey, pageScale);
+    }
+}
+
+void DimensionsPlugin::applyUnitsOfDrawing()
+{
+    DimensionsPluginSettings& settings = m_settingsStorage.getSettings();
+
+    if (settings.areUnitsSelectedByUser || !m_document)
+    {
+        return;
+    }
+
+    // The first scale defined by the drawings decides
+    const size_t pageCount = m_document->getCatalog()->getPageCount();
+    for (size_t pageIndex = 0; pageIndex < pageCount; ++pageIndex)
+    {
+        const std::vector<DimensionScale> scales = getViewportScales(pdf::PDFInteger(pageIndex));
+
+        if (scales.empty())
+        {
+            continue;
+        }
+
+        const bool isImperial = scales.front().isImperial();
+        const bool isCurrentImperial = settings.lengthUnit.id == "ft" || settings.lengthUnit.isFeetAndInches() || settings.lengthUnit.id == "in" ||
+                                       settings.lengthUnit.id == "yd" || settings.lengthUnit.id == "mi";
+
+        if (isImperial != isCurrentImperial)
+        {
+            settings.lengthUnit = DimensionUnit::getLengthUnit(isImperial ? "ft" : "m");
+            settings.areaUnit = DimensionUnit::getAreaUnit(isImperial ? "sqft" : "sqm");
+        }
+
+        return;
+    }
 }
 
 void DimensionsPlugin::applyDocumentScale()
 {
     m_pageScales.clear();
+    m_drawingCorrection = 0.0;
+
+    applyUnitsOfDrawing();
 
     if (getSettings().isScaleStoredPerDocument)
     {
         m_pageScales = m_settingsStorage.getPageScales(m_documentIdentity);
-        DimensionScale scale = m_settingsStorage.getDocumentScale(m_documentIdentity);
+        const SheetScale documentScale = m_settingsStorage.getDocumentScale(m_documentIdentity);
+        m_drawingCorrection = documentScale.drawingCorrection;
 
-        if (scale.isValid())
+        if (documentScale.scale.isValid())
         {
-            m_scale = qMove(scale);
+            m_scale = documentScale.scale;
             m_scaleSource = ScaleSource::Document;
             updateScaleAction();
             return;
@@ -1353,7 +1986,7 @@ void DimensionsPlugin::applyDocumentScale()
 
     // The document was not calibrated yet, so the scale defined by the document
     // itself is used, if there is any
-    DimensionScale documentScale = getScaleFromDocument();
+    DimensionScale documentScale = applyDrawingCorrection(getScaleFromDocument(), m_drawingCorrection);
 
     // Finally the default scale is used. It is assigned unconditionally, so
     // the scale of the previously opened document is never inherited.
@@ -1370,15 +2003,15 @@ void DimensionsPlugin::applyDocumentScale()
 
 DimensionScale DimensionsPlugin::getScaleForPage(pdf::PDFInteger pageIndex, ScaleSource* source) const
 {
-    auto it = m_pageScales.find(pageIndex);
-    if (it != m_pageScales.cend())
+    const SheetScale* pageScale = findPageScale(pageIndex);
+    if (pageScale && pageScale->scale.isValid())
     {
         if (source)
         {
             *source = ScaleSource::Sheet;
         }
 
-        return it->second;
+        return pageScale->scale;
     }
 
     if (source)
@@ -1406,9 +2039,14 @@ DimensionScale DimensionsPlugin::getScaleForPoint(pdf::PDFInteger pageIndex, con
     return getScaleForPage(pageIndex, source);
 }
 
-std::vector<DimensionScale> DimensionsPlugin::getViewportScales(pdf::PDFInteger pageIndex) const
+std::vector<DimensionScale> DimensionsPlugin::getViewportScales(pdf::PDFInteger pageIndex, bool* isUnitAssumed) const
 {
     std::vector<DimensionScale> scales;
+
+    if (isUnitAssumed)
+    {
+        *isUnitAssumed = false;
+    }
 
     if (!m_document || pageIndex < 0 || size_t(pageIndex) >= m_document->getCatalog()->getPageCount())
     {
@@ -1418,9 +2056,17 @@ std::vector<DimensionScale> DimensionsPlugin::getViewportScales(pdf::PDFInteger 
     const pdf::PDFObjectStorage& storage = m_document->getStorage();
     const pdf::PDFPage* page = m_document->getCatalog()->getPage(size_t(pageIndex));
 
+    const pdf::PDFReal correction = getDrawingCorrection(pageIndex);
+
     for (const pdf::PDFViewport& viewport : pdf::PDFViewport::parseViewports(&storage, page->getViewports(&storage)))
     {
-        DimensionScale scale = DimensionScale::createFromMeasure(viewport.getMeasure(), page->getUserUnit());
+        bool isViewportUnitAssumed = false;
+        DimensionScale scale = applyDrawingCorrection(getRawViewportScale(viewport, page->getUserUnit(), &isViewportUnitAssumed), correction);
+
+        if (isUnitAssumed && scale.isValid() && isViewportUnitAssumed)
+        {
+            *isUnitAssumed = true;
+        }
 
         if (scale.isValid() && std::none_of(scales.cbegin(), scales.cend(), [&scale](const DimensionScale& item) { return qFuzzyCompare(item.getScaleFactor(), scale.getScaleFactor()); }))
         {
@@ -1434,16 +2080,29 @@ std::vector<DimensionScale> DimensionsPlugin::getViewportScales(pdf::PDFInteger 
 QString DimensionsPlugin::getCurrentScaleText() const
 {
     const pdf::PDFInteger pageIndex = getCurrentPageIndex();
-    const std::vector<DimensionScale> viewportScales = getViewportScales(pageIndex);
+    bool isUnitAssumed = false;
+    const std::vector<DimensionScale> viewportScales = getViewportScales(pageIndex, &isUnitAssumed);
+
+    const bool isCorrected = !viewportScales.empty() && isDrawingCorrected(pageIndex);
+
+    if (isUnitAssumed && !isCorrected)
+    {
+        // The drawing does not tell its unit, the user should know that the unit
+        // is our estimate. A calibrated drawing was already checked by the user.
+        return viewportScales.size() == 1 ? tr("%1 (from drawing, unit assumed)").arg(viewportScales.front().getDisplayName())
+                                          : tr("%1 scales (from drawing, units assumed)").arg(viewportScales.size());
+    }
 
     if (viewportScales.size() == 1)
     {
-        return tr("%1 (from drawing)").arg(viewportScales.front().getDisplayName());
+        return isCorrected ? tr("%1 (drawing, calibrated)").arg(viewportScales.front().getDisplayName())
+                           : tr("%1 (from drawing)").arg(viewportScales.front().getDisplayName());
     }
 
     if (viewportScales.size() > 1)
     {
-        return tr("%1 scales (from drawing)").arg(viewportScales.size());
+        return isCorrected ? tr("%1 scales (drawing, calibrated)").arg(viewportScales.size())
+                           : tr("%1 scales (from drawing)").arg(viewportScales.size());
     }
 
     ScaleSource source = ScaleSource::Default;
@@ -1486,7 +2145,7 @@ DimensionScale DimensionsPlugin::getScaleFromDocument() const
 
         for (const pdf::PDFViewport& viewport : viewports)
         {
-            DimensionScale scale = DimensionScale::createFromMeasure(viewport.getMeasure(), page->getUserUnit());
+            DimensionScale scale = getRawViewportScale(viewport, page->getUserUnit());
 
             if (!scale.isValid())
             {
@@ -1515,6 +2174,11 @@ DimensionScale DimensionsPlugin::getScaleFromDocument() const
 
 DimensionScale DimensionsPlugin::getScaleFromViewport(pdf::PDFInteger pageIndex, const QPointF& point) const
 {
+    return applyDrawingCorrection(getRawScaleFromViewport(pageIndex, point), getDrawingCorrection(pageIndex));
+}
+
+DimensionScale DimensionsPlugin::getRawScaleFromViewport(pdf::PDFInteger pageIndex, const QPointF& point) const
+{
     if (!m_document)
     {
         return DimensionScale();
@@ -1533,10 +2197,21 @@ DimensionScale DimensionsPlugin::getScaleFromViewport(pdf::PDFInteger pageIndex,
     const std::vector<pdf::PDFViewport> viewports = pdf::PDFViewport::parseViewports(&storage, page->getViewports(&storage));
 
     // Overlapping viewports are resolved by the specification rule - the last
-    // viewport of the array wins
-    if (const pdf::PDFViewport* viewport = pdf::PDFViewport::findViewportForPoint(viewports, point))
+    // viewport of the array wins. Viewports without a usable scale are skipped,
+    // drawings plotted by CAD applications contain a viewport of the whole sheet
+    // (paper space), which would hide the scale of the drawing otherwise.
+    for (auto it = viewports.crbegin(); it != viewports.crend(); ++it)
     {
-        return DimensionScale::createFromMeasure(viewport->getMeasure(), page->getUserUnit());
+        if (!it->getBoundingBox().contains(point))
+        {
+            continue;
+        }
+
+        DimensionScale scale = getRawViewportScale(*it, page->getUserUnit());
+        if (scale.isValid())
+        {
+            return scale;
+        }
     }
 
     return DimensionScale();

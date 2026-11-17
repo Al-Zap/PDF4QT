@@ -93,6 +93,12 @@ void PDFPagePreviewStore::setPaused(bool paused)
     }
 }
 
+void PDFPagePreviewStore::setDocumentPointer(PDFDocumentPointer document)
+{
+    Q_ASSERT(!m_thread);
+    m_documentPointer = std::move(document);
+}
+
 void PDFPagePreviewStore::start(bool useDiskCache)
 {
     if (!isEnabled() || m_thread)
@@ -101,8 +107,9 @@ void PDFPagePreviewStore::start(bool useDiskCache)
     }
 
     const PDFDocument* document = m_proxy->getDocument();
-    if (!document)
+    if (!document || m_documentPointer.data() != document)
     {
+        // No document, or the document is not kept alive by the shared pointer
         return;
     }
 

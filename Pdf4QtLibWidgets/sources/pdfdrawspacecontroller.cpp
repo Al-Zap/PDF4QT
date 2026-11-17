@@ -531,6 +531,7 @@ void PDFDrawWidgetProxy::setDocument(const PDFModifiedDocument& document, std::v
         }
 
         m_pagePreviewStore->stop(document.hasReset() || document.hasPageContentsChanged());
+        m_pagePreviewStore->setDocumentPointer(document);
 
         m_textLayoutCompiler->stop(document.hasReset() || document.hasPageContentsChanged());
         m_controller->setDocument(document);

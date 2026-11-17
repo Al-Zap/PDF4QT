@@ -37,10 +37,12 @@ class PDFWidgetFormManager;
 /// to suggest (autocomplete) previously typed values, for example
 /// project names, which repeat across a stack of filled forms.
 /// Values are remembered per field name (fields of the same name
-/// usually hold the same kind of value) and also globally, so a value
-/// typed into a field of one form is suggested in a differently named
-/// field of another form, when no value of the same field name matches.
-/// History is stored in the application settings.
+/// usually hold the same kind of value). Values of other fields are
+/// never suggested, so a date typed into one field doesn't show up in
+/// a quantity field. History is stored in the application settings,
+/// it can be switched off and cleared in the options.
+/// Fields, which look like they hold secrets (passwords, account numbers),
+/// are never remembered.
 class PDF4QTLIBWIDGETSSHARED_EXPORT PDFFormFieldValueHistory
 {
 public:
@@ -49,12 +51,12 @@ public:
     /// Maximal number of values remembered for a single field name
     static constexpr int MAX_FIELD_VALUES = 30;
 
-    /// Maximal number of values remembered globally
-    static constexpr int MAX_ALL_VALUES = 300;
+    /// Settings group, where the history is stored
+    static constexpr const char* HISTORY_SETTINGS_GROUP = "FormFieldValueHistory";
 
     /// Returns the most recently used value, which starts with \p prefix
-    /// (case insensitive) and is longer than the prefix. Values of the field
-    /// with the same name are preferred. Empty string is returned, if no
+    /// (case insensitive) and is longer than the prefix, from the values
+    /// of the field with the same name. Empty string is returned, if no
     /// such value exists.
     /// \param fieldName Field name (fully qualified name of the field)
     /// \param prefix Text typed by the user
@@ -67,6 +69,16 @@ public:
 
     /// Forgets all remembered values
     static void clear();
+
+    /// Returns true, if values of the field are never remembered,
+    /// because its name suggests, that it holds a secret.
+    /// \param fieldName Field name (fully qualified name of the field)
+    static bool isSensitiveField(const QString& fieldName);
+
+private:
+    static QString getFieldKey(const QString& fieldName);
+    static QString findCompletion(const QStringList& values, const QString& prefix);
+    static void addToHistoryList(QStringList& values, const QString& value, int maxCount);
 };
 
 /// Base class for editors of form fields. It enables editation
@@ -88,6 +100,12 @@ public:
     virtual void reloadValue() { }
     virtual bool isEditorDrawEnabled() const { return false; }
     virtual QRectF getActiveEditorRectangle() const { return QRectF(); }
+
+    /// Writes the value being edited into the document, without
+    /// leaving the editor (the editor keeps focus, text and cursor).
+    /// It is called before the document is saved, so the value
+    /// typed into the focused field is not lost.
+    virtual void commitPendingChanges() { }
 
     const PDFFormWidget* getFormWidget() const { return &m_formWidget; }
     PDFFormField*  getFormField() const { return m_formWidget.getParent(); }
@@ -154,6 +172,15 @@ public:
     /// (for example, when focus moves by Tab key to the next page).
     /// \param editor Editor
     void ensureEditorVisible(PDFFormFieldWidgetEditor* editor);
+
+    /// Returns true, if widget annotation is hidden (flags Hidden or NoView)
+    /// \param widget Widget annotation reference
+    bool isWidgetHidden(PDFObjectReference widget) const;
+
+    /// Writes the value being edited in the focused editor into the document.
+    /// The editor stays focused. Call it before the document is saved or
+    /// copied, otherwise the value typed into the focused field is missing.
+    void commitPendingChanges();
 
     /// Returns true, if widget is focused.
     /// \param widget Widget annotation reference

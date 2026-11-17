@@ -82,6 +82,9 @@ private:
     void initializeUnitComboBox(QComboBox* comboBox, const QByteArray& currentUnitId);
     void updateResultLabel();
 
+    /// Resizes the dialog, so all its rows are readable
+    void updateDialogSize();
+
     /// Called, when the user selects a different unit of the distance on the paper.
     /// In the calibration mode the picked length is recalculated, so the same
     /// physical distance is displayed in the new unit.

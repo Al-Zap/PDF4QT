@@ -72,6 +72,13 @@ public:
     /// complete by itself, it is finished by the user (see \p canBeFinished).
     static bool isComplete(Type type, const std::vector<QPointF>& polygon);
 
+    /// Returns the measured value of the dimension defined by the points -
+    /// the length in points, the area in square points or the angle in degrees
+    /// \param type Type of the dimension
+    /// \param points Points (closed polygon for the perimeter and the area)
+    /// \param userUnit User unit of the page
+    static pdf::PDFReal computeMeasuredValue(Type type, const std::vector<QPointF>& points, pdf::PDFReal userUnit);
+
     /// Returns true, if the user can finish the definition of the given type
     /// (by a double click or by the Enter key) with the given picked points
     static bool canBeFinished(Type type, const std::vector<QPointF>& polygon);
@@ -118,10 +125,15 @@ public:
     /// Sets the formatter of the measured value displayed during picking
     void setValueFormatter(ValueFormatter formatter) { m_valueFormatter = qMove(formatter); }
 
-    /// Enables snapping to the geometry of the drawing (end points, intersections, ...)
+    /// Enables snapping to the geometry of the drawing (end points, intersections, ...).
+    /// While the Ctrl key is held, the snapping is suppressed, so a point can be
+    /// placed freely.
     void setSnapToDrawing(bool snapToDrawing);
 
     virtual void keyPressEvent(QWidget* widget, QKeyEvent* event) override;
+    virtual void keyReleaseEvent(QWidget* widget, QKeyEvent* event) override;
+    virtual void mousePressEvent(QWidget* widget, QMouseEvent* event) override;
+    virtual void mouseMoveEvent(QWidget* widget, QMouseEvent* event) override;
     virtual void mouseDoubleClickEvent(QWidget* widget, QMouseEvent* event) override;
 
     void drawPage(QPainter* painter,
@@ -139,7 +151,10 @@ signals:
     /// a known real length. The measured length is in points, i.e. the UserUnit
     /// of the page is already applied to it, exactly as in the measured value
     /// of a dimension.
-    void calibrationLinePicked(pdf::PDFReal measuredLength);
+    /// \param pageIndex Page, on which the line was picked
+    /// \param points End points of the line in the page coordinates
+    /// \param measuredLength Length of the line in points
+    void calibrationLinePicked(pdf::PDFInteger pageIndex, std::vector<QPointF> points, pdf::PDFReal measuredLength);
 
 private:
     void onPointPicked(pdf::PDFInteger pageIndex, QPointF pagePoint);
@@ -154,6 +169,9 @@ private:
     /// Creates the dimension from the picked points and resets the picking
     void createDimension(pdf::PDFInteger pageIndex, std::vector<QPointF> points);
 
+    /// Suppresses snapping to the drawing, while the Ctrl key is held
+    void updateSnapSuppression(Qt::KeyboardModifiers modifiers);
+
     /// Returns true, if the dimension is defined by an arbitrary count of points
     bool isMultiPointStyle() const;
     Dimension::Type getDimensionType() const;
@@ -162,6 +180,8 @@ private:
     Style m_style;
     int m_previewPointPixelSize;
     pdf::PDFPickTool* m_pickTool;
+    bool m_isSnapToDrawing = false;
+    bool m_isSnapSuppressed = false;
     ValueFormatter m_valueFormatter;
 };
 

@@ -28,6 +28,7 @@
 #include "pdfdocumentreader.h"
 #include "pdfdocumentwriter.h"
 #include "pdfoutline.h"
+#include "pdfpainter.h"
 
 #include <QtTest>
 #include <QBuffer>
@@ -56,9 +57,16 @@ private slots:
     void csvEscaping();
     void defaultTypesDiffer();
     void shapePolygons();
+    void changeMarkerTypeInPlace();
+    void sheetNamesFromPageLabels();
+    void csvFormulaInjection();
     void findSimilarSymbols();
     void findSimilarSymbolsWithoutRotations();
     void findSimilarSymbolsEmptySample();
+    void findSimilarSymbolsAnyAngle();
+    void findSymmetricSymbols();
+    void findSymbolsByInkColor();
+    void precompiledPageWithoutImagesAndText();
 
 private:
     static FixtureType type(const QString& name, FixtureMarkerShape shape = FixtureMarkerShape::Circle, QColor color = Qt::red, const QString& description = QString());
@@ -590,6 +598,110 @@ int FixtureCountTest::countMatchesNear(const std::vector<FixtureSymbolFinder::Ma
     return count;
 }
 
+void FixtureCountTest::changeMarkerTypeInPlace()
+{
+    PDFDocumentBuilder builder;
+    const PDFObjectReference page = builder.appendPage(QRectF(0, 0, 612, 792));
+    FixtureCountEditor::createMarker(&builder, page, QPointF(100, 100), 16.0, type("A1", FixtureMarkerShape::Circle, Qt::red, "Troffer"));
+    const PDFDocument document = builder.build();
+    const FixtureMarker marker = FixtureCountData::scan(&document).getMarkers().front();
+
+    // Type of the same shape (renamed, another color) - the annotation is kept,
+    // so the replies to the marker and its geometry are not lost
+    const FixtureType renamedType = type("A1E", FixtureMarkerShape::Circle, Qt::blue, QString());
+    const PDFDocument modified = modify(document, [&](PDFDocumentBuilder* builder) { QVERIFY(FixtureCountEditor::changeMarkerType(builder, &document, marker, renamedType)); });
+
+    const FixtureCountData modifiedData = FixtureCountData::scan(&modified);
+    QCOMPARE(modifiedData.getMarkers().size(), size_t(1));
+    QCOMPARE(modifiedData.getCount("A1"), 0);
+    QCOMPARE(modifiedData.getCount("A1E"), 1);
+
+    const FixtureMarker& changedMarker = modifiedData.getMarkers().front();
+    QCOMPARE(changedMarker.annotation, marker.annotation);
+    QCOMPARE(changedMarker.rect, marker.rect);
+    QCOMPARE(changedMarker.size, marker.size);
+
+    const FixtureType changedType = modifiedData.getTypes().front();
+    QCOMPARE(changedType.name, QString("A1E"));
+    QCOMPARE(changedType.color.rgb(), QColor(Qt::blue).rgb());
+    QCOMPARE(changedType.shape, FixtureMarkerShape::Circle);
+    QVERIFY(changedType.description.isEmpty());
+
+    // Another shape needs another annotation
+    const PDFDocument reshaped = modify(modified, [&](PDFDocumentBuilder* builder) { QVERIFY(FixtureCountEditor::changeMarkerType(builder, &modified, changedMarker, type("A1E", FixtureMarkerShape::Square))); });
+    const FixtureCountData reshapedData = FixtureCountData::scan(&reshaped);
+    QCOMPARE(reshapedData.getMarkers().size(), size_t(1));
+    QCOMPARE(reshapedData.getTypes().front().shape, FixtureMarkerShape::Square);
+    QVERIFY(reshapedData.getMarkers().front().annotation != marker.annotation);
+}
+
+void FixtureCountTest::sheetNamesFromPageLabels()
+{
+    PDFDocumentBuilder builder;
+    builder.appendPage(QRectF(0, 0, 612, 792));
+    builder.appendPage(QRectF(0, 0, 612, 792));
+    builder.appendPage(QRectF(0, 0, 612, 792));
+    const PDFObjectReference page4 = builder.appendPage(QRectF(0, 0, 612, 792));
+
+    // Labels as AutoCAD writes them, a plain sheet number and a plain page number
+    PDFObjectFactory factory;
+    factory.beginDictionary();
+    factory.beginDictionaryItem("PageLabels");
+    factory.beginDictionary();
+    factory.beginDictionaryItem("Nums");
+    factory.beginArray();
+    factory << PDFInteger(0);
+    factory.beginDictionary();
+    factory.beginDictionaryItem("P");
+    factory << QString("[1] Light LT-1");
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    factory << PDFInteger(1);
+    factory.beginDictionary();
+    factory.beginDictionaryItem("P");
+    factory << QString("E-102");
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    factory << PDFInteger(2);
+    factory.beginDictionary();
+    factory.beginDictionaryItem("S");
+    factory << WrapName("D");
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    factory.endArray();
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    builder.mergeTo(builder.getCatalogReference(), factory.takeObject());
+
+    // Bookmark has the precedence over the label
+    PDFOutlineItem root;
+    QSharedPointer<PDFOutlineItem> sheet4(new PDFOutlineItem());
+    sheet4->setTitle("E-501 Details");
+    sheet4->setAction(PDFActionPtr(new PDFActionGoTo(PDFDestination::createFit(page4), PDFDestination())));
+    root.addChild(sheet4);
+    builder.setOutline(&root);
+
+    PDFDocumentReader reader(nullptr, nullptr, false, false);
+    const PDFDocument document = reader.readFromBuffer(write(builder.build()));
+    QCOMPARE(reader.getReadingResult(), PDFDocumentReader::Result::OK);
+
+    const QStringList names = FixtureCountReport::getSheetNames(&document);
+    QCOMPARE(names, (QStringList{ "Light LT-1", "E-102", "Page 3", "E-501 Details" }));
+}
+
+void FixtureCountTest::csvFormulaInjection()
+{
+    // Text from the document must not be evaluated as a formula by a spreadsheet
+    QCOMPARE(FixtureCountReport::escapeCsvField("=HYPERLINK(\"http://x\")"), QString("\"'=HYPERLINK(\"\"http://x\"\")\""));
+    QCOMPARE(FixtureCountReport::escapeCsvField("+1"), QString("'+1"));
+    QCOMPARE(FixtureCountReport::escapeCsvField("-A"), QString("'-A"));
+    QCOMPARE(FixtureCountReport::escapeCsvField("@SUM(A1)"), QString("'@SUM(A1)"));
+    QCOMPARE(FixtureCountReport::escapeCsvField("E-101"), QString("E-101"));
+    QCOMPARE(FixtureCountReport::escapeCsvField("12"), QString("12"));
+}
+
 void FixtureCountTest::findSimilarSymbols()
 {
     const QImage image = createSheetImage();
@@ -640,6 +752,177 @@ void FixtureCountTest::findSimilarSymbolsEmptySample()
     QVERIFY(inkRect.left() >= 77 && inkRect.left() <= 80);
     QVERIFY(inkRect.right() >= 120 && inkRect.right() <= 130);
     QVERIFY(FixtureSymbolFinder::getInkBoundingRect(grayImage, QRect(500, 150, 40, 40)).isEmpty());
+}
+
+void FixtureCountTest::findSimilarSymbolsAnyAngle()
+{
+    // Fixtures on site plans point in all directions
+    const std::vector<std::pair<QPointF, qreal>> fixtures =
+    {
+        { QPointF(100, 100), 0.0 }, { QPointF(250, 100), 30.0 }, { QPointF(400, 100), 65.0 }, { QPointF(550, 100), 137.0 },
+        { QPointF(700, 100), 200.0 }, { QPointF(850, 100), 311.0 }, { QPointF(100, 250), 7.0 }, { QPointF(250, 250), 352.0 }
+    };
+
+    QImage image(1000, 400, QImage::Format_RGB32);
+    image.fill(Qt::white);
+
+    {
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing);
+        for (const auto& fixture : fixtures)
+        {
+            drawFixtureSymbol(painter, fixture.first, fixture.second);
+        }
+        for (int i = 0; i < 4; ++i)
+        {
+            drawOtherSymbol(painter, QPointF(500 + 100 * i, 250));
+        }
+    }
+
+    const std::vector<FixtureSymbolFinder::Match> matches = FixtureSymbolFinder::find(image, QRect(70, 75, 70, 50), FixtureSymbolFinder::Settings());
+    QCOMPARE(matches.size(), fixtures.size());
+
+    for (const auto& fixture : fixtures)
+    {
+        auto it = std::find_if(matches.cbegin(), matches.cend(), [&](const FixtureSymbolFinder::Match& match) { return QLineF(match.center, fixture.first).length() < 8.0; });
+        QVERIFY2(it != matches.cend(), qPrintable(QString("Fixture rotated by %1 degrees was not found.").arg(fixture.second)));
+
+        qreal angleDifference = std::fmod(std::abs(it->angle - fixture.second), 360.0);
+        angleDifference = std::min(angleDifference, 360.0 - angleDifference);
+        QVERIFY2(angleDifference < 6.0, qPrintable(QString("Fixture rotated by %1 degrees was found with the angle %2.").arg(fixture.second).arg(it->angle)));
+    }
+}
+
+void FixtureCountTest::findSymmetricSymbols()
+{
+    // Poles of site lighting plans are drawn as small filled dots
+    std::vector<QPointF> dots;
+    for (int i = 0; i < 12; ++i)
+    {
+        dots.push_back(QPointF(60 + 70 * i + (i % 3) * 0.4, 60 + (i % 4) * 45 + (i % 2) * 0.3));
+    }
+
+    QImage image(900, 400, QImage::Format_RGB32);
+    image.fill(Qt::white);
+
+    {
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::black);
+        for (const QPointF& dot : dots)
+        {
+            painter.drawEllipse(dot, 5.0, 5.0);
+        }
+
+        // Shapes, which look like the dot only partially: filled rectangles
+        // (labels), thick lines and their ends, a large dot, a ring
+        painter.drawRect(QRectF(100, 300, 60, 10));
+        painter.drawRect(QRectF(300, 280, 10, 60));
+        painter.drawEllipse(QPointF(500, 320), 14.0, 14.0);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(Qt::black, 9.0, Qt::SolidLine, Qt::RoundCap));
+        painter.drawLine(QPointF(600, 300), QPointF(800, 350));
+        painter.setPen(QPen(Qt::black, 1.5));
+        painter.drawEllipse(QPointF(420, 320), 5.0, 5.0);
+    }
+
+    const std::vector<FixtureSymbolFinder::Match> matches = FixtureSymbolFinder::find(image, QRect(53, 53, 15, 15), FixtureSymbolFinder::Settings());
+    QCOMPARE(countMatchesNear(matches, dots, 3.0), int(dots.size()));
+    QCOMPARE(matches.size(), dots.size());
+}
+
+void FixtureCountTest::findSymbolsByInkColor()
+{
+    // Black fixtures crossed by thick colored lines (isolines of light levels)
+    // on a colored background
+    QImage image = createSheetImage();
+
+    {
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setCompositionMode(QPainter::CompositionMode_Multiply);
+        painter.fillRect(QRect(0, 0, 500, 600), QColor(200, 230, 200));
+        painter.setPen(QPen(Qt::blue, 5.0));
+        painter.drawLine(QPointF(40, 130), QPointF(960, 70));
+        painter.setPen(QPen(Qt::red, 5.0));
+        painter.drawLine(QPointF(60, 360), QPointF(460, 440));
+        painter.drawEllipse(QPointF(250, 100), 30.0, 22.0);
+    }
+
+    const QRect sampleRect(70, 75, 70, 50);
+    const QImage inkImage = FixtureSymbolFinder::createInkImage(image, sampleRect);
+    QCOMPARE(inkImage.format(), QImage::Format_Grayscale8);
+    QCOMPARE(inkImage.size(), image.size());
+
+    // Black ink is kept, colored ink and the background are white
+    QVERIFY(qGray(inkImage.pixel(80, 90)) < 64);        // edge of the fixture
+    QVERIFY(qGray(inkImage.pixel(700, 87)) > 224);      // blue line
+    QVERIFY(qGray(inkImage.pixel(250, 122)) > 192);     // red ellipse
+    QVERIFY(qGray(inkImage.pixel(300, 200)) > 192);     // green background
+    QVERIFY(qGray(inkImage.pixel(700, 200)) > 224);     // white paper
+
+    const std::vector<QPointF> expected = getFixturePositions(true);
+    const std::vector<FixtureSymbolFinder::Match> matches = FixtureSymbolFinder::find(inkImage, sampleRect, FixtureSymbolFinder::Settings());
+    QCOMPARE(countMatchesNear(matches, expected, 8.0), int(expected.size()));
+    QCOMPARE(matches.size(), expected.size());
+
+    // An image without any ink in the sample is only converted
+    const QImage plainImage = FixtureSymbolFinder::createInkImage(image, QRect(600, 150, 20, 20));
+    QCOMPARE(plainImage, image.convertToFormat(QImage::Format_Grayscale8));
+}
+
+void FixtureCountTest::precompiledPageWithoutImagesAndText()
+{
+    // Photo under the drawing and text are removed from the page before the search
+    QImage photo(10, 10, QImage::Format_RGB32);
+    photo.fill(Qt::darkGreen);
+
+    QPainterPath line;
+    line.moveTo(10, 50);
+    line.lineTo(90, 50);
+
+    QPainterPath text;
+    text.addRect(QRectF(20, 10, 20, 20));
+
+    pdf::PDFPrecompiledPage page;
+    page.addSaveGraphicState();
+    page.addSetWorldMatrix(QTransform::fromScale(100, 100));
+    page.addImage(photo);
+    page.addRestoreGraphicState();
+    page.addPath(QPen(Qt::black, 4.0), QBrush(Qt::NoBrush), line, false);
+    page.addPath(QPen(Qt::NoPen), QBrush(Qt::black), text, true);
+
+    auto draw = [](const pdf::PDFPrecompiledPage& pageToDraw)
+    {
+        QImage image(100, 100, QImage::Format_RGB32);
+        image.fill(Qt::white);
+        QPainter painter(&image);
+        pageToDraw.draw(&painter, QRectF(0, 0, 100, 100), QTransform(), pdf::PDFRenderer::None, 1.0);
+        painter.end();
+        return image;
+    };
+
+    const QImage fullImage = draw(page);
+    QVERIFY(qGray(fullImage.pixel(50, 50)) < 64);       // line
+    QVERIFY(qGray(fullImage.pixel(30, 20)) < 64);       // text
+    QVERIFY(fullImage.pixel(80, 80) != qRgb(255, 255, 255));    // photo
+
+    pdf::PDFPrecompiledPage vectorPage = page;
+    vectorPage.removeImages();
+    const QImage vectorImage = draw(vectorPage);
+    QVERIFY(qGray(vectorImage.pixel(50, 50)) < 64);
+    QVERIFY(qGray(vectorImage.pixel(30, 20)) < 64);
+    QCOMPARE(vectorImage.pixel(80, 80), qRgb(255, 255, 255));
+
+    vectorPage.removeText();
+    const QImage reducedImage = draw(vectorPage);
+    QVERIFY(qGray(reducedImage.pixel(50, 50)) < 64);
+    QCOMPARE(reducedImage.pixel(30, 20), qRgb(255, 255, 255));
+    QCOMPARE(reducedImage.pixel(80, 80), qRgb(255, 255, 255));
+
+    // The original page is not changed
+    QCOMPARE(draw(page), fullImage);
 }
 
 QTEST_MAIN(FixtureCountTest)

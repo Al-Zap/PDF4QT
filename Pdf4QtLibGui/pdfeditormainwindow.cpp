@@ -56,6 +56,8 @@
 #include <QApplication>
 #include <QStandardPaths>
 #include <QDockWidget>
+#include <QMenu>
+#include <QMenuBar>
 #include <QTreeView>
 #include <QLayout>
 #include <QHeaderView>
@@ -181,6 +183,9 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_actionManager->setAction(PDFActionManager::CreateRectangle, ui->actionCreateRectangle);
     m_actionManager->setAction(PDFActionManager::CreatePolygon, ui->actionCreatePolygon);
     m_actionManager->setAction(PDFActionManager::CreateEllipse, ui->actionCreateEllipse);
+    m_actionManager->setAction(PDFActionManager::CreateArrow, ui->actionCreateArrow);
+    m_actionManager->setAction(PDFActionManager::CreateCloudRectangle, ui->actionCreateCloudRectangle);
+    m_actionManager->setAction(PDFActionManager::CreateCloudPolygon, ui->actionCreateCloudPolygon);
     m_actionManager->setAction(PDFActionManager::CreateFreehandCurve, ui->actionCreateFreehandCurve);
     m_actionManager->setAction(PDFActionManager::DeleteAnnotation, ui->actionDeleteAnnotation);
     m_actionManager->setAction(PDFActionManager::RenderOptionAntialiasing, ui->actionRenderOptionAntialiasing);
@@ -325,6 +330,36 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     {
         ui->menuInsert->addSeparator();
         ui->menuInsert->addAction(outlineNewItemAction);
+    }
+
+    // Organizing of the pages (rotate, delete, insert, extract, split) works on the selected
+    // thumbnails or on the current page, so it is reachable also from the menu.
+    const std::vector<QAction*> pageActions = m_sidebarWidget->getPageActions();
+    if (!pageActions.empty())
+    {
+        QMenu* pagesMenu = new QMenu(tr("&Pages"), this);
+        pagesMenu->setObjectName("menuPages");
+        for (size_t i = 0; i < pageActions.size(); ++i)
+        {
+            QAction* action = pageActions[i];
+            const QString name = action->objectName();
+            if (name == "actionPagesInsertFromFile" || name == "actionPagesExtract" || name == "actionPagesDelete")
+            {
+                pagesMenu->addSeparator();
+            }
+            pagesMenu->addAction(action);
+            m_actionManager->addAdditionalAction(action);
+        }
+        menuBar()->insertMenu(ui->menuInsert->menuAction(), pagesMenu);
+
+        // Simplified toolbar: rotation as buttons, other page actions in a drop-down
+        if (m_toolbarSlots && pageActions.size() >= 2)
+        {
+            using Section = PDFToolbarSlots::Section;
+            m_toolbarSlots->addAction(Section::Organize, pageActions[0]);
+            m_toolbarSlots->addAction(Section::Organize, pageActions[1]);
+            m_toolbarSlots->addActionGroup(Section::Organize, "pages", tr("Pages"), QList<QAction*>(std::next(pageActions.cbegin(), 2), pageActions.cend()), false);
+        }
     }
 
     m_advancedFindWidget = new PDFAdvancedFindWidget(m_programController->getPdfWidget()->getDrawWidgetProxy(), this);
@@ -497,8 +532,10 @@ void PDFEditorMainWindow::createSimpleToolbar()
     {
         m_toolbarSlots->addActionGroup(Section::Markup, "stickyNote", tr("Sticky Note"), stickyNoteGroup->actions());
     }
+    m_toolbarSlots->addActionGroup(Section::Markup, "cloud", tr("Revision Cloud"),
+                                   { ui->actionCreateCloudRectangle, ui->actionCreateCloudPolygon });
     m_toolbarSlots->addActionGroup(Section::Markup, "shapes", tr("Shapes"),
-                                   { ui->actionCreateStraightLine, ui->actionCreatePolyline, ui->actionCreateRectangle,
+                                   { ui->actionCreateStraightLine, ui->actionCreateArrow, ui->actionCreatePolyline, ui->actionCreateRectangle,
                                      ui->actionCreatePolygon, ui->actionCreateEllipse, ui->actionCreateFreehandCurve });
     // Stamps have no icons, they stay in the Markup menu only
 
@@ -616,6 +653,7 @@ void PDFEditorMainWindow::setSimpleLayoutShortcuts()
     ui->actionInlineText->setShortcut(QKeySequence(Qt::Key_T));
     ui->actionStickyNoteComment->setShortcut(QKeySequence(Qt::Key_N));
     ui->actionCreateStraightLine->setShortcut(QKeySequence(Qt::Key_L));
+    ui->actionCreateCloudRectangle->setShortcut(QKeySequence(Qt::Key_C));
     ui->actionCreateRectangle->setShortcut(QKeySequence(Qt::Key_R));
     ui->actionCreateEllipse->setShortcut(QKeySequence(Qt::Key_E));
     ui->actionCreateFreehandCurve->setShortcut(QKeySequence(Qt::Key_F));

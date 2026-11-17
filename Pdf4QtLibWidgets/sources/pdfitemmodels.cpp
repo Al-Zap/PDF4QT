@@ -32,6 +32,8 @@
 #include <QMimeDatabase>
 #include <QFileIconProvider>
 #include <QMimeData>
+#include <QDataStream>
+#include <QUrl>
 
 #include <algorithm>
 
@@ -1215,6 +1217,192 @@ void PDFThumbnailsItemModel::setDocument(const PDFModifiedDocument& document)
 PDFInteger PDFThumbnailsItemModel::getPageIndex(const QModelIndex& index) const
 {
     return index.row();
+}
+
+Qt::ItemFlags PDFThumbnailsItemModel::flags(const QModelIndex& index) const
+{
+    Qt::ItemFlags flags = QAbstractItemModel::flags(index);
+
+    if (m_pageOrganizingEnabled)
+    {
+        flags |= Qt::ItemIsDropEnabled;
+
+        if (index.isValid())
+        {
+            flags |= Qt::ItemIsDragEnabled;
+        }
+    }
+
+    return flags;
+}
+
+Qt::DropActions PDFThumbnailsItemModel::supportedDropActions() const
+{
+    return m_pageOrganizingEnabled ? Qt::DropActions(Qt::MoveAction | Qt::CopyAction | Qt::LinkAction) : Qt::DropActions(Qt::IgnoreAction);
+}
+
+Qt::DropActions PDFThumbnailsItemModel::supportedDragActions() const
+{
+    return m_pageOrganizingEnabled ? Qt::DropActions(Qt::MoveAction) : Qt::DropActions(Qt::IgnoreAction);
+}
+
+QStringList PDFThumbnailsItemModel::mimeTypes() const
+{
+    return { QLatin1String("application/x-pdf4qt-thumbnail-pages"), QLatin1String("text/uri-list") };
+}
+
+QMimeData* PDFThumbnailsItemModel::mimeData(const QModelIndexList& indexes) const
+{
+    std::vector<PDFInteger> pages;
+    pages.reserve(indexes.size());
+    for (const QModelIndex& index : indexes)
+    {
+        if (index.isValid())
+        {
+            pages.push_back(index.row());
+        }
+    }
+    std::sort(pages.begin(), pages.end());
+    pages.erase(std::unique(pages.begin(), pages.end()), pages.end());
+
+    if (pages.empty())
+    {
+        return nullptr;
+    }
+
+    // The model address identifies the source of the drag, so pages
+    // can't be dropped into the thumbnails of other document.
+    QByteArray data;
+    QDataStream stream(&data, QIODevice::WriteOnly);
+    stream << quint64(reinterpret_cast<quintptr>(this));
+    stream << quint64(pages.size());
+    for (const PDFInteger page : pages)
+    {
+        stream << qint64(page);
+    }
+
+    QMimeData* mimeData = new QMimeData();
+    mimeData->setData(mimeTypes().front(), data);
+    return mimeData;
+}
+
+std::vector<PDFInteger> PDFThumbnailsItemModel::getDraggedPages(const QMimeData* data) const
+{
+    std::vector<PDFInteger> pages;
+
+    if (!data || !data->hasFormat(mimeTypes().front()))
+    {
+        return pages;
+    }
+
+    QByteArray bytes = data->data(mimeTypes().front());
+    QDataStream stream(&bytes, QIODevice::ReadOnly);
+
+    quint64 source = 0;
+    quint64 count = 0;
+    stream >> source >> count;
+
+    if (source != quint64(reinterpret_cast<quintptr>(this)) || count > quint64(m_pageCount))
+    {
+        return pages;
+    }
+
+    for (quint64 i = 0; i < count && stream.status() == QDataStream::Ok; ++i)
+    {
+        qint64 page = -1;
+        stream >> page;
+        if (page >= 0 && page < m_pageCount)
+        {
+            pages.push_back(page);
+        }
+    }
+
+    return pages;
+}
+
+QStringList PDFThumbnailsItemModel::getPdfFiles(const QMimeData* data)
+{
+    QStringList fileNames;
+
+    if (!data || !data->hasUrls())
+    {
+        return fileNames;
+    }
+
+    for (const QUrl& url : data->urls())
+    {
+        if (url.isLocalFile())
+        {
+            QString fileName = url.toLocalFile();
+            if (fileName.endsWith(QLatin1String(".pdf"), Qt::CaseInsensitive))
+            {
+                fileNames << fileName;
+            }
+        }
+    }
+
+    return fileNames;
+}
+
+PDFInteger PDFThumbnailsItemModel::getDropInsertPosition(int row, const QModelIndex& parent, const std::vector<PDFInteger>& draggedPages) const
+{
+    if (row >= 0)
+    {
+        return qMin(row, m_pageCount);
+    }
+
+    if (parent.isValid())
+    {
+        // Dropped onto the thumbnail. Pages dragged from above are placed after it,
+        // other pages before it, so the dropped pages take the place of the thumbnail.
+        const PDFInteger targetPage = parent.row();
+        if (!draggedPages.empty() && draggedPages.back() < targetPage)
+        {
+            return targetPage + 1;
+        }
+
+        return targetPage;
+    }
+
+    return m_pageCount;
+}
+
+bool PDFThumbnailsItemModel::canDropMimeData(const QMimeData* data, Qt::DropAction action, int row, int column, const QModelIndex& parent) const
+{
+    Q_UNUSED(action);
+    Q_UNUSED(row);
+    Q_UNUSED(column);
+    Q_UNUSED(parent);
+
+    if (!m_pageOrganizingEnabled || !m_document)
+    {
+        return false;
+    }
+
+    return !getDraggedPages(data).empty() || !getPdfFiles(data).isEmpty();
+}
+
+bool PDFThumbnailsItemModel::dropMimeData(const QMimeData* data, Qt::DropAction action, int row, int column, const QModelIndex& parent)
+{
+    if (!canDropMimeData(data, action, row, column, parent))
+    {
+        return false;
+    }
+
+    std::vector<PDFInteger> draggedPages = getDraggedPages(data);
+    if (!draggedPages.empty())
+    {
+        const PDFInteger insertPosition = getDropInsertPosition(row, parent, draggedPages);
+        Q_EMIT pagesMoveRequested(std::move(draggedPages), insertPosition);
+    }
+    else
+    {
+        Q_EMIT filesInsertRequested(getPdfFiles(data), getDropInsertPosition(row, parent, draggedPages));
+    }
+
+    // The document is changed by the receiver of the request, the view
+    // must not remove the dragged rows, so the drop is not reported as done.
+    return false;
 }
 
 void PDFThumbnailsItemModel::onPageImageChanged(bool all, const std::vector<PDFInteger>& pages)

@@ -1219,6 +1219,28 @@ void PDFPrecompiledPage::addSetCompositionMode(QPainter::CompositionMode composi
     m_compositionModes.push_back(compositionMode);
 }
 
+void PDFPrecompiledPage::removeImages()
+{
+    auto isImage = [](const Instruction& instruction)
+    {
+        return instruction.type == InstructionType::DrawImage || instruction.type == InstructionType::DrawMesh;
+    };
+
+    m_instructions.erase(std::remove_if(m_instructions.begin(), m_instructions.end(), isImage), m_instructions.end());
+    m_images.clear();
+    m_meshes.clear();
+}
+
+void PDFPrecompiledPage::removeText()
+{
+    auto isText = [this](const Instruction& instruction)
+    {
+        return instruction.type == InstructionType::DrawPath && m_paths[instruction.dataIndex].isText;
+    };
+
+    m_instructions.erase(std::remove_if(m_instructions.begin(), m_instructions.end(), isText), m_instructions.end());
+}
+
 void PDFPrecompiledPage::optimize()
 {
     m_instructions.shrink_to_fit();

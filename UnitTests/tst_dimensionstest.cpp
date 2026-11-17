@@ -35,6 +35,7 @@
 #include "pdfmeasure.h"
 #include "pdfcms.h"
 #include "pdfconstants.h"
+#include "pdfdocumentmanipulator.h"
 #include "pdfdocumentreader.h"
 #include "pdffont.h"
 #include "pdfoptionalcontent.h"
@@ -54,6 +55,7 @@ private slots:
     void test_scale_validity();
     void test_scale_serialization();
     void test_scale_from_measure();
+    void test_scale_from_measure_without_unit();
     void test_scale_from_measure_user_unit();
     void test_scale_from_measure_rejected();
     void test_settings_persistence();
@@ -68,6 +70,9 @@ private slots:
     void test_default_presets();
     void test_page_scales();
     void test_page_scales_persistence();
+    void test_copy_document_scales();
+    void test_page_keys();
+    void test_readable_scale();
     void test_geometry_snap_priority();
     void test_geometry_snap_curve();
     void test_geometry_snap_limits();
@@ -86,6 +91,15 @@ private:
                                         pdf::PDFReal factorYX = 1.0);
 
     static pdf::PDFObject createNumberFormat(const QString& unitLabel, pdf::PDFReal conversionFactor);
+
+    /// Creates the scale of a sheet or of a document
+    static pdfplugin::SheetScale sheetScale(const DimensionScale& scale, pdf::PDFReal drawingCorrection = 0.0)
+    {
+        pdfplugin::SheetScale result;
+        result.scale = scale;
+        result.drawingCorrection = drawingCorrection;
+        return result;
+    }
 
     /// Creates a file in the settings directory and returns its canonical path
     /// \param fileName Name of the file
@@ -276,8 +290,65 @@ void DimensionsTest::test_scale_from_measure()
     const pdf::PDFReal expectedFactor = 0.5 / pdf::PDF_POINT_TO_MM;
     QVERIFY(qFuzzyCompare(scale.getScaleFactor(), expectedFactor));
 
-    // The scale ratio of the document is offered as the name of the scale
-    QCOMPARE(scale.getName(), QString("1 mm = 1 mm"));
+    // The scale is expressed for a millimeter of the paper. The scale ratio
+    // text of the document is a free text, it is not used as the name.
+    QVERIFY(scale.getName().isEmpty());
+    QCOMPARE(scale.getPaperUnitId(), QByteArray("mm"));
+    QVERIFY(qAbs(scale.getPaperValue() - 1.0) < 1e-9);
+
+    // Scale of a drawing in feet is expressed for an inch
+    const DimensionScale feetScale = DimensionScale::createFromMeasure(pdf::PDFMeasure::parse(&m_storage, createMeasure("ft", 30.0 / 72.0)), 1.0);
+    QVERIFY(feetScale.isValid());
+    QVERIFY(feetScale.isImperial());
+    QVERIFY(!scale.isImperial());
+    QCOMPARE(feetScale.getRatioText(), QString("1 in = 30 ft"));
+}
+
+void DimensionsTest::test_scale_from_measure_without_unit()
+{
+    // Drawings plotted by AutoCAD define the conversion to the drawing units
+    // with a blank unit label. Values are taken from real plans.
+    auto createScale = [this](pdf::PDFReal unitsPerPoint, bool* isUnitAssumed = nullptr)
+    {
+        return DimensionScale::createFromMeasure(pdf::PDFMeasure::parse(&m_storage, createMeasure(" ", unitsPerPoint)), 1.0, isUnitAssumed);
+    };
+
+    // Site plan 1 in = 50 ft
+    bool isUnitAssumed = false;
+    const DimensionScale sitePlan = createScale(0.69444, &isUnitAssumed);
+    QVERIFY(sitePlan.isValid());
+    QVERIFY(isUnitAssumed);
+    QCOMPARE(sitePlan.getRatioText(), QString("1 in = 50 ft"));
+    QVERIFY(qFuzzyCompare(sitePlan.getScaleFactor(), 600.0));
+
+    // Rounded coordinates, still 1 in = 50 ft and 1 in = 40 ft
+    QCOMPARE(createScale(0.69366).getRatioText(), QString("1 in = 50 ft"));
+    QCOMPARE(createScale(0.5555).getRatioText(), QString("1 in = 40 ft"));
+
+    // The sheet itself (paper space), one drawing unit is an inch of the paper
+    QVERIFY(!createScale(1.0 / 72.0, &isUnitAssumed).isValid());
+    QVERIFY(!isUnitAssumed);
+
+    // Floor plan 1/4 in = 1 ft drawn in inches
+    const DimensionScale floorPlan = createScale(48.0 / 72.0);
+    QCOMPARE(floorPlan.getRealUnitId(), QByteArray("in"));
+    QVERIFY(qFuzzyCompare(floorPlan.getScaleFactor(), 48.0));
+
+    // Metric drawing 1:100 drawn in millimeters
+    const DimensionScale metricPlan = createScale(2540.0 / 72.0);
+    QCOMPARE(metricPlan.getRealUnitId(), QByteArray("mm"));
+    QVERIFY(qFuzzyCompare(metricPlan.getScaleFactor(), 100.0));
+
+    // A drawing fitted to the sheet is not in a common scale, feet are assumed
+    // and the ratio is kept as it is
+    const DimensionScale fitted = createScale(0.31406, &isUnitAssumed);
+    QVERIFY(isUnitAssumed);
+    QCOMPARE(fitted.getRealUnitId(), QByteArray("ft"));
+    QVERIFY(qAbs(fitted.getRealValue() - 0.31406 * 72.0) < 1e-9);
+
+    // A unit told by the drawing is never estimated
+    DimensionScale::createFromMeasure(pdf::PDFMeasure::parse(&m_storage, createMeasure("ft", 30.0 / 72.0)), 1.0, &isUnitAssumed);
+    QVERIFY(!isUnitAssumed);
 }
 
 void DimensionsTest::test_scale_from_measure_user_unit()
@@ -394,9 +465,9 @@ void DimensionsTest::test_document_scale_by_path()
     secondDocument.filePath = "/documents/second.pdf";
 
     pdfplugin::DimensionsSettingsStorage storage;
-    storage.setDocumentScale(firstDocument, DimensionScale(1.0, "mm", 100.0, "mm"));
+    storage.setDocumentScale(firstDocument, sheetScale(DimensionScale(1.0, "mm", 100.0, "mm")), false);
 
-    QVERIFY(qFuzzyCompare(storage.getDocumentScale(firstDocument).getScaleFactor(), 100.0));
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(firstDocument).scale.getScaleFactor(), 100.0));
 
     // A document, which was never calibrated, must not inherit the scale
     // of another document (see issue #424)
@@ -415,7 +486,7 @@ void DimensionsTest::test_document_scale_by_permanent_id()
     original.permanentId = "abcdef";
 
     pdfplugin::DimensionsSettingsStorage storage;
-    storage.setDocumentScale(original, DimensionScale(1.0, "mm", 50.0, "mm"));
+    storage.setDocumentScale(original, sheetScale(DimensionScale(1.0, "mm", 50.0, "mm")), false);
 
     QVERIFY(QFile::rename(originalPath, renamedPath));
 
@@ -423,17 +494,17 @@ void DimensionsTest::test_document_scale_by_permanent_id()
     renamed.filePath = renamedPath;
     renamed.permanentId = "abcdef";
 
-    QVERIFY(qFuzzyCompare(storage.getDocumentScale(renamed).getScaleFactor(), 50.0));
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(renamed).scale.getScaleFactor(), 50.0));
 
     // Storing the scale under the new path must move the existing record
     // instead of creating a second one
-    storage.setDocumentScale(renamed, DimensionScale(1.0, "mm", 20.0, "mm"));
-    QVERIFY(qFuzzyCompare(storage.getDocumentScale(renamed).getScaleFactor(), 20.0));
+    storage.setDocumentScale(renamed, sheetScale(DimensionScale(1.0, "mm", 20.0, "mm")), false);
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(renamed).scale.getScaleFactor(), 20.0));
 
     // A document without a file is identified by the identifier only
     pdfplugin::DocumentIdentity withoutPath;
     withoutPath.permanentId = "abcdef";
-    QVERIFY(qFuzzyCompare(storage.getDocumentScale(withoutPath).getScaleFactor(), 20.0));
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(withoutPath).scale.getScaleFactor(), 20.0));
 
     // A different identifier must not match anything
     pdfplugin::DocumentIdentity other;
@@ -455,16 +526,16 @@ void DimensionsTest::test_document_scale_path_has_priority()
     second.permanentId = "shared";
 
     pdfplugin::DimensionsSettingsStorage storage;
-    storage.setDocumentScale(first, DimensionScale(1.0, "mm", 100.0, "mm"));
+    storage.setDocumentScale(first, sheetScale(DimensionScale(1.0, "mm", 100.0, "mm")), false);
 
     // The copy has not been calibrated yet and the original still exists,
     // so it must not silently use the scale of the original
     QVERIFY(!storage.getDocumentScale(second).isValid());
 
-    storage.setDocumentScale(second, DimensionScale(1.0, "mm", 200.0, "mm"));
+    storage.setDocumentScale(second, sheetScale(DimensionScale(1.0, "mm", 200.0, "mm")), false);
 
-    QVERIFY(qFuzzyCompare(storage.getDocumentScale(first).getScaleFactor(), 100.0));
-    QVERIFY(qFuzzyCompare(storage.getDocumentScale(second).getScaleFactor(), 200.0));
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(first).scale.getScaleFactor(), 100.0));
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(second).scale.getScaleFactor(), 200.0));
 }
 
 void DimensionsTest::test_document_identity_canonical_path()
@@ -559,30 +630,46 @@ void DimensionsTest::test_page_scales()
     QVERIFY(storage.getPageScales(document).empty());
 
     // A sheet can be calibrated, even if the document was not
-    storage.setPageScale(document, 3, detailScale);
+    storage.setPageScale(document, "sheet-3", sheetScale(detailScale));
     QVERIFY(!storage.getDocumentScale(document).isValid());
     QCOMPARE(storage.getPageScales(document).size(), size_t(1));
-    QVERIFY(qFuzzyCompare(storage.getPageScales(document).at(3).getScaleFactor(), 48.0));
+    QVERIFY(qFuzzyCompare(storage.getPageScales(document).at("sheet-3").scale.getScaleFactor(), 48.0));
 
-    // Scale of the whole document applies to all sheets, so the exceptions are removed
-    storage.setDocumentScale(document, siteScale);
-    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).getScaleFactor(), 240.0));
+    // Scale of the whole document applies to all sheets, if the exceptions are not kept
+    storage.setDocumentScale(document, sheetScale(siteScale), false);
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).scale.getScaleFactor(), 240.0));
     QVERIFY(storage.getPageScales(document).empty());
 
     // Exception of a single sheet keeps the scale of the document
-    storage.setPageScale(document, 5, detailScale);
-    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).getScaleFactor(), 240.0));
-    QCOMPARE(storage.getPageScales(document).count(5), size_t(1));
+    storage.setPageScale(document, "sheet-5", sheetScale(detailScale));
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).scale.getScaleFactor(), 240.0));
+    QCOMPARE(storage.getPageScales(document).count("sheet-5"), size_t(1));
+
+    // A new scale of the document can keep the exceptions
+    storage.setDocumentScale(document, sheetScale(DimensionScale(1.0, "in", 30.0, "ft")), true);
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).scale.getScaleFactor(), 360.0));
+    QCOMPARE(storage.getPageScales(document).count("sheet-5"), size_t(1));
 
     // Invalid scale removes the exception
-    storage.setPageScale(document, 5, DimensionScale());
+    storage.setPageScale(document, "sheet-5", pdfplugin::SheetScale());
     QVERIFY(storage.getPageScales(document).empty());
     QVERIFY(storage.getDocumentScale(document).isValid());
 
+    // A sheet can have the correction of the drawing only
+    storage.setPageScale(document, "sheet-7", sheetScale(DimensionScale(), 2.0));
+    QVERIFY(qFuzzyCompare(storage.getPageScales(document).at("sheet-7").drawingCorrection, 2.0));
+    QVERIFY(!storage.getPageScales(document).at("sheet-7").scale.isValid());
+
+    // Invalid scale of the document removes the scale of the whole document,
+    // the sheets are kept
+    storage.setDocumentScale(document, pdfplugin::SheetScale(), true);
+    QVERIFY(!storage.getDocumentScale(document).isValid());
+    QCOMPARE(storage.getPageScales(document).size(), size_t(1));
+
     // Invalid identity or page are ignored
-    storage.setPageScale(pdfplugin::DocumentIdentity(), 0, detailScale);
-    storage.setPageScale(document, -1, detailScale);
-    QVERIFY(storage.getPageScales(document).empty());
+    storage.setPageScale(pdfplugin::DocumentIdentity(), "sheet-0", sheetScale(detailScale));
+    storage.setPageScale(document, QString(), sheetScale(detailScale));
+    QCOMPARE(storage.getPageScales(document).size(), size_t(1));
 }
 
 void DimensionsTest::test_page_scales_persistence()
@@ -596,28 +683,136 @@ void DimensionsTest::test_page_scales_persistence()
     {
         pdfplugin::DimensionsSettingsStorage storage;
         storage.load();
-        storage.setDocumentScale(document, DimensionScale(0.125, "in", 1.0, "ft"));
-        storage.setPageScale(document, 0, DimensionScale(1.0, "in", 30.0, "ft"));
-        storage.setPageScale(document, 12, DimensionScale(0.5, "in", 1.0, "ft", QString("Detail")));
-        storage.setPageScale(sheetsOnlyDocument, 2, DimensionScale(1.0, "in", 40.0, "ft"));
+        storage.setDocumentScale(document, sheetScale(DimensionScale(0.125, "in", 1.0, "ft"), 2.0), false);
+        storage.setPageScale(document, "first", sheetScale(DimensionScale(1.0, "in", 30.0, "ft")));
+        storage.setPageScale(document, "detail", sheetScale(DimensionScale(0.5, "in", 1.0, "ft", QString("Detail")), 0.5));
+        storage.setPageScale(sheetsOnlyDocument, "third", sheetScale(DimensionScale(1.0, "in", 40.0, "ft")));
         storage.save();
     }
 
     pdfplugin::DimensionsSettingsStorage storage;
     storage.load();
 
-    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).getScaleFactor(), 96.0));
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).scale.getScaleFactor(), 96.0));
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).drawingCorrection, 2.0));
 
-    const std::map<pdf::PDFInteger, DimensionScale> pageScales = storage.getPageScales(document);
+    const std::map<QString, pdfplugin::SheetScale> pageScales = storage.getPageScales(document);
     QCOMPARE(pageScales.size(), size_t(2));
-    QVERIFY(qFuzzyCompare(pageScales.at(0).getScaleFactor(), 360.0));
-    QVERIFY(qFuzzyCompare(pageScales.at(12).getScaleFactor(), 24.0));
-    QCOMPARE(pageScales.at(12).getName(), QString("Detail"));
+    QVERIFY(qFuzzyCompare(pageScales.at("first").scale.getScaleFactor(), 360.0));
+    QVERIFY(!pageScales.at("first").hasDrawingCorrection());
+    QVERIFY(qFuzzyCompare(pageScales.at("detail").scale.getScaleFactor(), 24.0));
+    QVERIFY(qFuzzyCompare(pageScales.at("detail").drawingCorrection, 0.5));
+    QCOMPARE(pageScales.at("detail").scale.getName(), QString("Detail"));
 
     // A document with calibrated sheets only is remembered as well
     QVERIFY(!storage.getDocumentScale(sheetsOnlyDocument).isValid());
     QCOMPARE(storage.getPageScales(sheetsOnlyDocument).size(), size_t(1));
-    QVERIFY(qFuzzyCompare(storage.getPageScales(sheetsOnlyDocument).at(2).getScaleFactor(), 480.0));
+    QVERIFY(qFuzzyCompare(storage.getPageScales(sheetsOnlyDocument).at("third").scale.getScaleFactor(), 480.0));
+}
+
+void DimensionsTest::test_copy_document_scales()
+{
+    // Save As keeps the original file, the copy must get its calibration
+    pdfplugin::DocumentIdentity original;
+    original.filePath = createFile("original.pdf");
+    original.permanentId = "same-id";
+
+    pdfplugin::DocumentIdentity savedAs;
+    savedAs.filePath = createFile("saved-as.pdf");
+    savedAs.permanentId = "same-id";
+
+    pdfplugin::DimensionsSettingsStorage storage;
+    storage.setDocumentScale(original, sheetScale(DimensionScale(1.0, "in", 20.0, "ft"), 2.0), false);
+    storage.setPageScale(original, "detail", sheetScale(DimensionScale(0.25, "in", 1.0, "ft")));
+    QVERIFY(!storage.getDocumentScale(savedAs).isValid());
+
+    storage.copyDocumentScales(original, savedAs);
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(savedAs).scale.getScaleFactor(), 240.0));
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(savedAs).drawingCorrection, 2.0));
+    QCOMPARE(storage.getPageScales(savedAs).count("detail"), size_t(1));
+
+    // Both files keep their own record
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(original).scale.getScaleFactor(), 240.0));
+    storage.setDocumentScale(savedAs, sheetScale(DimensionScale(1.0, "in", 40.0, "ft")), true);
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(original).scale.getScaleFactor(), 240.0));
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(savedAs).scale.getScaleFactor(), 480.0));
+
+    // Nothing is copied from a document, which is not known
+    pdfplugin::DocumentIdentity unknown;
+    unknown.filePath = "/documents/unknown.pdf";
+    pdfplugin::DocumentIdentity target;
+    target.filePath = "/documents/target.pdf";
+    storage.copyDocumentScales(unknown, target);
+    QVERIFY(!storage.getDocumentScale(target).isValid());
+    QVERIFY(storage.getPageScales(target).empty());
+}
+
+void DimensionsTest::test_readable_scale()
+{
+    // Scale of a viewport is defined for a single point of the paper
+    const DimensionScale viewportScale(1.0, "pt", 20.0 / 72.0, "ft");
+    const DimensionScale readable = viewportScale.getReadable();
+    QCOMPARE(readable.getPaperUnitId(), QByteArray("in"));
+    QCOMPARE(readable.getRealUnitId(), QByteArray("ft"));
+    QVERIFY(qAbs(readable.getPaperValue() - 1.0) < 1e-9);
+    QVERIFY(qAbs(readable.getRealValue() - 20.0) < 1e-9);
+    QVERIFY(qAbs(readable.getScaleFactor() - viewportScale.getScaleFactor()) < 1e-6);
+
+    // Metric scales are expressed for a millimeter
+    const DimensionScale metricScale(1.0, "pt", 0.05, "m");
+    const DimensionScale metricReadable = metricScale.getReadable();
+    QCOMPARE(metricReadable.getPaperUnitId(), QByteArray("mm"));
+    QCOMPARE(metricReadable.getRealUnitId(), QByteArray("m"));
+    QVERIFY(qAbs(metricReadable.getScaleFactor() - metricScale.getScaleFactor()) < 1e-6 * metricScale.getScaleFactor());
+
+    QVERIFY(!DimensionScale().getReadable().isValid());
+}
+
+void DimensionsTest::test_page_keys()
+{
+    // Three sheets, each draws a line at a different place
+    pdf::PDFDocumentBuilder builder;
+    pdf::PDFPageContentStreamBuilder content(&builder);
+    for (int i = 0; i < 3; ++i)
+    {
+        QPainter* painter = content.beginNewPage(QRectF(0, 0, 612, 792));
+        painter->setPen(QPen(Qt::red, 2.0));
+        painter->drawLine(QPointF(100, 100 + 50 * i), QPointF(400, 100 + 50 * i));
+        content.end(painter);
+    }
+    const pdf::PDFDocument document = builder.build();
+
+    std::vector<QString> keys;
+    for (pdf::PDFInteger i = 0; i < 3; ++i)
+    {
+        keys.push_back(pdfplugin::DocumentIdentity::createPageKey(&document, i));
+        QVERIFY(!keys.back().isEmpty());
+    }
+    QVERIFY(keys[0] != keys[1] && keys[1] != keys[2] && keys[0] != keys[2]);
+    QVERIFY(pdfplugin::DocumentIdentity::createPageKey(&document, 3).isEmpty());
+    QVERIFY(pdfplugin::DocumentIdentity::createPageKey(&document, -1).isEmpty());
+    QVERIFY(pdfplugin::DocumentIdentity::createPageKey(nullptr, 0).isEmpty());
+
+    // The pages are reordered (the objects are renumbered by the optimizer), the
+    // sheets keep their keys, so their scales follow them
+    pdf::PDFDocumentManipulator manipulator;
+    manipulator.addDocument(0, &document);
+    pdf::PDFDocumentManipulator::AssembledPages pages = pdf::PDFDocumentManipulator::createAllDocumentPages(0, &document);
+    std::swap(pages[0], pages[2]);
+    pages.erase(pages.begin() + 1);
+    QVERIFY(manipulator.assemble(pages));
+    const pdf::PDFDocument reordered = manipulator.takeAssembledDocument();
+    QCOMPARE(reordered.getCatalog()->getPageCount(), size_t(2));
+    QCOMPARE(pdfplugin::DocumentIdentity::createPageKey(&reordered, 0), keys[2]);
+    QCOMPARE(pdfplugin::DocumentIdentity::createPageKey(&reordered, 1), keys[0]);
+
+    // Measuring on the sheet (a new annotation) does not change its key
+    pdf::PDFDocumentBuilder annotationBuilder(&document);
+    const pdf::PDFObjectReference pageReference = document.getCatalog()->getPage(1)->getPageReference();
+    annotationBuilder.createAnnotationSquare(pageReference, QRectF(50, 50, 60, 40), 1.0, Qt::yellow, Qt::black, "Title", "Subject", "Contents");
+    const pdf::PDFDocument annotated = annotationBuilder.build();
+    QCOMPARE(annotated.getCatalog()->getPage(1)->getAnnotations().size(), size_t(1));
+    QCOMPARE(pdfplugin::DocumentIdentity::createPageKey(&annotated, 1), keys[1]);
 }
 
 void DimensionsTest::test_geometry_snap_priority()
