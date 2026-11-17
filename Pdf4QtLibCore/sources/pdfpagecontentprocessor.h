@@ -839,6 +839,11 @@ private:
     /// Processes single command
     void processCommand(const QByteArray& command);
 
+    /// Processes single command, whose operator is already known
+    /// \param op Operator (invalid, if the command is not a known operator)
+    /// \param command Text of the command, it must own its data
+    void processCommand(Operator op, const QByteArray& command);
+
     /// Performs path painting
     /// \param path Path, which should be drawn (can be emtpy - in that case nothing happens)
     /// \param stroke Stroke the path

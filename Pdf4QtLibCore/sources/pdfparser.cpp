@@ -41,7 +41,8 @@ PDFLexicalAnalyzer::PDFLexicalAnalyzer(const char* begin, const char* end) :
     m_current(begin),
     m_end(end),
     m_tokenizingPostScriptFunction(false),
-    m_namesAndCommandsReferenceInput(false)
+    m_namesAndCommandsReferenceInput(false),
+    m_commandsReferenceInput(false)
 {
 
 }
@@ -77,15 +78,39 @@ PDFLexicalAnalyzer::Token PDFLexicalAnalyzer::fetch()
             // real number overflow, then error is reported. This behaviour is according to the PDF 1.7 specification,
             // chapter 3.2.2.
 
-            // First, treat special characters
-            bool positive = fetchChar('+');
-            bool negative = fetchChar('-');
-            bool dot = fetchChar('.');
+            // First, treat special characters. The number is scanned by a local
+            // pointer (numbers are most of the tokens of a page content).
+            const char* current = m_current;
+            const char* const end = m_end;
+
+            bool positive = false;
+            bool negative = false;
+            bool dot = false;
+
+            if (current != end && *current == '+')
+            {
+                positive = true;
+                ++current;
+            }
+
+            if (current != end && *current == '-')
+            {
+                negative = true;
+                ++current;
+            }
+
+            if (current != end && *current == '.')
+            {
+                dot = true;
+                ++current;
+            }
+
             bool treatAsReal = dot;
             bool atLeastOneDigit = false;
 
-            if (isAtEnd())
+            if (current == end)
             {
+                m_current = current;
                 error(tr("Expected a number, but end of stream reached."));
             }
 
@@ -94,20 +119,15 @@ PDFLexicalAnalyzer::Token PDFLexicalAnalyzer::fetch()
             PDFReal scale = 0.1;
 
             // Now, we can only have digits and a single dot
-            while (!isAtEnd())
+            while (current != end)
             {
-                if (!dot && fetchChar('.'))
-                {
-                    // Entering real mode
-                    dot = true;
-                    treatAsReal = true;
-                    real = integer;
-                }
-                else if (std::isdigit(static_cast<unsigned char>(lookChar())))
+                const char character = *current;
+
+                if (character >= '0' && character <= '9')
                 {
                     atLeastOneDigit = true;
-                    PDFInteger digit = lookChar() - '0';
-                    ++m_current;
+                    PDFInteger digit = character - '0';
+                    ++current;
 
                     if (!treatAsReal)
                     {
@@ -136,13 +156,21 @@ PDFLexicalAnalyzer::Token PDFLexicalAnalyzer::fetch()
                         }
                     }
                 }
-                else if (lookChar() == '-')
+                else if (!dot && character == '.')
+                {
+                    // Entering real mode
+                    ++current;
+                    dot = true;
+                    treatAsReal = true;
+                    real = integer;
+                }
+                else if (character == '-')
                 {
                     // Minus sign in the middle of the number is ignored, as other PDF readers
                     // do. Some producers write malformed numbers like "0.00-90" (issue #223).
-                    ++m_current;
+                    ++current;
                 }
-                else if (isWhitespace(lookChar()) || isDelimiter(lookChar()))
+                else if (isWhitespace(character) || isDelimiter(character))
                 {
                     // Whitespace appeared - whitespaces/delimiters delimits tokens - break
                     break;
@@ -150,9 +178,12 @@ PDFLexicalAnalyzer::Token PDFLexicalAnalyzer::fetch()
                 else
                 {
                     // Another character other than dot and digit appeared - this is an error
-                    error(tr("Invalid format of number. Character '%1' appeared.").arg(lookChar()));
+                    m_current = current;
+                    error(tr("Invalid format of number. Character '%1' appeared.").arg(character));
                 }
             }
+
+            m_current = current;
 
             // Now, we have scanned whole token number, check for errors.
             if (positive && negative)
@@ -177,7 +208,7 @@ PDFLexicalAnalyzer::Token PDFLexicalAnalyzer::fetch()
                 real = -real;
             }
 
-            return !treatAsReal ? Token(TokenType::Integer, QVariant(static_cast<qint64>(integer))) : Token(TokenType::Real, real);
+            return !treatAsReal ? Token(TokenType::Integer, integer) : Token(TokenType::Real, real);
         }
 
         case CHAR_LEFT_BRACKET:
@@ -481,6 +512,11 @@ PDFLexicalAnalyzer::Token PDFLexicalAnalyzer::fetch()
                 }
                 else
                 {
+                    if (m_commandsReferenceInput)
+                    {
+                        return Token(TokenType::Command, QByteArray::fromRawData(commandBegin, std::distance(commandBegin, m_current)));
+                    }
+
                     return Token(TokenType::Command, createByteArray(commandBegin, m_current));
                 }
             }
@@ -520,29 +556,23 @@ void PDFLexicalAnalyzer::seek(PDFInteger offset)
 
 void PDFLexicalAnalyzer::skipWhitespaceAndComments()
 {
-    bool isComment = false;
+    const char* current = m_current;
+    const char* const end = m_end;
 
-    while (m_current != m_end)
+    while (current != end)
     {
-        if (isComment)
+        if (isWhitespace(*current))
         {
-            // Comment ends at end of line
-            if (*m_current == CHAR_CARRIAGE_RETURN || *m_current == CHAR_LINE_FEED)
+            ++current;
+        }
+        else if (*current == CHAR_PERCENT)
+        {
+            // Comment ends at end of line (the end of line itself is a whitespace)
+            ++current;
+            while (current != end && *current != CHAR_CARRIAGE_RETURN && *current != CHAR_LINE_FEED)
             {
-                isComment = false;
+                ++current;
             }
-
-            // Commented character - step to the next character
-            ++m_current;
-        }
-        else if (*m_current == CHAR_PERCENT)
-        {
-            isComment = true;
-            ++m_current;
-        }
-        else if (isWhitespace(*m_current))
-        {
-            ++m_current;
         }
         else
         {
@@ -550,6 +580,8 @@ void PDFLexicalAnalyzer::skipWhitespaceAndComments()
             break;
         }
     }
+
+    m_current = current;
 }
 
 void PDFLexicalAnalyzer::skipStreamStart()

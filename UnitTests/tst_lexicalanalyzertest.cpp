@@ -67,6 +67,9 @@ private slots:
     void test_flat_map();
     void test_lzw_filter();
     void test_flate_filter_truncated();
+    void test_flate_filter_sizes();
+    void test_token_values();
+    void test_commands_reference_input();
     void test_sampled_function();
     void test_exponential_function();
     void test_stitching_function();
@@ -668,6 +671,186 @@ void LexicalAnalyzerTest::test_flate_filter_truncated()
 
     QByteArray decodedTruncated = filter.apply(truncated, objectFetcher, pdf::PDFObject(), nullptr);
     QCOMPARE(decodedTruncated, valid);
+}
+
+void LexicalAnalyzerTest::test_flate_filter_sizes()
+{
+    // Data are decompressed directly into the result, which grows, when it is too
+    // small. Test empty data, data smaller than the first buffer, data with a low
+    // and with a very high compression ratio (the buffer grows many times).
+    std::vector<QByteArray> inputs;
+    inputs.push_back(QByteArray());
+    inputs.push_back(QByteArray("q 1 0 0 1 0 0 cm Q"));
+    inputs.push_back(QByteArray(4096, 'a'));
+    inputs.push_back(QByteArray(4097, 'a'));
+    inputs.push_back(QByteArray(10 * 1024 * 1024, '\0'));
+
+    QByteArray random;
+    quint32 state = 12345;
+    for (int i = 0; i < 300000; ++i)
+    {
+        state = state * 1664525u + 1013904223u;
+        random.push_back(char(state >> 24));
+    }
+    inputs.push_back(random);
+
+    QByteArray content;
+    for (int i = 0; i < 200000; ++i)
+    {
+        content += QByteArray::number(i * 0.25) + " " + QByteArray::number(i) + " m 10.5 20.25 l S\n";
+    }
+    inputs.push_back(content);
+
+    pdf::PDFFlateDecodeFilter filter;
+    auto objectFetcher = [](const pdf::PDFObject& object) -> const pdf::PDFObject& { return object; };
+
+    for (const QByteArray& input : inputs)
+    {
+        const QByteArray compressed = pdf::PDFFlateDecodeFilter::compress(input);
+        const QByteArray uncompressed = filter.apply(compressed, objectFetcher, pdf::PDFObject(), nullptr);
+        QCOMPARE(uncompressed.size(), input.size());
+        QVERIFY(uncompressed == input);
+
+        // Not much more memory is held, than is needed
+        QVERIFY(uncompressed.capacity() <= input.size() + input.size() / 4 + 4096);
+    }
+
+    // Garbage is an error
+    QVERIFY_EXCEPTION_THROWN(filter.apply(QByteArray("This is not a flate stream."), objectFetcher, pdf::PDFObject(), nullptr), pdf::PDFException);
+}
+
+void LexicalAnalyzerTest::test_token_values()
+{
+    using Token = pdf::PDFLexicalAnalyzer::Token;
+    using Type = pdf::PDFLexicalAnalyzer::TokenType;
+
+    // No value
+    pdf::PDFLexicalTokenData empty;
+    QVERIFY(!empty.isValid());
+    QCOMPARE(empty.typeId(), int(QMetaType::UnknownType));
+    QCOMPARE(empty.toLongLong(), qint64(0));
+    QCOMPARE(empty.toDouble(), 0.0);
+    QVERIFY(!empty.toBool());
+    QVERIFY(empty.toByteArray().isEmpty());
+    QVERIFY(empty.toString().isEmpty());
+    QVERIFY(empty == pdf::PDFLexicalTokenData());
+
+    // Boolean
+    pdf::PDFLexicalTokenData boolean(true);
+    QVERIFY(boolean.isValid());
+    QCOMPARE(boolean.typeId(), int(QMetaType::Bool));
+    QVERIFY(boolean.toBool());
+    QVERIFY(boolean.value<bool>());
+    QCOMPARE(boolean.toLongLong(), qint64(1));
+    QCOMPARE(boolean.toString(), QString("true"));
+    QVERIFY(boolean == pdf::PDFLexicalTokenData(true));
+    QVERIFY(boolean != pdf::PDFLexicalTokenData(false));
+    QVERIFY(boolean != pdf::PDFLexicalTokenData(1));
+
+    // Integer (of any integral type)
+    pdf::PDFLexicalTokenData integer(pdf::PDFInteger(-123456789012345));
+    QCOMPARE(integer.typeId(), int(QMetaType::LongLong));
+    QCOMPARE(integer.toLongLong(), qint64(-123456789012345));
+    QCOMPARE(integer.value<pdf::PDFInteger>(), pdf::PDFInteger(-123456789012345));
+    QCOMPARE(integer.value<pdf::PDFReal>(), -123456789012345.0);
+    QCOMPARE(integer.toDouble(), -123456789012345.0);
+    QVERIFY(integer.toBool());
+    QCOMPARE(integer.toString(), QString("-123456789012345"));
+    QCOMPARE(pdf::PDFLexicalTokenData(3).toInt(), 3);
+    QCOMPARE(pdf::PDFLexicalTokenData(size_t(7)).toInt(), 7);
+    QVERIFY(pdf::PDFLexicalTokenData(3) == pdf::PDFLexicalTokenData(qint64(3)));
+    QVERIFY(pdf::PDFLexicalTokenData(3) != pdf::PDFLexicalTokenData(4));
+    QVERIFY(pdf::PDFLexicalTokenData(3) != pdf::PDFLexicalTokenData(3.0));
+    QVERIFY(!pdf::PDFLexicalTokenData(0).toBool());
+
+    // Real number
+    pdf::PDFLexicalTokenData real(2.5);
+    QCOMPARE(real.typeId(), int(QMetaType::Double));
+    QCOMPARE(real.toDouble(), 2.5);
+    QCOMPARE(real.value<pdf::PDFReal>(), 2.5);
+    QCOMPARE(real.toLongLong(), qint64(3));
+    QVERIFY(real.toBool());
+    QCOMPARE(real.toString(), QString("2.5"));
+    QVERIFY(real == pdf::PDFLexicalTokenData(2.5));
+    QVERIFY(real != pdf::PDFLexicalTokenData(2.25));
+    QVERIFY(real.toByteArray().isEmpty());
+
+    // Byte array
+    pdf::PDFLexicalTokenData byteArray(QByteArray("Name"));
+    QCOMPARE(byteArray.typeId(), int(QMetaType::QByteArray));
+    QCOMPARE(byteArray.toByteArray(), QByteArray("Name"));
+    QCOMPARE(byteArray.getByteArray(), QByteArray("Name"));
+    QCOMPARE(byteArray.value<QByteArray>(), QByteArray("Name"));
+    QCOMPARE(byteArray.toString(), QString("Name"));
+    QCOMPARE(byteArray.toLongLong(), qint64(0));
+    QVERIFY(byteArray == pdf::PDFLexicalTokenData(QByteArray("Name")));
+    QVERIFY(byteArray != pdf::PDFLexicalTokenData(QByteArray("Other")));
+    QVERIFY(byteArray != empty);
+    QVERIFY(pdf::PDFLexicalTokenData(QByteArray()).isValid());
+
+    // Copy and assignment
+    pdf::PDFLexicalTokenData copy = byteArray;
+    QVERIFY(copy == byteArray);
+    copy = real;
+    QVERIFY(copy == real);
+    QVERIFY(copy.toByteArray().isEmpty());
+    copy = QByteArray("Assigned");
+    QCOMPARE(copy.toByteArray(), QByteArray("Assigned"));
+
+    // Tokens
+    QVERIFY(Token(Type::Integer, 5) == Token(Type::Integer, 5));
+    QVERIFY(!(Token(Type::Integer, 5) == Token(Type::Real, 5)));
+    QVERIFY(!(Token(Type::Integer, 5) == Token(Type::Integer, 6)));
+    QVERIFY(Token(Type::Name, QByteArray("A")) == Token(Type::Name, QByteArray("A")));
+    QVERIFY(!(Token(Type::Name, QByteArray("A")) == Token(Type::Command, QByteArray("A"))));
+    QVERIFY(Token(Type::Null) == Token(Type::Null));
+}
+
+void LexicalAnalyzerTest::test_commands_reference_input()
+{
+    using Type = pdf::PDFLexicalAnalyzer::TokenType;
+
+    const QByteArray content("/Name 1.5 re (text) BT true unknownCommand");
+
+    for (const bool isReferencingInput : { false, true })
+    {
+        pdf::PDFLexicalAnalyzer analyzer(content.constBegin(), content.constEnd());
+        if (isReferencingInput)
+        {
+            analyzer.setCommandsReferenceInput();
+        }
+
+        std::vector<pdf::PDFLexicalAnalyzer::Token> tokens;
+        while (!analyzer.isAtEnd())
+        {
+            tokens.push_back(analyzer.fetch());
+        }
+
+        QCOMPARE(tokens.size(), size_t(7));
+        QCOMPARE(tokens[0].type, Type::Name);
+        QCOMPARE(tokens[0].data.toByteArray(), QByteArray("Name"));
+        QCOMPARE(tokens[1].type, Type::Real);
+        QCOMPARE(tokens[2].type, Type::Command);
+        QCOMPARE(tokens[2].data.toByteArray(), QByteArray("re"));
+        QCOMPARE(tokens[3].type, Type::String);
+        QCOMPARE(tokens[3].data.toByteArray(), QByteArray("text"));
+        QCOMPARE(tokens[4].type, Type::Command);
+        QCOMPARE(tokens[4].data.toByteArray(), QByteArray("BT"));
+        QCOMPARE(tokens[5].type, Type::Boolean);
+        QCOMPARE(tokens[6].type, Type::Command);
+        QCOMPARE(tokens[6].data.toByteArray(), QByteArray("unknownCommand"));
+
+        // Commands refer to the content only, when it is requested; names and strings own their data
+        const char* commandData = tokens[2].data.getByteArray().constData();
+        const bool isInContent = commandData >= content.constBegin() && commandData < content.constEnd();
+        QCOMPARE(isInContent, isReferencingInput);
+
+        for (const size_t index : { size_t(0), size_t(3) })
+        {
+            const char* data = tokens[index].data.getByteArray().constData();
+            QVERIFY(data < content.constBegin() || data >= content.constEnd());
+        }
+    }
 }
 
 void LexicalAnalyzerTest::test_sampled_function()

@@ -32,6 +32,7 @@
 #include <QVarLengthArray>
 
 #include <set>
+#include <type_traits>
 #include <functional>
 
 namespace pdf
@@ -80,6 +81,157 @@ constexpr const char* PDF_REFERENCE_COMMAND = "R";
 constexpr const char* PDF_STREAM_START_COMMAND = "stream";
 constexpr const char* PDF_STREAM_END_COMMAND = "endstream";
 
+/// Value of a token of the lexical analyzer. It is a boolean, an integer, a real
+/// number or a byte array (string, name, command), or nothing. It replaces QVariant
+/// with the same functions, because millions of tokens are created, when the content
+/// of a page with a large drawing is processed, and the variant was a significant
+/// part of the processing time.
+class PDFLexicalTokenData
+{
+public:
+    inline PDFLexicalTokenData() = default;
+    inline PDFLexicalTokenData(bool value) : m_type(QMetaType::Bool) { m_value.boolean = value; }
+    template<typename T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>, int> = 0>
+    inline PDFLexicalTokenData(T value) : m_type(QMetaType::LongLong) { m_value.integer = static_cast<qint64>(value); }
+    inline PDFLexicalTokenData(double value) : m_type(QMetaType::Double) { m_value.real = value; }
+    inline PDFLexicalTokenData(QByteArray value) : m_type(QMetaType::QByteArray), m_byteArray(qMove(value)) { }
+    PDFLexicalTokenData(const void*) = delete;
+
+    /// Returns type of the value (QMetaType::Bool, QMetaType::LongLong, QMetaType::Double,
+    /// QMetaType::QByteArray, or QMetaType::UnknownType, if the token has no value)
+    inline int typeId() const { return m_type; }
+    inline bool isValid() const { return m_type != QMetaType::UnknownType; }
+
+    inline bool toBool() const
+    {
+        switch (m_type)
+        {
+            case QMetaType::Bool:
+                return m_value.boolean;
+            case QMetaType::LongLong:
+                return m_value.integer != 0;
+            case QMetaType::Double:
+                return m_value.real != 0.0;
+            default:
+                return false;
+        }
+    }
+
+    inline qint64 toLongLong() const
+    {
+        switch (m_type)
+        {
+            case QMetaType::Bool:
+                return m_value.boolean ? 1 : 0;
+            case QMetaType::LongLong:
+                return m_value.integer;
+            case QMetaType::Double:
+                return qRound64(m_value.real);
+            default:
+                return 0;
+        }
+    }
+
+    inline int toInt() const { return static_cast<int>(toLongLong()); }
+
+    inline double toDouble() const
+    {
+        switch (m_type)
+        {
+            case QMetaType::Bool:
+                return m_value.boolean ? 1.0 : 0.0;
+            case QMetaType::LongLong:
+                return static_cast<double>(m_value.integer);
+            case QMetaType::Double:
+                return m_value.real;
+            default:
+                return 0.0;
+        }
+    }
+
+    /// Returns the byte array, or an empty byte array, if the value is not a byte array
+    inline QByteArray toByteArray() const { return m_byteArray; }
+
+    /// Returns the byte array without a copy. The reference is valid as long as the token.
+    inline const QByteArray& getByteArray() const { return m_byteArray; }
+
+    /// Returns text of the value (for messages)
+    QString toString() const
+    {
+        switch (m_type)
+        {
+            case QMetaType::Bool:
+                return m_value.boolean ? QStringLiteral("true") : QStringLiteral("false");
+            case QMetaType::LongLong:
+                return QString::number(m_value.integer);
+            case QMetaType::Double:
+                return QString::number(m_value.real, 'g', 17);
+            case QMetaType::QByteArray:
+                return QString::fromLatin1(m_byteArray);
+            default:
+                return QString();
+        }
+    }
+
+    template<typename T>
+    inline T value() const
+    {
+        if constexpr (std::is_same_v<T, bool>)
+        {
+            return toBool();
+        }
+        else if constexpr (std::is_integral_v<T>)
+        {
+            return static_cast<T>(toLongLong());
+        }
+        else if constexpr (std::is_floating_point_v<T>)
+        {
+            return static_cast<T>(toDouble());
+        }
+        else
+        {
+            static_assert(std::is_same_v<T, QByteArray>, "Unsupported type of the token value.");
+            return m_byteArray;
+        }
+    }
+
+    inline bool operator==(const PDFLexicalTokenData& other) const
+    {
+        if (m_type != other.m_type)
+        {
+            return false;
+        }
+
+        switch (m_type)
+        {
+            case QMetaType::Bool:
+                return m_value.boolean == other.m_value.boolean;
+            case QMetaType::LongLong:
+                return m_value.integer == other.m_value.integer;
+            case QMetaType::Double:
+                return m_value.real == other.m_value.real;
+            case QMetaType::QByteArray:
+                return m_byteArray == other.m_byteArray;
+            default:
+                return true;
+        }
+    }
+
+    inline bool operator!=(const PDFLexicalTokenData& other) const { return !(*this == other); }
+
+private:
+    union Value
+    {
+        bool boolean;
+        qint64 integer = 0;
+        double real;
+    };
+
+    int m_type = QMetaType::UnknownType;
+    Value m_value;
+    QByteArray m_byteArray;
+};
+
 class PDF4QTLIBCORESHARED_EXPORT PDFLexicalAnalyzer
 {
     Q_GADGET
@@ -110,7 +262,7 @@ public:
     {
         explicit Token() : type(TokenType::EndOfFile) { }
         explicit Token(TokenType type) : type(type) { }
-        explicit Token(TokenType type, QVariant data) : type(type), data(qMove(data)) { }
+        explicit Token(TokenType type, PDFLexicalTokenData data) : type(type), data(qMove(data)) { }
 
         Token(const Token&) = default;
         Token(Token&&) = default;
@@ -121,7 +273,7 @@ public:
         bool operator==(const Token& other) const { return type == other.type && data == other.data; }
 
         TokenType type;
-        QVariant data;
+        PDFLexicalTokenData data;
     };
 
     /// Fetches a new token from the input stream. If we are at end of the input
@@ -173,6 +325,11 @@ public:
     /// valid only as long as the input data. Used by the parser, which copies the data,
     /// if they are stored in a created object.
     void setNamesAndCommandsReferenceInput() { m_namesAndCommandsReferenceInput = true; }
+
+    /// Commands are not copied, they refer to the input data. Such a command must
+    /// not be used, when the input data are released (a copy of it does not own the
+    /// data either). Names are still copied.
+    void setCommandsReferenceInput() { m_commandsReferenceInput = true; }
 
     /// Returns true, if character is a whitespace character according to the PDF 1.7 specification
     /// \param character Character to be tested
@@ -227,6 +384,7 @@ private:
     const char* m_end;
     bool m_tokenizingPostScriptFunction;
     bool m_namesAndCommandsReferenceInput;
+    bool m_commandsReferenceInput;
 };
 
 /// Parsing context. Used for example to detect cyclic reference errors.

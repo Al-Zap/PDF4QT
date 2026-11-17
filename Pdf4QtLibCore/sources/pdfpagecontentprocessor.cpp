@@ -208,14 +208,16 @@ public:
         return keys;
     }
 
-    static PDFPageContentProcessor::Operator find(const QByteArray& command)
+    /// Returns index of the operator in the array of the operators,
+    /// or OPERATOR_COUNT, if the command is not an operator.
+    static size_t findIndex(const QByteArray& command)
     {
         static constexpr std::array<uint32_t, OPERATOR_COUNT> keys = createKeys();
 
         const qsizetype length = command.size();
         if (length == 0 || length > MAXIMAL_OPERATOR_LENGTH)
         {
-            return PDFPageContentProcessor::Operator::Invalid;
+            return OPERATOR_COUNT;
         }
 
         const uint32_t key = pack(command.constData(), length);
@@ -223,11 +225,36 @@ public:
         {
             if (keys[i] == key)
             {
-                return operators[i].second;
+                return i;
             }
         }
 
-        return PDFPageContentProcessor::Operator::Invalid;
+        return OPERATOR_COUNT;
+    }
+
+    static PDFPageContentProcessor::Operator find(const QByteArray& command)
+    {
+        const size_t index = findIndex(command);
+        return index < OPERATOR_COUNT ? operators[index].second : PDFPageContentProcessor::Operator::Invalid;
+    }
+
+    /// Returns text of the operator, which owns its data. The byte arrays are created
+    /// once, so no memory is allocated for the operators of the content stream.
+    static const QByteArray& getText(size_t index)
+    {
+        static const std::array<QByteArray, OPERATOR_COUNT> texts = createTexts();
+        return texts[index];
+    }
+
+private:
+    static std::array<QByteArray, OPERATOR_COUNT> createTexts()
+    {
+        std::array<QByteArray, OPERATOR_COUNT> texts;
+        for (size_t i = 0; i < OPERATOR_COUNT; ++i)
+        {
+            texts[i] = QByteArray(operators[i].first);
+        }
+        return texts;
     }
 };
 
@@ -656,6 +683,10 @@ void PDFPageContentProcessor::processContent(const QByteArray& content)
 {
     PDFLexicalAnalyzer parser(content.constBegin(), content.constEnd());
 
+    // The commands refer to the content, they are not copied. A command passed
+    // further is replaced by a byte array, which owns its data.
+    parser.setCommandsReferenceInput();
+
     while (!parser.isAtEnd() && !isProcessingCancelled())
     {
         bool tokenFetched = false;
@@ -670,9 +701,9 @@ void PDFPageContentProcessor::processContent(const QByteArray& content)
             {
                 case PDFLexicalAnalyzer::TokenType::Command:
                 {
-                    QByteArray command = token.data.toByteArray();
+                    const QByteArray& command = token.data.getByteArray();
 
-                    if (command == "BI")
+                    if (command.size() == 2 && command[0] == 'B' && command[1] == 'I')
                     {
                         // Strategy: We will try to find position of BI/ID/EI in the stream. If we can determine
                         // length of the stream explicitly, then we use explicit length. We also create a PDFObject
@@ -821,7 +852,15 @@ void PDFPageContentProcessor::processContent(const QByteArray& content)
                     else
                     {
                         // Process the command, then clear the operand stack
-                        processCommand(command);
+                        const size_t operatorIndex = PDFPageContentProcessorOperatorHelper::findIndex(command);
+                        if (operatorIndex < PDFPageContentProcessorOperatorHelper::OPERATOR_COUNT)
+                        {
+                            processCommand(operators[operatorIndex].second, PDFPageContentProcessorOperatorHelper::getText(operatorIndex));
+                        }
+                        else
+                        {
+                            processCommand(Operator::Invalid, QByteArray(command.constData(), command.size()));
+                        }
                     }
 
                     m_operands.clear();
@@ -1298,8 +1337,11 @@ void PDFPageContentProcessor::processTillingPatternPainting(const PDFTilingPatte
 void PDFPageContentProcessor::processCommand(const QByteArray& command)
 {
     // Find the command in the command array
-    const Operator op = PDFPageContentProcessorOperatorHelper::find(command);
+    processCommand(PDFPageContentProcessorOperatorHelper::find(command), command);
+}
 
+void PDFPageContentProcessor::processCommand(Operator op, const QByteArray& command)
+{
     performInterceptInstruction(op, ProcessOrder::BeforeOperation, command);
     auto callInterceptInstAtEnd = qScopeGuard([&, this](){ performInterceptInstruction(op, ProcessOrder::AfterOperation, command); });
 
