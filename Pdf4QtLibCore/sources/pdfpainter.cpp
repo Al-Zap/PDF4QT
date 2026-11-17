@@ -850,6 +850,12 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
     {
         if (context.cancelFlag && (++instructionIndex % 1024) == 0 && context.cancelFlag->load(std::memory_order_relaxed))
         {
+            // Drawing is cancelled in the middle of the page, states
+            // of the painter saved by the page must be restored.
+            for (size_t i = 0; i < cullStateStack.size(); ++i)
+            {
+                painter->restore();
+            }
             break;
         }
 

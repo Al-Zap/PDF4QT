@@ -94,6 +94,9 @@ public:
     /// Removes images of all pages, which are not in the list of pages (list must be sorted)
     void retainPages(const std::vector<PDFInteger>& pages);
 
+    /// Returns true, if an image of a page is being rasterized
+    bool hasPendingRequests() const { return !m_pending.empty(); }
+
     /// Removes all images and cancels all pending requests
     void clear();
 
@@ -109,6 +112,12 @@ public:
 
 signals:
     void imageReady();
+
+    /// Image of the whole page has been rasterized
+    /// \param pageIndex Page index
+    /// \param image Image of the page
+    /// \param pageToImage Maps page points to the pixels of the image
+    void pageRasterized(pdf::PDFInteger pageIndex, const QImage& image, const QTransform& pageToImage);
 
 private:
     using CancelFlag = std::shared_ptr<std::atomic_bool>;
@@ -131,6 +140,7 @@ private:
         QRectF cropBox;
         Key key;
         QRect region;                       ///< Rasterized region in the logical pixels of the placed page
+        bool isWholePage = false;           ///< Region is the whole page
         CancelFlag cancelFlag;
     };
 

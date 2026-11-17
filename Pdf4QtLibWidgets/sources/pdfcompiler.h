@@ -35,6 +35,7 @@
 
 #include <atomic>
 #include <memory>
+#include <set>
 
 template <class Key, class T>
 class QCache;
@@ -123,6 +124,11 @@ public:
         /// displayed in the draw widget anymore (see \p setActivePages).
         Viewport,
 
+        /// Compile the page for a later use (page near the displayed pages). It is
+        /// cancelled as in the mode \p Viewport. Page, which is known to be larger
+        /// than the whole cache, is not compiled - it is compiled, when it is displayed.
+        Prefetch,
+
         /// Compile the page. Compilation is never cancelled by the changes
         /// of the displayed area. Use this for consumers, which are independent
         /// on the main draw widget viewport (for example page thumbnails).
@@ -162,6 +168,14 @@ public:
     /// \param activePages Sorted vector of active pages
     void setActivePages(const std::vector<PDFInteger>& activePages);
 
+    /// Sets the pages displayed by the page view. If the page view waits for them (they
+    /// are being compiled or rasterized), then only these pages are compiled and the
+    /// other pages (prefetched pages, thumbnails) wait, so the displayed pages get the
+    /// whole processor.
+    /// \param displayedPages Displayed pages (sorted)
+    /// \param isWaiting Page view waits for the displayed pages
+    void setDisplayedPages(const std::vector<PDFInteger>& displayedPages, bool isWaiting);
+
     /// Is operation being cancelled? This is the "global" cancellation, i.e.
     /// the whole engine is being stopped. Cancellation of a single page
     /// is handled by \p PDFPageCompilerOperationControl.
@@ -180,9 +194,10 @@ private:
     struct CompileTask
     {
         CompileTask() = default;
-        CompileTask(PDFInteger pageIndex, bool isCancellable) :
+        CompileTask(PDFInteger pageIndex, bool isCancellable, bool isPrefetch) :
             pageIndex(pageIndex),
             isCancellable(isCancellable),
+            isPrefetch(isPrefetch),
             cancelFlag(std::make_shared<std::atomic_bool>(false))
         {
 
@@ -200,6 +215,9 @@ private:
         /// Can this task be cancelled, when the page leaves the viewport? Tasks
         /// created for consumers independent on the viewport (thumbnails) can't.
         bool isCancellable = true;
+
+        /// Is the page compiled only for a later use (nobody waits for it)?
+        bool isPrefetch = false;
 
         PDFPageCompilerCancelFlag cancelFlag;
         PDFPrecompiledPage precompiledPage;
@@ -231,6 +249,16 @@ private:
 
     /// Currently active (visible / prefetched) pages. Protected by mutex.
     std::vector<PDFInteger> m_activePages;
+
+    /// Pages, whose compiled form is larger than the whole cache. Such page is held
+    /// in the cache alone, when it is displayed, and it is not prefetched.
+    std::set<PDFInteger> m_oversizedPages;
+
+    /// Pages displayed by the page view. Protected by mutex.
+    std::vector<PDFInteger> m_displayedPages;
+
+    /// Page view waits for the displayed pages, other pages are not compiled. Protected by mutex.
+    bool m_isWaitingForDisplayedPages = false;
 };
 
 /// Operation control of a single page compilation. Compilation of a page is
