@@ -39,10 +39,14 @@ add_library(Pdf4QtLibGui SHARED
     pdfprogramcontroller.h
     pdfrecentfilemanager.cpp
     pdfrecentfilemanager.h
+    pdfrecoverymanager.cpp
+    pdfrecoverymanager.h
     pdfrendertoimagesdialog.cpp
     pdfrendertoimagesdialog.h
     pdfsendmail.cpp
     pdfsendmail.h
+    pdftoolbarslots.cpp
+    pdftoolbarslots.h
     pdfsidebarwidget.cpp
     pdfsidebarwidget.h
     pdftexttospeech.cpp

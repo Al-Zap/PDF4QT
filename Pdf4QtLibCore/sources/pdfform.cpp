@@ -26,6 +26,11 @@
 #include "pdfpainterutils.h"
 #include "pdfdbgheap.h"
 
+#include <algorithm>
+#include <limits>
+#include <map>
+#include <set>
+
 namespace pdf
 {
 
@@ -384,6 +389,17 @@ PDFFormFieldPointer PDFFormField::parse(const PDFObjectStorage* storage, PDFObje
                     }
 
                     formFieldChoice->m_options.emplace_back(qMove(option));
+                }
+            }
+
+            // Jakub Melka: a widget annotation, which is a kid of the choice field, is parsed as
+            // a child field (it has the Parent entry). It has no options of its own, they are
+            // defined by the field, so the options are taken from the parent field.
+            if (!fieldDictionary->hasKey("Opt"))
+            {
+                if (const PDFFormFieldChoice* parentChoiceField = dynamic_cast<const PDFFormFieldChoice*>(parentField))
+                {
+                    formFieldChoice->m_options = parentChoiceField->getOptions();
                 }
             }
 
@@ -851,6 +867,385 @@ PDFFormWidgets PDFFormManager::getWidgets() const
     apply(functor);
 
     return result;
+}
+
+PDFFormWidgets PDFFormManager::getWidgetsInTabOrder() const
+{
+    PDFFormWidgets widgets = getWidgets();
+
+    if (!m_document || widgets.size() < 2)
+    {
+        return widgets;
+    }
+
+    struct TabOrderKey
+    {
+        size_t pageIndex = std::numeric_limits<size_t>::max();
+        size_t orderOnPage = std::numeric_limits<size_t>::max();
+    };
+
+    // Position of each widget annotation on the pages (page index and index in Annots)
+    std::map<PDFObjectReference, TabOrderKey> annotationPositions;
+    const PDFCatalog* catalog = m_document->getCatalog();
+    const size_t pageCount = catalog->getPageCount();
+    for (size_t pageIndex = 0; pageIndex < pageCount; ++pageIndex)
+    {
+        const PDFPage* page = catalog->getPage(pageIndex);
+        const std::vector<PDFObjectReference>& annotations = page->getAnnotations();
+        for (size_t annotationIndex = 0; annotationIndex < annotations.size(); ++annotationIndex)
+        {
+            annotationPositions.emplace(annotations[annotationIndex], TabOrderKey{ pageIndex, annotationIndex });
+        }
+    }
+
+    std::vector<TabOrderKey> keys(widgets.size());
+    std::map<size_t, std::vector<size_t>> widgetsOnPages;
+    std::vector<size_t> widgetsWithoutPage;
+    for (size_t i = 0; i < widgets.size(); ++i)
+    {
+        auto it = annotationPositions.find(widgets[i].getWidget());
+        if (it != annotationPositions.cend())
+        {
+            keys[i] = it->second;
+            widgetsOnPages[it->second.pageIndex].push_back(i);
+        }
+        else
+        {
+            widgetsWithoutPage.push_back(i);
+        }
+    }
+
+    PDFFormWidgets result;
+    result.reserve(widgets.size());
+
+    for (auto& [pageIndex, indices] : widgetsOnPages)
+    {
+        // Annotation order (the order of the Annots array) is the default
+        std::stable_sort(indices.begin(), indices.end(), [&keys](size_t l, size_t r) { return keys[l].orderOnPage < keys[r].orderOnPage; });
+
+        const PageTabOrder tabOrder = catalog->getPage(pageIndex)->getTabOrder();
+        if (tabOrder == PageTabOrder::Row || tabOrder == PageTabOrder::Column)
+        {
+            const bool isRow = tabOrder == PageTabOrder::Row;
+
+            std::vector<QRectF> rectangles(widgets.size());
+            for (size_t index : indices)
+            {
+                rectangles[index] = getWidgetRectangle(widgets[index]).normalized();
+            }
+
+            // Primary axis: rows go from top to bottom (PDF y axis points up),
+            // columns go from left to right.
+            auto primaryStart = [&](size_t index) { return isRow ? -rectangles[index].bottom() : rectangles[index].left(); };
+            auto primaryEnd = [&](size_t index) { return isRow ? -rectangles[index].top() : rectangles[index].right(); };
+            auto primaryCenter = [&](size_t index) { return (primaryStart(index) + primaryEnd(index)) * 0.5; };
+            auto secondary = [&](size_t index) { return isRow ? rectangles[index].left() : -rectangles[index].bottom(); };
+
+            std::stable_sort(indices.begin(), indices.end(), [&](size_t l, size_t r) { return primaryStart(l) < primaryStart(r); });
+
+            // Group widgets into rows (columns). Widget belongs to the current row,
+            // if its center lies inside the extent of the first widget of the row.
+            std::vector<size_t> ordered;
+            ordered.reserve(indices.size());
+            auto rowBegin = indices.begin();
+            while (rowBegin != indices.end())
+            {
+                const PDFReal rowEnd = primaryEnd(*rowBegin);
+                auto rowLast = std::find_if(std::next(rowBegin), indices.end(), [&](size_t index) { return primaryCenter(index) > rowEnd; });
+                std::vector<size_t> row(rowBegin, rowLast);
+                std::stable_sort(row.begin(), row.end(), [&](size_t l, size_t r) { return secondary(l) < secondary(r); });
+                ordered.insert(ordered.end(), row.cbegin(), row.cend());
+                rowBegin = rowLast;
+            }
+
+            indices = std::move(ordered);
+        }
+
+        for (size_t index : indices)
+        {
+            result.push_back(widgets[index]);
+        }
+    }
+
+    for (size_t index : widgetsWithoutPage)
+    {
+        result.push_back(widgets[index]);
+    }
+
+    return result;
+}
+
+static PDFObject createFlattenedContentStream(PDFDictionaryBuilder dictionary, QByteArray content)
+{
+    dictionary.setEntry(PDFInplaceOrMemoryString("Length"), PDFObject::createInteger(content.size()));
+    return PDFObject::createStream(PDFStream(std::move(dictionary), std::move(content)));
+}
+
+PDFDocument PDFFormManager::createFlattenedDocument() const
+{
+    if (!m_document)
+    {
+        return PDFDocument();
+    }
+
+    if (!hasAcroForm())
+    {
+        return *m_document;
+    }
+
+    PDFDocumentBuilder builder(m_document);
+    builder.setFormManager(this);
+
+    // Resources are inheritable, after flattening of the page tree,
+    // each page has its own resources, which we can extend.
+    builder.flattenPageTree();
+
+    const PDFFormWidgets formWidgets = getWidgets();
+    std::set<PDFObjectReference> formWidgetReferences;
+    for (const PDFFormWidget& formWidget : formWidgets)
+    {
+        formWidgetReferences.insert(formWidget.getWidget());
+    }
+
+    // Make sure, that each widget has an up-to-date appearance stream
+    const bool needAppearances = m_form.isAppearanceUpdateNeeded();
+    for (const PDFFormWidget& formWidget : formWidgets)
+    {
+        const PDFFormField* formField = formWidget.getParent();
+        const bool isTextOrChoice = formField && (formField->getFieldType() == PDFFormField::FieldType::Text ||
+                                                  formField->getFieldType() == PDFFormField::FieldType::Choice);
+
+        PDFAnnotationPtr annotation = PDFAnnotation::parse(builder.getStorage(), formWidget.getWidget());
+        if (!annotation)
+        {
+            continue;
+        }
+
+        const bool hasNormalAppearance = !annotation->getAppearanceStreams().getAppearanceStates(PDFAppeareanceStreams::Appearance::Normal).isEmpty() ||
+                                         !annotation->getAppearanceStreams().getAppearance(PDFAppeareanceStreams::Appearance::Normal).isNull();
+
+        if (isTextOrChoice && (needAppearances || !hasNormalAppearance))
+        {
+            builder.updateAnnotationAppearanceStreams(formWidget.getWidget());
+        }
+        else if (!hasNormalAppearance)
+        {
+            builder.updateAnnotationAppearanceStreams(formWidget.getWidget(), true);
+        }
+    }
+
+    const PDFObjectStorage* storage = builder.getStorage();
+    PDFDocumentDataLoaderDecorator loader(storage);
+
+    for (const PDFObjectReference pageReference : builder.getPages())
+    {
+        // Objects are copied (the content is shared), because objects
+        // in the storage can be relocated, when a new object is added.
+        const PDFObject pageObject = storage->getObjectByReference(pageReference);
+        const PDFDictionary* pageDictionary = storage->getDictionaryFromObject(pageObject);
+        if (!pageDictionary)
+        {
+            continue;
+        }
+
+        const std::vector<PDFObjectReference> annotations = loader.readReferenceArrayFromDictionary(pageDictionary, "Annots");
+        std::vector<PDFObjectReference> keptAnnotations;
+        keptAnnotations.reserve(annotations.size());
+
+        QByteArray flattenedContent;
+        PDFDictionaryBuilder xobjects;
+        if (const PDFDictionary* resourcesDictionary = storage->getDictionaryFromObject(pageDictionary->get("Resources")))
+        {
+            if (const PDFDictionary* xobjectDictionary = storage->getDictionaryFromObject(resourcesDictionary->get("XObject")))
+            {
+                xobjects = PDFDictionaryBuilder(*xobjectDictionary);
+            }
+        }
+
+        bool isPageChanged = false;
+        int xobjectIndex = 0;
+
+        for (const PDFObjectReference annotationReference : annotations)
+        {
+            const PDFDictionary* annotationDictionary = storage->getDictionaryFromObject(storage->getObjectByReference(annotationReference));
+            const bool isWidget = formWidgetReferences.count(annotationReference) ||
+                                  (annotationDictionary && loader.readNameFromDictionary(annotationDictionary, "Subtype") == "Widget");
+
+            if (!isWidget)
+            {
+                keptAnnotations.push_back(annotationReference);
+                continue;
+            }
+
+            isPageChanged = true;
+
+            PDFAnnotationPtr annotation = PDFAnnotation::parse(storage, annotationReference);
+            if (!annotation)
+            {
+                continue;
+            }
+
+            const PDFAnnotation::Flags flags = annotation->getFlags();
+            if (flags.testFlag(PDFAnnotation::Hidden) || flags.testFlag(PDFAnnotation::NoView))
+            {
+                // Hidden widgets are not visible, so they are simply removed
+                continue;
+            }
+
+            PDFObject appearance = annotation->getAppearanceStreams().getAppearance(PDFAppeareanceStreams::Appearance::Normal, annotation->getAppearanceState());
+            if (appearance.isNull())
+            {
+                appearance = annotation->getAppearanceStreams().getAppearance(PDFAppeareanceStreams::Appearance::Normal);
+            }
+
+            // Appearance stream must be an indirect object, so we can refer to it from the resources
+            PDFObjectReference appearanceReference;
+            if (appearance.isReference())
+            {
+                appearanceReference = appearance.getReference();
+            }
+
+            const PDFObject appearanceObject = storage->getObject(appearance);
+            const PDFStream* appearanceStream = appearanceObject.isStream() ? appearanceObject.getStream() : nullptr;
+            if (!appearanceStream)
+            {
+                continue;
+            }
+
+            const PDFDictionary* appearanceDictionary = appearanceStream->getDictionary();
+            QRectF boundingBox = loader.readRectangle(appearanceDictionary->get("BBox"), QRectF()).normalized();
+            const QTransform formMatrix = loader.readMatrixFromDictionary(appearanceDictionary, "Matrix", QTransform());
+            const QRectF annotationRectangle = annotation->getRectangle().normalized();
+
+            if (!boundingBox.isValid() || annotationRectangle.isEmpty())
+            {
+                continue;
+            }
+
+            // Form XObject used in page content must have Type and Subtype entries
+            if (!appearanceReference.isValid() ||
+                loader.readNameFromDictionary(appearanceDictionary, "Subtype") != "Form")
+            {
+                PDFDictionaryBuilder dictionary(*appearanceDictionary);
+                dictionary.setEntry(PDFInplaceOrMemoryString("Type"), PDFObject::createName("XObject"));
+                dictionary.setEntry(PDFInplaceOrMemoryString("Subtype"), PDFObject::createName("Form"));
+                PDFObject formObject = PDFObject::createStream(PDFStream(std::move(dictionary), QByteArray(*appearanceStream->getContent())));
+
+                if (appearanceReference.isValid())
+                {
+                    builder.setObject(appearanceReference, std::move(formObject));
+                }
+                else
+                {
+                    appearanceReference = builder.addObject(std::move(formObject));
+                }
+            }
+
+            // PDF 2.0, 12.5.5, Algorithm: appearance streams. Bounding box transformed
+            // by the form matrix is mapped onto the annotation rectangle by matrix A.
+            const QRectF transformedBoundingBox = formMatrix.mapRect(boundingBox);
+            if (transformedBoundingBox.width() <= 0.0 || transformedBoundingBox.height() <= 0.0)
+            {
+                continue;
+            }
+
+            const PDFReal scaleX = annotationRectangle.width() / transformedBoundingBox.width();
+            const PDFReal scaleY = annotationRectangle.height() / transformedBoundingBox.height();
+            const PDFReal translateX = annotationRectangle.left() - transformedBoundingBox.left() * scaleX;
+            const PDFReal translateY = annotationRectangle.top() - transformedBoundingBox.top() * scaleY;
+
+            QByteArray xobjectName;
+            do
+            {
+                xobjectName = QByteArray("PDF4QT_Flat") + QByteArray::number(xobjectIndex++);
+            }
+            while (xobjects.hasKey(xobjectName));
+
+            xobjects.setEntry(PDFInplaceOrMemoryString(xobjectName), PDFObject::createReference(appearanceReference));
+
+            flattenedContent += QString("q %1 0 0 %2 %3 %4 cm /%5 Do Q\n")
+                                    .arg(scaleX, 0, 'f', 6)
+                                    .arg(scaleY, 0, 'f', 6)
+                                    .arg(translateX, 0, 'f', 6)
+                                    .arg(translateY, 0, 'f', 6)
+                                    .arg(QString::fromLatin1(xobjectName)).toLatin1();
+        }
+
+        if (!isPageChanged)
+        {
+            continue;
+        }
+
+        PDFDictionaryBuilder newPageDictionary(*pageDictionary);
+
+        PDFArrayBuilder newAnnotations;
+        for (const PDFObjectReference annotationReference : keptAnnotations)
+        {
+            newAnnotations.appendItem(PDFObject::createReference(annotationReference));
+        }
+
+        if (keptAnnotations.empty())
+        {
+            newPageDictionary.removeEntry("Annots");
+        }
+        else
+        {
+            newPageDictionary.setEntry(PDFInplaceOrMemoryString("Annots"), PDFObject::createArray(std::move(newAnnotations)));
+        }
+
+        if (!flattenedContent.isEmpty())
+        {
+            // Resources
+            PDFDictionaryBuilder resources;
+            if (const PDFDictionary* resourcesDictionary = storage->getDictionaryFromObject(pageDictionary->get("Resources")))
+            {
+                resources = PDFDictionaryBuilder(*resourcesDictionary);
+            }
+            resources.setEntry(PDFInplaceOrMemoryString("XObject"), PDFObject::createDictionary(std::move(xobjects)));
+            newPageDictionary.setEntry(PDFInplaceOrMemoryString("Resources"), PDFObject::createDictionary(std::move(resources)));
+
+            // Contents - the original content is enclosed in q/Q, so the
+            // graphic state left by it does not affect the flattened widgets.
+            const PDFObject contentsObject = pageDictionary->get("Contents");
+            const PDFObject dereferencedContents = storage->getObject(contentsObject);
+
+            PDFArrayBuilder contents;
+            contents.appendItem(PDFObject::createReference(builder.addObject(createFlattenedContentStream(PDFDictionaryBuilder(), QByteArray("q\n")))));
+            if (dereferencedContents.isArray())
+            {
+                const PDFArray* array = dereferencedContents.getArray();
+                for (size_t i = 0; i < array->getCount(); ++i)
+                {
+                    contents.appendItem(array->getItem(i));
+                }
+            }
+            else if (contentsObject.isReference())
+            {
+                contents.appendItem(contentsObject);
+            }
+            else if (dereferencedContents.isStream())
+            {
+                contents.appendItem(PDFObject::createReference(builder.addObject(dereferencedContents)));
+            }
+
+            QByteArray closingContent = "\nQ\n" + flattenedContent;
+            contents.appendItem(PDFObject::createReference(builder.addObject(createFlattenedContentStream(PDFDictionaryBuilder(), std::move(closingContent)))));
+            newPageDictionary.setEntry(PDFInplaceOrMemoryString("Contents"), PDFObject::createArray(std::move(contents)));
+        }
+
+        builder.setObject(pageReference, PDFObject::createDictionary(std::move(newPageDictionary)));
+    }
+
+    // Remove the interactive form from the catalog
+    const PDFObjectReference catalogReference = builder.getCatalogReference();
+    if (const PDFDictionary* catalogDictionary = storage->getDictionaryFromObject(storage->getObjectByReference(catalogReference)))
+    {
+        PDFDictionaryBuilder newCatalog(*catalogDictionary);
+        newCatalog.removeEntry("AcroForm");
+        builder.setObject(catalogReference, PDFObject::createDictionary(std::move(newCatalog)));
+    }
+
+    return builder.build();
 }
 
 void PDFFormManager::apply(const std::function<void (const PDFFormField*)>& functor) const

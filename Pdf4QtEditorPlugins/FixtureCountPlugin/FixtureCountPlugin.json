@@ -1,0 +1,7 @@
+{
+    "Name" : "FixtureCount",
+    "Author" : "Jakub Melka and Contributors",
+    "Version" : "1.0.0",
+    "License" : "MIT",
+    "Description" : "Count fixtures on lighting plans by type, with totals per sheet and for the whole set, and export to CSV."
+}

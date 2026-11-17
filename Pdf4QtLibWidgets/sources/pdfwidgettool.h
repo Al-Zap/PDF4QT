@@ -707,6 +707,11 @@ signals:
     /// \param documet Modified document
     void documentModified(pdf::PDFModifiedDocument document);
 
+    /// This signal is emitted, when a tool is activated or deactivated,
+    /// so the user interface can show the current tool (for example the
+    /// hand tool is checked, when no tool is active).
+    void activeToolChanged();
+
 private:
     void onToolActivityChanged(bool active);
     void onToolActionTriggered(bool checked);

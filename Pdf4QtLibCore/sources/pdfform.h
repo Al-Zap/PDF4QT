@@ -574,6 +574,26 @@ public:
     /// call can be expensive, because all form fields are accessed.
     PDFFormWidgets getWidgets() const;
 
+    /// Returns all form field widgets in the order, in which the Tab key
+    /// moves the keyboard focus through them. Widgets are ordered by pages,
+    /// and widgets on the same page are ordered by the tab order of the page
+    /// (entry \p Tabs of the page dictionary): rows (\p R), columns (\p C),
+    /// otherwise by the order of the annotations of the page (\p Annots),
+    /// which is the order chosen by the author of the form. Widgets, which
+    /// are not found on any page, are placed at the end in the order of the form fields.
+    PDFFormWidgets getWidgetsInTabOrder() const;
+
+    /// Creates a copy of the document with the interactive form flattened.
+    /// The normal appearance of each visible widget annotation becomes a part
+    /// of the page content, then widget annotations and the interactive form
+    /// itself are removed, so the filled values can't be changed anymore.
+    /// Other annotations (comments, markups) are kept. Missing appearance streams
+    /// (or all appearance streams of text and choice fields, when the form
+    /// requires appearance update - NeedAppearances) are generated before
+    /// flattening, so the values are always visible in the flattened document.
+    /// If document has no AcroForm, then unmodified copy is returned.
+    PDFDocument createFlattenedDocument() const;
+
     /// Applies function to all form fields present in the form,
     /// in pre-order (first application is to the parent, following
     /// calls to apply for children).

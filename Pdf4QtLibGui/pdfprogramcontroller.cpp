@@ -76,6 +76,9 @@
 #include <QToolBar>
 #include <QXmlStreamWriter>
 #include <QMenuBar>
+#include <QStatusBar>
+#include <QLocale>
+#include <QDir>
 #include <QComboBox>
 
 #include "pdfdbgheap.h"
@@ -437,6 +440,9 @@ PDFProgramController::~PDFProgramController()
     delete m_makeSearchable;
     m_makeSearchable = nullptr;
 
+    // Application is closed normally, recovery copy is not needed
+    removeRecoveryCopy(m_fileInfo.originalFileName);
+
     delete m_formManager;
     m_formManager = nullptr;
 
@@ -532,6 +538,10 @@ void PDFProgramController::initialize(Features features,
     if (QAction* action = m_actionManager->getAction(PDFActionManager::SaveAs))
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::performSaveAs);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::SaveFlattenedCopy))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::performSaveFlattenedCopy);
     }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::RotateLeft))
     {
@@ -798,6 +808,13 @@ void PDFProgramController::initActionComboBox(PDFActionComboBox* comboBox)
 void PDFProgramController::finishInitialization()
 {
     readSettings(Settings(WindowSettings | ActionSettings));
+
+    // Recovery copies of documents with unsaved changes are written periodically
+    m_recoveryTimer = new QTimer(this);
+    m_recoveryTimer->setInterval(30 * 1000);
+    connect(m_recoveryTimer, &QTimer::timeout, this, &PDFProgramController::onRecoveryTimerTimeout);
+    m_recoveryTimer->start();
+    QTimer::singleShot(0, this, &PDFProgramController::offerRecoveryOfPreviousSession);
 
     if (m_textToSpeech)
     {
@@ -1175,6 +1192,11 @@ void PDFProgramController::initializeToolManager()
         pdf::PDFCreateFreeTextTool* createFreeTextTool = new pdf::PDFCreateFreeTextTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, action, this);
         m_toolManager->addTool(createFreeTextTool);
     }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateTypewriter))
+    {
+        pdf::PDFCreateTypewriterTool* createTypewriterTool = new pdf::PDFCreateTypewriterTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, action, this);
+        m_toolManager->addTool(createTypewriterTool);
+    }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateStraightLine))
     {
         pdf::PDFCreateLineTypeTool* createStraightLineTool = new pdf::PDFCreateLineTypeTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, pdf::PDFCreateLineTypeTool::Type::Line, action, this);
@@ -1296,6 +1318,52 @@ void PDFProgramController::performSaveAs()
     }
 }
 
+void PDFProgramController::performSaveFlattenedCopy()
+{
+    if (!m_pdfDocument || !m_formManager || !askForWriteUnwrittenChanges())
+    {
+        return;
+    }
+
+    // Suggest "<name> (flattened).pdf" next to the original file
+    QFileInfo fileInfo(m_fileInfo.originalFileName);
+    QString suggestedFileName = fileInfo.dir().absoluteFilePath(tr("%1 (flattened).pdf").arg(fileInfo.completeBaseName()));
+    QString saveFileName = QFileDialog::getSaveFileName(m_mainWindow, tr("Save Flattened Copy"), suggestedFileName, tr("Portable Document (*.pdf);;All files (*.*)"));
+    if (saveFileName.isEmpty())
+    {
+        return;
+    }
+
+    if (QFileInfo(saveFileName) == fileInfo)
+    {
+        QMessageBox::critical(m_mainWindow, tr("Error"), tr("Flattened copy can't replace the opened document. Choose another file name."));
+        return;
+    }
+
+    pdf::PDFDocument flattenedDocument;
+    try
+    {
+        flattenedDocument = m_formManager->createFlattenedDocument();
+    }
+    catch (const pdf::PDFException& exception)
+    {
+        QMessageBox::critical(m_mainWindow, tr("Error"), exception.getMessage());
+        return;
+    }
+
+    // The flattened copy is written as a new file, the opened document is not changed
+    pdf::PDFDocumentWriter writer(nullptr);
+    pdf::PDFOperationResult result = writer.write(saveFileName, &flattenedDocument, true);
+    if (!result)
+    {
+        QMessageBox::critical(m_mainWindow, tr("Error"), result.getErrorMessage());
+    }
+    else
+    {
+        m_mainWindow->statusBar()->showMessage(tr("Flattened copy saved to %1").arg(QDir::toNativeSeparators(saveFileName)), 5000);
+    }
+}
+
 void PDFProgramController::performSave()
 {
     if (!askForWriteUnwrittenChanges())
@@ -1360,6 +1428,9 @@ void PDFProgramController::saveDocument(const QString& fileName)
             m_undoRedoManager->setIsCurrentSaved(true);
         }
 
+        // Changes are saved, recovery copy is not needed
+        removeRecoveryCopy(m_fileInfo.originalFileName);
+
         updateFileInfo(fileName);
         updateTitle();
 
@@ -1374,6 +1445,140 @@ void PDFProgramController::saveDocument(const QString& fileName)
     }
 
     updateFileWatcher();
+}
+
+void PDFProgramController::onRecoveryTimerTimeout()
+{
+    if (!m_pdfDocument ||
+        m_fileInfo.originalFileName.isEmpty() ||
+        !m_undoRedoManager ||
+        m_undoRedoManager->isCurrentSaved() ||
+        m_recoveryRevision == m_documentRevision ||
+        m_recoveryFuture.isRunning())
+    {
+        return;
+    }
+
+    // Document is immutable and shared, so it can be written in a worker thread
+    pdf::PDFDocumentPointer document = m_pdfDocument;
+    QString fileName = m_fileInfo.originalFileName;
+    PDFRecoveryManager recoveryManager = m_recoveryManager;
+    m_recoveryRevision = m_documentRevision;
+    m_recoveryFuture = QtConcurrent::run([recoveryManager, document, fileName]() { return recoveryManager.writeRecoveryCopy(fileName, document.data()); });
+}
+
+void PDFProgramController::removeRecoveryCopy(const QString& fileName)
+{
+    // Recovery copy can be being written just now
+    m_recoveryFuture.waitForFinished();
+    m_recoveryManager.removeRecoveryCopy(fileName);
+    m_recoveryRevision = m_documentRevision;
+}
+
+void PDFProgramController::offerRecoveryOfOpenedDocument()
+{
+    const QString fileName = m_fileInfo.originalFileName;
+    std::optional<PDFRecoveryManager::RecoveryItem> item = m_recoveryManager.findRecoveryItem(fileName);
+
+    const bool isAutoRecover = !m_autoRecoverFileName.isEmpty() && QFileInfo(m_autoRecoverFileName) == QFileInfo(fileName);
+    m_autoRecoverFileName.clear();
+
+    if (!item)
+    {
+        return;
+    }
+
+    if (!isAutoRecover)
+    {
+        QString message = tr("The application closed unexpectedly while this document had unsaved changes. "
+                             "A recovered copy from %1 is available.\n\nDo you want to restore the unsaved changes?")
+                              .arg(QLocale::system().toString(item->time, QLocale::ShortFormat));
+        if (QMessageBox::question(m_mainWindow, tr("Recover Unsaved Changes"), message, QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+        {
+            m_recoveryManager.removeRecoveryCopy(fileName);
+            return;
+        }
+    }
+
+    auto queryPassword = [this](bool* ok)
+    {
+        QString result;
+        *ok = false;
+        Q_EMIT queryPasswordRequest(&result, ok);
+        return result;
+    };
+
+    pdf::PDFDocumentReader reader(m_progress, qMove(queryPassword), true, false);
+    pdf::PDFDocument recoveredDocument = reader.readFromFile(item->recoveryFileName);
+    if (reader.getReadingResult() != pdf::PDFDocumentReader::Result::OK)
+    {
+        QMessageBox::critical(m_mainWindow, tr("Recover Unsaved Changes"), tr("Recovered copy can't be read: %1").arg(reader.getErrorMessage()));
+        return;
+    }
+
+    // Recovered document is a modification of the opened document, so the
+    // changes can be undone, and the document is marked as unsaved.
+    pdf::PDFDocumentPointer pointer(new pdf::PDFDocument(qMove(recoveredDocument)));
+    pdf::PDFModifiedDocument::ModificationFlags flags(pdf::PDFModifiedDocument::Reset | pdf::PDFModifiedDocument::PreserveUndoRedo | pdf::PDFModifiedDocument::PreserveView);
+    onDocumentModified(pdf::PDFModifiedDocument(pointer, m_optionalContentActivity, flags));
+    m_mainWindowInterface->setStatusBarMessage(tr("Unsaved changes were restored. Save the document to keep them."), 6000);
+}
+
+void PDFProgramController::offerRecoveryOfPreviousSession()
+{
+    if (m_pdfDocument || m_futureWatcher)
+    {
+        // Recovery copy of the opened document is offered when it is opened
+        return;
+    }
+
+    std::vector<PDFRecoveryManager::RecoveryItem> items = m_recoveryManager.getRecoveryItems();
+    if (items.empty())
+    {
+        return;
+    }
+
+    const PDFRecoveryManager::RecoveryItem& item = items.front();
+    QString message = tr("The application closed unexpectedly while '%1' had unsaved changes. "
+                         "A recovered copy from %2 is available.\n\nDo you want to open the document and restore the unsaved changes?")
+                          .arg(QDir::toNativeSeparators(item.originalFileName), QLocale::system().toString(item.time, QLocale::ShortFormat));
+
+    if (items.size() > 1)
+    {
+        message += QString("\n\n") + tr("Recovered copies of %1 other documents are offered, when you open them.").arg(items.size() - 1);
+    }
+
+    switch (QMessageBox::question(m_mainWindow, tr("Recover Unsaved Changes"), message, QMessageBox::Yes | QMessageBox::No | QMessageBox::Discard, QMessageBox::Yes))
+    {
+        case QMessageBox::Yes:
+        {
+            if (QFileInfo::exists(item.originalFileName))
+            {
+                m_autoRecoverFileName = item.originalFileName;
+                openDocument(item.originalFileName);
+            }
+            else
+            {
+                // Original document doesn't exist anymore, open the recovered copy
+                // under a new name, so user can save it by Save As.
+                QString copyFileName = QFileInfo(item.recoveryFileName).dir().absoluteFilePath(QFileInfo(item.originalFileName).completeBaseName() + tr(" (recovered).pdf"));
+                QFile::remove(copyFileName);
+                if (QFile::copy(item.recoveryFileName, copyFileName))
+                {
+                    m_recoveryManager.removeRecoveryCopy(item.originalFileName);
+                    openDocument(copyFileName);
+                }
+            }
+            break;
+        }
+
+        case QMessageBox::Discard:
+            m_recoveryManager.removeRecoveryCopy(item.originalFileName);
+            break;
+
+        default:
+            break;
+    }
 }
 
 void PDFProgramController::savePageLayoutPerDocument()
@@ -2136,6 +2341,7 @@ void PDFProgramController::updateActionsAvailability()
     m_actionManager->setEnabled(PDFActionManager::Encryption, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Save, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::SaveAs, hasValidDocument);
+    m_actionManager->setEnabled(PDFActionManager::SaveFlattenedCopy, hasValidDocument && m_formManager && m_formManager->hasAcroForm());
     m_actionManager->setEnabled(PDFActionManager::Properties, hasDocument);
     m_actionManager->setEnabled(PDFActionManager::SendByMail, hasDocument);
     m_actionManager->setEnabled(PDFActionManager::FullscreenMode, hasValidDocument);
@@ -2334,6 +2540,8 @@ void PDFProgramController::onDocumentReadingFinished()
                 m_formManager->performPaging();
             }
 
+            offerRecoveryOfOpenedDocument();
+
             pdf::PDFDocumentRequirements requirements = pdf::PDFDocumentRequirements::parse(&m_pdfDocument->getStorage(), m_pdfDocument->getCatalog()->getRequirements());
             constexpr pdf::PDFDocumentRequirements::Requirements requirementFlags = pdf::PDFDocumentRequirements::Requirements(pdf::PDFDocumentRequirements::OCInteract |
                                                                                                                                pdf::PDFDocumentRequirements::OCAutoStates |
@@ -2403,12 +2611,14 @@ void PDFProgramController::onDocumentModified(pdf::PDFModifiedDocument document)
     Q_UNUSED(oldDocument);
 
     m_pdfDocument = document;
+    ++m_documentRevision;
     document.setOptionalContentActivity(m_optionalContentActivity);
     setDocument(document, {}, false);
 }
 
 void PDFProgramController::onDocumentUndoRedo(pdf::PDFModifiedDocument document)
 {
+    ++m_documentRevision;
     m_pdfDocument = document;
     document.setOptionalContentActivity(m_optionalContentActivity);
     setDocument(document, {}, false);
@@ -2541,6 +2751,10 @@ void PDFProgramController::closeDocument()
         // The text of the closed document is not written into the next one
         m_makeSearchable->cancel();
     }
+
+    // Document is closed normally (user was asked to save the changes),
+    // so the recovery copy is not needed.
+    removeRecoveryCopy(m_fileInfo.originalFileName);
 
     m_signatures.clear();
     setDocument(pdf::PDFModifiedDocument(), {}, true);
@@ -2786,6 +3000,15 @@ void PDFProgramController::loadPlugins()
         {
             QToolBar* toolBar = nullptr;
 
+            // The main window decides, where the menu of the plugin is placed, and it
+            // can place the toolbar actions into its own toolbar (simplified layout).
+            bool toolbarActionsPlaced = false;
+            QMenu* menu = m_mainWindowInterface->addPluginUserInterface(plugin.second, plugin.first.name, toolbarActions, toolbarActionsPlaced);
+            if (toolbarActionsPlaced)
+            {
+                toolbarActions.clear();
+            }
+
             // A plugin with many actions can keep its toolbar small, or have no
             // toolbar at all, and offer all the actions in its menu only.
             if (!toolbarActions.empty())
@@ -2806,7 +3029,6 @@ void PDFProgramController::loadPlugins()
                 m_mainWindowInterface->adjustToolbar(toolBar);
             }
 
-            QMenu* menu = m_mainWindowInterface->addToolMenu(plugin.second->getPluginMenuName(), plugin.second->getPluginMenuLocation());
             for (QAction* action : actions)
             {
                 if (!action)

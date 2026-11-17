@@ -61,6 +61,11 @@ PDFPlugin::PluginMenuLocation PDFPlugin::getPluginMenuLocation() const
     return PluginMenuLocation::Tools;
 }
 
+QString PDFPlugin::getToolbarSection() const
+{
+    return QString();
+}
+
 std::vector<QAction*> PDFPlugin::getToolbarActions() const
 {
     return getActions();
