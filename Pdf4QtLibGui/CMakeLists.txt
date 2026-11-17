@@ -43,6 +43,8 @@ add_library(Pdf4QtLibGui SHARED
     pdfrendertoimagesdialog.h
     pdfsendmail.cpp
     pdfsendmail.h
+    pdftoolbarslots.cpp
+    pdftoolbarslots.h
     pdfsidebarwidget.cpp
     pdfsidebarwidget.h
     pdftexttospeech.cpp
