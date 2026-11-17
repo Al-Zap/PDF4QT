@@ -137,6 +137,15 @@ public:
     /// \param mode Compilation mode
     const PDFPrecompiledPage* getCompiledPage(PDFInteger pageIndex, CompileMode mode);
 
+    using PDFPrecompiledPageConstPointer = std::shared_ptr<const PDFPrecompiledPage>;
+
+    /// Returns the compiled page (see \p getCompiledPage), which is held by the returned
+    /// pointer, so it stays valid even when it is removed from the cache meanwhile. It is
+    /// used by the background rasterization of the pages. Precompiled page is immutable
+    /// after it has been compiled, so it can be read by multiple threads, but painter
+    /// paths must not be used directly (see PDFPrecompiledPage::drawParallel).
+    PDFPrecompiledPageConstPointer getCompiledPageShared(PDFInteger pageIndex, CompileMode mode);
+
     /// Performs smart cache clear. Too old pages are removed from the cache,
     /// but only if these pages are not in active pages. Use this function to
     /// clear cache to avoid huge memory consumption.
@@ -213,7 +222,8 @@ private:
     PDFAsynchronousPageCompilerWorkerThread* m_thread = nullptr;
 
     PDFDrawWidgetProxy* m_proxy;
-    QCache<PDFInteger, PDFPrecompiledPage>* m_cache;
+    using PDFPrecompiledPagePointer = std::shared_ptr<PDFPrecompiledPage>;
+    QCache<PDFInteger, PDFPrecompiledPagePointer>* m_cache;
 
     /// This task is protected by mutex. Every access to this
     /// variable must be done with locked mutex.

@@ -52,6 +52,7 @@ class PDFTextLayoutGetter;
 class PDFWidgetAnnotationManager;
 class PDFAsynchronousPageCompiler;
 class PDFAsynchronousTextLayoutCompiler;
+class PDFAsynchronousPageRasterCache;
 
 /// This class controls draw space - page layout. Pages are divided into blocks
 /// each block can contain one or multiple pages. Units are in milimeters.
@@ -523,6 +524,19 @@ private:
 
     GroupInfo getGroupInfo(int groupIndex) const;
 
+    /// Draws the compiled page content from the cache of the rasterized pages
+    /// (see PDFAsynchronousPageRasterCache). Returns false, if the cache can't
+    /// be used for this painter or page, then the page must be drawn directly.
+    bool drawPageFromRasterCache(QPainter* painter,
+                                 PDFInteger pageIndex,
+                                 const PDFPage* page,
+                                 const QRect& placedRect,
+                                 const QRect& rect,
+                                 const QTransform& baseMatrix,
+                                 PDFRenderer::Features features,
+                                 const GroupInfo& groupInfo,
+                                 const QColor& paperColor);
+
     template<typename T>
     struct Range
     {
@@ -600,6 +614,9 @@ private:
 
     /// Page image rasterizer for thumbnails
     PDFRasterizer* m_rasterizer;
+
+    /// Images of the visible pages rasterized in the background at the current zoom
+    PDFAsynchronousPageRasterCache* m_pageRasterCache;
 
     /// Cache of the images downscaled for the current zoom. Precompiled pages are
     /// independent on the zoom, so the downscaled images cannot be stored in them;

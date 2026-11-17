@@ -42,6 +42,13 @@ PDFDocument::~PDFDocument()
 
 }
 
+std::shared_future<QByteArray> PDFDocument::createReadyHash(QByteArray hash)
+{
+    std::promise<QByteArray> promise;
+    promise.set_value(std::move(hash));
+    return promise.get_future().share();
+}
+
 bool PDFDocument::operator==(const PDFDocument& other) const
 {
     // Document is considered equal, if storage is equal

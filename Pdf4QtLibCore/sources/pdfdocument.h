@@ -32,6 +32,7 @@
 #include <QTransform>
 #include <QDateTime>
 
+#include <future>
 #include <optional>
 
 namespace pdf
@@ -457,6 +458,15 @@ public:
     QByteArray getVersion() const;
 
     explicit PDFDocument(PDFObjectStorage&& storage, PDFVersion version, QByteArray sourceDataHash) :
+        PDFDocument(std::move(storage), version, createReadyHash(std::move(sourceDataHash)))
+    {
+
+    }
+
+    /// Creates the document with the hash of the source data, which can be still
+    /// being computed (for example, by a background thread). Getter of the hash
+    /// waits for the result.
+    explicit PDFDocument(PDFObjectStorage&& storage, PDFVersion version, std::shared_future<QByteArray> sourceDataHash) :
         m_pdfObjectStorage(std::move(storage)),
         m_sourceDataHash(std::move(sourceDataHash))
     {
@@ -471,9 +481,18 @@ public:
      * This function returns the hash derived from the source data
      * from which the document was originally read.
      *
+     * If the hash is still being computed, the function waits for it.
+     *
      * @return Hash value of the source data.
      */
-    const QByteArray& getSourceDataHash() const { return m_sourceDataHash; }
+    QByteArray getSourceDataHash() const { return m_sourceDataHash.valid() ? m_sourceDataHash.get() : QByteArray(); }
+
+    /// Returns the hash of the source data, which can be still being computed. Use it
+    /// to pass the hash to a new version of the document without waiting for it.
+    const std::shared_future<QByteArray>& getSourceDataHashFuture() const { return m_sourceDataHash; }
+
+    /// Creates already computed hash of the source data
+    static std::shared_future<QByteArray> createReadyHash(QByteArray hash);
 
 private:
     friend class PDFDocumentReader;
@@ -500,7 +519,7 @@ private:
 
     /// Hash of the source byte array's data,
     /// from which the document was created.
-    QByteArray m_sourceDataHash;
+    std::shared_future<QByteArray> m_sourceDataHash;
 };
 
 using PDFDocumentPointer = QSharedPointer<PDFDocument>;

@@ -865,14 +865,14 @@ PDFDocument PDFImageOptimizer::optimize(const PDFDocument* document,
         }
 
         PDFObjectStorage storage = document->getStorage();
-        return PDFDocument(std::move(storage), document->getInfo()->version, document->getSourceDataHash());
+        return PDFDocument(std::move(storage), document->getInfo()->version, document->getSourceDataHashFuture());
     }
 
     std::vector<ImageInfo> infos = collectImageInfos(document);
     if (infos.empty())
     {
         PDFObjectStorage storage = document->getStorage();
-        return PDFDocument(std::move(storage), document->getInfo()->version, document->getSourceDataHash());
+        return PDFDocument(std::move(storage), document->getInfo()->version, document->getSourceDataHashFuture());
     }
 
     if (progress)
@@ -1067,7 +1067,7 @@ PDFDocument PDFImageOptimizer::optimize(const PDFDocument* document,
         }
     }
 
-    PDFDocument optimizedDocument(std::move(storage), document->getInfo()->version, document->getSourceDataHash());
+    PDFDocument optimizedDocument(std::move(storage), document->getInfo()->version, document->getSourceDataHashFuture());
 
     // Only the encoding of the images was changed, their placement not: the OCR text
     // layers of PDF4QT stay valid and are bound to the new revision of the pages

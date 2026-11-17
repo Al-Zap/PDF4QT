@@ -130,7 +130,7 @@ void PDFAsynchronousPageCompilerWorkerThread::run()
 PDFAsynchronousPageCompiler::PDFAsynchronousPageCompiler(PDFDrawWidgetProxy* proxy) :
     BaseClass(proxy),
     m_proxy(proxy),
-    m_cache(new QCache<PDFInteger, PDFPrecompiledPage>())
+    m_cache(new QCache<PDFInteger, PDFPrecompiledPagePointer>())
 {
     m_cache->setMaxCost(128 * 1024 * 1024);
 }
@@ -243,7 +243,8 @@ const PDFPrecompiledPage* PDFAsynchronousPageCompiler::getCompiledPage(PDFIntege
         return nullptr;
     }
 
-    PDFPrecompiledPage* page = m_cache->object(pageIndex);
+    PDFPrecompiledPagePointer* pagePointer = m_cache->object(pageIndex);
+    PDFPrecompiledPage* page = pagePointer ? pagePointer->get() : nullptr;
 
     if (!page && mode != CompileMode::None)
     {
@@ -271,6 +272,17 @@ const PDFPrecompiledPage* PDFAsynchronousPageCompiler::getCompiledPage(PDFIntege
     }
 
     return page;
+}
+
+PDFAsynchronousPageCompiler::PDFPrecompiledPageConstPointer PDFAsynchronousPageCompiler::getCompiledPageShared(PDFInteger pageIndex, CompileMode mode)
+{
+    if (!getCompiledPage(pageIndex, mode))
+    {
+        return nullptr;
+    }
+
+    PDFPrecompiledPagePointer* pagePointer = m_cache->object(pageIndex);
+    return pagePointer ? PDFPrecompiledPageConstPointer(*pagePointer) : nullptr;
 }
 
 std::vector<PDFAsynchronousPageCompiler::CompileTask> PDFAsynchronousPageCompiler::pickTasksForCompilation()
@@ -378,8 +390,8 @@ void PDFAsynchronousPageCompiler::smartClearCache(const int milisecondsLimit, co
             continue;
         }
 
-        const PDFPrecompiledPage* page = m_cache->object(pageIndex);
-        if (page && page->hasExpired(milisecondsLimit))
+        const PDFPrecompiledPagePointer* pagePointer = m_cache->object(pageIndex);
+        if (pagePointer && (*pagePointer)->hasExpired(milisecondsLimit))
         {
             m_cache->remove(pageIndex);
         }
@@ -403,9 +415,10 @@ void PDFAsynchronousPageCompiler::onPageCompiled()
                 if (m_state == State::Active)
                 {
                     // If we are in active state, try to store precompiled page
-                    PDFPrecompiledPage* page = new PDFPrecompiledPage(std::move(task.precompiledPage));
-                    page->markAccessed();
-                    qint64 memoryConsumptionEstimate = page->getMemoryConsumptionEstimate();
+                    auto compiledPage = std::make_shared<PDFPrecompiledPage>(std::move(task.precompiledPage));
+                    compiledPage->markAccessed();
+                    qint64 memoryConsumptionEstimate = compiledPage->getMemoryConsumptionEstimate();
+                    PDFPrecompiledPagePointer* page = new PDFPrecompiledPagePointer(std::move(compiledPage));
                     if (m_cache->insert(it->first, page, memoryConsumptionEstimate))
                     {
                         compiledPages.push_back(it->first);
