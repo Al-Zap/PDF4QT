@@ -393,6 +393,7 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     const bool isFirstStart = !QSettings(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::organizationName(), QCoreApplication::applicationName()).contains("geometry");
 
     m_programController->finishInitialization();
+    m_programController->setPlanNavigation(!m_isClassicLayout);
 
     if (!m_isClassicLayout && isFirstStart)
     {

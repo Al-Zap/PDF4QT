@@ -100,6 +100,11 @@ public:
     /// \param enabled True to enable smooth wheel scrolling, false for immediate scrolling
     void setSmoothWheelScrolling(bool enabled);
 
+    /// Enables/disables navigation of the CAD viewers: the mouse wheel zooms at the cursor
+    /// (Ctrl + wheel scrolls) and the pages are moved by dragging with the middle button.
+    /// \param enabled True for the navigation of the CAD viewers
+    void setPlanNavigation(bool enabled);
+
     /// Sets mouse wheel scrolling speed multipliers in percent.
     /// The value 100 means default speed, values above 100 increase speed,
     /// and values below 100 decrease speed.
@@ -171,6 +176,11 @@ public:
     /// \param enabled True to enable smooth wheel scrolling, false for immediate scrolling
     void setSmoothWheelScrolling(bool enabled);
 
+    /// Enables/disables navigation of the CAD viewers: the mouse wheel zooms at the cursor
+    /// (Ctrl + wheel scrolls) and the pages are moved by dragging with the middle button.
+    /// \param enabled True for the navigation of the CAD viewers
+    void setPlanNavigation(bool enabled);
+
     /// Sets mouse wheel scrolling speed multipliers in percent.
     /// The value 100 means default speed, values above 100 increase speed,
     /// and values below 100 decrease speed.
@@ -233,6 +243,7 @@ private:
     QPointF m_wheelScrollPendingOffset;
     QImage m_blend2DframeBuffer;
     bool m_smoothWheelScrolling = true;
+    bool m_planNavigation = false;
     PDFReal m_horizontalWheelScrollSpeed = 1.0;
     PDFReal m_verticalWheelScrollSpeed = 1.0;
 };

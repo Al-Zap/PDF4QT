@@ -354,6 +354,11 @@ public:
                     pdf::PDFProgress* progress);
     void initActionComboBox(PDFActionComboBox* comboBox);
     void finishInitialization();
+
+    /// Enables/disables the behaviour for the plan sheets: navigation of the CAD viewers
+    /// (wheel zooms, middle button drags), a document is opened fitted to the window
+    /// and the title of the window shows the name of the file.
+    void setPlanNavigation(bool enabled);
     void writeSettings();
     void resetSettings();
     void clearRecentFileHistory();
@@ -549,6 +554,7 @@ private:
     QStringList m_enabledPlugins;
     QStringList m_knownPlugins;
     bool m_loadAllPlugins;
+    bool m_planNavigation = false;
     pdf::PDFPluginInfos m_plugins;
     std::vector<std::pair<pdf::PDFPluginInfo, pdf::PDFPlugin*>> m_loadedPlugins;
     bool m_isFullscreenMode;

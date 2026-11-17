@@ -2496,6 +2496,7 @@ void PDFProgramController::onViewerSettingsChanged()
     m_pdfWidget->updateRenderer(m_settings->getRendererEngine());
     m_pdfWidget->updateCacheLimits(qsizetype(m_settings->getCompiledPageCacheLimit() * 1024LL), m_settings->getThumbnailsCacheLimit(), m_settings->getFontCacheLimit(), m_settings->getInstancedFontCacheLimit());
     m_pdfWidget->setSmoothWheelScrolling(m_settings->getSettings().m_smoothWheelScrolling);
+    m_pdfWidget->setPlanNavigation(m_planNavigation);
     m_pdfWidget->setWheelScrollSpeed(m_settings->getSettings().m_wheelScrollHorizontalSpeedPercent, m_settings->getSettings().m_wheelScrollVerticalSpeedPercent);
     m_pdfWidget->getDrawWidgetProxy()->setFeatures(m_settings->getFeatures());
     m_pdfWidget->getDrawWidgetProxy()->setPreferredMeshResolutionRatio(m_settings->getPreferredMeshResolutionRatio());
@@ -2860,6 +2861,11 @@ void PDFProgramController::setDocument(pdf::PDFModifiedDocument document, std::v
         {
             onActionTriggered(action);
         }
+        else if (m_planNavigation)
+        {
+            // Whole sheet is shown, not the corner of the sheet in its real size
+            m_pdfWidget->getDrawWidgetProxy()->performOperation(pdf::PDFDrawWidgetProxy::ZoomFit);
+        }
     }
 
     updateActionsAvailability();
@@ -2931,15 +2937,29 @@ void PDFProgramController::updateBookmarkSettings()
     }
 }
 
+void PDFProgramController::setPlanNavigation(bool enabled)
+{
+    m_planNavigation = enabled;
+
+    if (m_pdfWidget)
+    {
+        m_pdfWidget->setPlanNavigation(enabled);
+    }
+
+    updateTitle();
+}
+
 void PDFProgramController::updateTitle()
 {
     if (m_pdfDocument)
     {
-        QString title = m_pdfDocument->getInfo()->title;
+        // Title stored in the plots is usually the name of the layout ("Layout2"),
+        // the same for every file, so the name of the file is shown for the plan sheets.
+        QString title = m_planNavigation ? m_fileInfo.fileName : m_pdfDocument->getInfo()->title;
 
         if (title.isEmpty())
         {
-            title = m_fileInfo.fileName;
+            title = m_planNavigation ? m_pdfDocument->getInfo()->title : m_fileInfo.fileName;
         }
 
         if (m_undoRedoManager && !m_undoRedoManager->isCurrentSaved())
@@ -3018,6 +3038,7 @@ void PDFProgramController::enterFullscreenMode()
                                            m_settings->getFontCacheLimit(),
                                            m_settings->getInstancedFontCacheLimit());
     fullscreenPdfWidget->setSmoothWheelScrolling(m_settings->getSettings().m_smoothWheelScrolling);
+    fullscreenPdfWidget->setPlanNavigation(m_planNavigation);
     fullscreenPdfWidget->setWheelScrollSpeed(m_settings->getSettings().m_wheelScrollHorizontalSpeedPercent, m_settings->getSettings().m_wheelScrollVerticalSpeedPercent);
     fullscreenPdfWidget->getDrawWidgetProxy()->setProgress(m_progress);
     fullscreenPdfWidget->getDrawWidgetProxy()->setFeatures(m_settings->getFeatures());
