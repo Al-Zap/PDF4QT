@@ -37,6 +37,7 @@
     <addaction name="actionSend_by_E_Mail"/>
     <addaction name="actionPrint"/>
     <addaction name="actionRender_to_Images"/>
+    <addaction name="actionExport_to_Word"/>
     <addaction name="separator"/>
     <addaction name="actionProperties"/>
     <addaction name="separator"/>
@@ -704,6 +705,14 @@
   <action name="actionRender_to_Images">
    <property name="text">
     <string>Render to &amp;Images...</string>
+   </property>
+  </action>
+  <action name="actionExport_to_Word">
+   <property name="text">
+    <string>Export to &amp;Word...</string>
+   </property>
+   <property name="toolTip">
+    <string>Export the document into a Word document (.docx)</string>
    </property>
   </action>
   <action name="actionMagnifier">

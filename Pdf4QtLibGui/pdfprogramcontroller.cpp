@@ -61,6 +61,8 @@
 #include "pdfactioncombobox.h"
 #include "pdffullscreenwidget.h"
 #include "pdfpagegeometry.h"
+#include "pdfdocxexporter.h"
+#include "pdfoperationcontrol.h"
 
 #include <QMenu>
 #include <QPrinter>
@@ -76,6 +78,12 @@
 #include <QXmlStreamWriter>
 #include <QMenuBar>
 #include <QComboBox>
+#include <QProgressDialog>
+#include <QEventLoop>
+#include <QTimer>
+
+#include <atomic>
+#include <numeric>
 
 #include "pdfdbgheap.h"
 
@@ -551,6 +559,10 @@ void PDFProgramController::initialize(Features features,
     if (QAction* action = m_actionManager->getAction(PDFActionManager::RenderToImages))
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::onActionRenderToImagesTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::ExportToWord))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionExportToWordTriggered);
     }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::Optimize))
     {
@@ -1522,6 +1534,110 @@ void PDFProgramController::onActionRenderToImagesTriggered()
     dialog.exec();
 }
 
+/// Cancellation of the export to Word from the progress dialog
+class PDFExportToWordOperationControl : public pdf::PDFOperationControl
+{
+public:
+    virtual bool isOperationCancelled() const override { return m_cancelled.load(); }
+    void cancel() { m_cancelled.store(true); }
+
+private:
+    std::atomic_bool m_cancelled = false;
+};
+
+void PDFProgramController::onActionExportToWordTriggered()
+{
+    if (!m_pdfDocument)
+    {
+        return;
+    }
+
+    const pdf::PDFSecurityHandler* securityHandler = m_pdfDocument->getStorage().getSecurityHandler();
+    if (securityHandler && !securityHandler->isAllowed(pdf::PDFSecurityHandler::Permission::CopyContent))
+    {
+        QMessageBox::critical(m_mainWindow, tr("Export to Word"), tr("The document doesn't allow copying of its content."));
+        return;
+    }
+
+    // Default file: the same name as the PDF, in the same folder
+    QString defaultFileName = tr("Document.docx");
+    if (!m_fileInfo.originalFileName.isEmpty())
+    {
+        QFileInfo fileInfo(m_fileInfo.originalFileName);
+        defaultFileName = fileInfo.dir().filePath(fileInfo.completeBaseName() + QStringLiteral(".docx"));
+    }
+
+    QString fileName = QFileDialog::getSaveFileName(m_mainWindow, tr("Export to Word"), defaultFileName, tr("Word Document (*.docx)"));
+    if (fileName.isEmpty())
+    {
+        return;
+    }
+
+    if (!fileName.endsWith(QStringLiteral(".docx"), Qt::CaseInsensitive))
+    {
+        fileName += QStringLiteral(".docx");
+    }
+
+    // The document is held by the shared pointer, so it stays valid during the export
+    pdf::PDFDocumentPointer document = m_pdfDocument;
+    const size_t pageCount = document->getCatalog()->getPageCount();
+    std::vector<pdf::PDFInteger> pageIndices(pageCount, 0);
+    std::iota(pageIndices.begin(), pageIndices.end(), pdf::PDFInteger(0));
+
+    PDFExportToWordOperationControl operationControl;
+    std::atomic<size_t> processedPages = 0;
+
+    pdf::PDFDocxExporter exporter;
+    exporter.setOperationControl(&operationControl);
+    exporter.setProgressCallback([&processedPages](size_t processed, size_t total) { Q_UNUSED(total); processedPages.store(processed); });
+
+    QProgressDialog progressDialog(tr("Exporting to Word..."), tr("Cancel"), 0, int(pageCount), m_mainWindow);
+    progressDialog.setWindowTitle(tr("Export to Word"));
+    progressDialog.setWindowModality(Qt::WindowModal);
+    progressDialog.setMinimumDuration(500);
+    progressDialog.setValue(0);
+
+    QFutureWatcher<QString> watcher;
+    QEventLoop eventLoop;
+    QTimer timer;
+    timer.setInterval(100);
+
+    connect(&watcher, &QFutureWatcher<QString>::finished, &eventLoop, &QEventLoop::quit);
+    connect(&progressDialog, &QProgressDialog::canceled, &progressDialog, [&operationControl]() { operationControl.cancel(); });
+    connect(&timer, &QTimer::timeout, &progressDialog, [&progressDialog, &processedPages]() { progressDialog.setValue(int(processedPages.load())); });
+
+    watcher.setFuture(QtConcurrent::run([&exporter, document, pageIndices, fileName]() -> QString
+    {
+        pdf::PDFOperationResult result = exporter.exportDocument(document.data(), pageIndices, fileName);
+        return result ? QString() : result.getErrorMessage();
+    }));
+
+    timer.start();
+    if (!watcher.isFinished())
+    {
+        eventLoop.exec();
+    }
+    timer.stop();
+    progressDialog.reset();
+
+    const QString errorMessage = watcher.result();
+    if (operationControl.isOperationCancelled())
+    {
+        return;
+    }
+
+    if (!errorMessage.isEmpty())
+    {
+        QMessageBox::critical(m_mainWindow, tr("Export to Word"), tr("The document can't be exported: %1").arg(errorMessage));
+        return;
+    }
+
+    if (QMessageBox::question(m_mainWindow, tr("Export to Word"), tr("The document was exported to %1.\n\nDo you want to open it now?").arg(QDir::toNativeSeparators(fileName))) == QMessageBox::Yes)
+    {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(fileName));
+    }
+}
+
 void PDFProgramController::onActionOptimizeTriggered()
 {
     PDFOptimizeDocumentDialog dialog(m_pdfDocument.data(), m_mainWindow);
@@ -2085,6 +2201,7 @@ void PDFProgramController::updateActionsAvailability()
     m_actionManager->setEnabled(PDFActionManager::Find, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Print, hasValidDocument && canPrint);
     m_actionManager->setEnabled(PDFActionManager::RenderToImages, hasValidDocument && canPrint);
+    m_actionManager->setEnabled(PDFActionManager::ExportToWord, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Optimize, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::OptimizeImages, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Sanitize, hasValidDocument);

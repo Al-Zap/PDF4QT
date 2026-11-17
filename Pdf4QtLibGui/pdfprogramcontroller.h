@@ -117,6 +117,7 @@ public:
         About,
         SendByMail,
         RenderToImages,
+        ExportToWord,
         Optimize,
         OptimizeImages,
         Sanitize,
@@ -380,6 +381,7 @@ private:
     void onActionAboutTriggered();
     void onActionSendByEMailTriggered();
     void onActionRenderToImagesTriggered();
+    void onActionExportToWordTriggered();
     void onActionOptimizeTriggered();
     void onActionOptimizeImagesTriggered();
     void onActionSanitizeTriggered();

@@ -203,6 +203,8 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfocrproject.cpp
     sources/pdfocrexport.h
     sources/pdfocrexport.cpp
+    sources/pdfdocxexporter.h
+    sources/pdfdocxexporter.cpp
     sources/pdfocrcompression.h
     sources/pdfocrcompression.cpp
     sources/pdfocrapplyprocessor.h
