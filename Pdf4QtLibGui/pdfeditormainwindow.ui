@@ -801,6 +801,10 @@
    </property>
   </action>
   <action name="actionSaveFlattenedCopy">
+   <property name="icon">
+    <iconset resource="pdf4qtlibgui.qrc">
+     <normaloff>:/resources/save-flattened-copy.svg</normaloff>:/resources/save-flattened-copy.svg</iconset>
+   </property>
    <property name="text">
     <string>Save &amp;Flattened Copy...</string>
    </property>

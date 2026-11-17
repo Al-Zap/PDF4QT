@@ -478,7 +478,11 @@ void PDFEditorMainWindow::createSimpleToolbar()
     m_toolbarSlots->addAction(Section::View, ui->actionZoom_In);
     m_toolbarSlots->addActionGroup(Section::View, "fit", tr("Fit"), { ui->actionFitPage, ui->actionFitWidth, ui->actionFitHeight });
 
-    // Measure, Count, Forms and Organize are filled by the features (plugins
+    // Forms
+    m_toolbarSlots->addAction(Section::Forms, ui->actionCreateTypewriter);
+    m_toolbarSlots->addAction(Section::Forms, ui->actionSaveFlattenedCopy);
+
+    // Measure, Count, Organize and further Forms items are filled by the features (plugins
     // return the section by PDFPlugin::getToolbarSection, other code uses
     // getToolbarSlots()). Empty sections are not displayed.
 
