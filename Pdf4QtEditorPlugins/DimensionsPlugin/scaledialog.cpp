@@ -51,12 +51,16 @@ ScaleDialog::ScaleDialog(QWidget* parent, pdf::PDFReal measuredLength, const Dim
     m_measuredLength(measuredLength)
 {
     // The distance measured on the paper is given by the picked line, only its unit
-    // is taken from the current scale. The real distance is left to the user.
+    // is taken from the current scale. The real distance is prefilled with the
+    // distance measured by the current scale, so the user sees what is wrong,
+    // and it is selected, so the user just types the right one.
     const DimensionUnit paperUnit = currentScale.getPaperUnit();
+    const DimensionUnit realUnit = currentScale.getRealUnit();
+    const pdf::PDFReal measuredRealLength = measuredLength * currentScale.getScaleFactor() * realUnit.scale;
     DimensionScale scale(qMax(measuredLength * paperUnit.scale, 0.0001),
                          paperUnit.id,
-                         currentScale.getRealValue(),
-                         currentScale.getRealUnitId());
+                         qMax(measuredRealLength, 0.0001),
+                         realUnit.id);
 
     initialize(scale, Mode::Calibration);
 }
@@ -93,6 +97,7 @@ void ScaleDialog::initialize(const DimensionScale& scale, Mode mode)
                                   "The scale of the drawing is calculated from it. If you name the scale, it is stored "
                                   "as a preset and you can use it for other documents."));
         ui->realValueSpinBox->setFocus();
+        ui->realValueSpinBox->selectAll();
     }
     else
     {

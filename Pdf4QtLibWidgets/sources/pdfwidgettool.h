@@ -429,6 +429,11 @@ public:
     /// \param snapToPageGeometry Snap to the page geometry
     void setSnapToPageGeometry(bool snapToPageGeometry);
 
+    /// Temporarily suppresses snapping to the vector geometry of the page,
+    /// the snapped point is updated immediately
+    /// \param suppressed Suppress snapping to the page geometry
+    void setSnapToPageGeometrySuppressed(bool suppressed);
+
     /// Returns type of the currently snapped point
     SnapType getSnappedPointType() const { return m_snapper.getSnappedPointType(); }
 

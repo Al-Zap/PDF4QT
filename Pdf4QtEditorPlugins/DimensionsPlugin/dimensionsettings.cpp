@@ -25,6 +25,7 @@
 #include "pdfdocument.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QFileInfo>
 #include <QLocale>
 #include <QSettings>
@@ -74,6 +75,89 @@ DocumentIdentity DocumentIdentity::create(const pdf::PDFDocument* document, cons
     }
 
     return identity;
+}
+
+/// Hashes the parts of the page, which identify the sheet
+class DimensionsPageKeyHelper
+{
+public:
+    DimensionsPageKeyHelper() = delete;
+
+    /// Adds the raw data of the stream to the hash. Only the beginning and
+    /// the end of a large stream are hashed, together with its length, so
+    /// a huge drawing or a scanned image does not take a long time.
+    static void addStream(QCryptographicHash& hash, const pdf::PDFObject& object)
+    {
+        if (!object.isStream())
+        {
+            return;
+        }
+
+        constexpr qsizetype HEAD_SIZE = 1024 * 1024;
+        constexpr qsizetype TAIL_SIZE = 64 * 1024;
+
+        const QByteArray* content = object.getStream()->getContent();
+        const qsizetype size = content->size();
+        hash.addData(QByteArray::number(size));
+
+        if (size <= HEAD_SIZE + TAIL_SIZE)
+        {
+            hash.addData(*content);
+        }
+        else
+        {
+            hash.addData(QByteArrayView(content->constData(), HEAD_SIZE));
+            hash.addData(QByteArrayView(content->constData() + size - TAIL_SIZE, TAIL_SIZE));
+        }
+    }
+};
+
+QString DocumentIdentity::createPageKey(const pdf::PDFDocument* document, pdf::PDFInteger pageIndex)
+{
+    if (!document || pageIndex < 0 || size_t(pageIndex) >= document->getCatalog()->getPageCount())
+    {
+        return QString();
+    }
+
+    const pdf::PDFPage* page = document->getCatalog()->getPage(size_t(pageIndex));
+    const pdf::PDFObjectStorage& storage = document->getStorage();
+
+    QCryptographicHash hash(QCryptographicHash::Sha1);
+
+    // The media box is rounded, so a rounding error does not change the key
+    const QRectF mediaBox = page->getMediaBox();
+    hash.addData(QString("%1 %2 %3 %4").arg(qRound(mediaBox.left() * 100)).arg(qRound(mediaBox.top() * 100))
+                                       .arg(qRound(mediaBox.width() * 100)).arg(qRound(mediaBox.height() * 100)).toLatin1());
+
+    // Content streams
+    const pdf::PDFObject& contents = storage.getObject(page->getContents());
+    if (contents.isArray())
+    {
+        for (const pdf::PDFObject& item : *contents.getArray())
+        {
+            DimensionsPageKeyHelper::addStream(hash, storage.getObject(item));
+        }
+    }
+    else
+    {
+        DimensionsPageKeyHelper::addStream(hash, contents);
+    }
+
+    // Scanned sheets have the same content streams (they just draw an image),
+    // so the images and forms drawn by the page are a part of the key too
+    if (const pdf::PDFDictionary* resources = storage.getDictionaryFromObject(page->getResources()))
+    {
+        if (const pdf::PDFDictionary* xobjects = storage.getDictionaryFromObject(resources->get("XObject")))
+        {
+            for (size_t i = 0; i < xobjects->getCount(); ++i)
+            {
+                hash.addData(xobjects->getKey(i).getString());
+                DimensionsPageKeyHelper::addStream(hash, storage.getObject(xobjects->getValue(i)));
+            }
+        }
+    }
+
+    return QString::fromLatin1(hash.result().toHex());
 }
 
 DimensionsPluginSettings DimensionsPluginSettings::createDefault()
@@ -131,6 +215,7 @@ void DimensionsSettingsStorage::load()
                                                                                   : DimensionsPluginSettings::StorageMode::Temporary;
     m_settings.isScaleStoredPerDocument = settings.value("scalePerDocument", m_settings.isScaleStoredPerDocument).toBool();
     m_settings.isScaleAppliedPerSheet = settings.value("scalePerSheet", m_settings.isScaleAppliedPerSheet).toBool();
+    m_settings.isSnapToDrawing = settings.value("snapToDrawing", m_settings.isSnapToDrawing).toBool();
 
     const QString fontDescriptor = settings.value("font").toString();
     if (!fontDescriptor.isEmpty())
@@ -188,19 +273,25 @@ void DimensionsSettingsStorage::load()
         DocumentScale documentScale;
         documentScale.identity.filePath = settings.value("path").toString();
         documentScale.identity.permanentId = settings.value("id").toString();
-        documentScale.scale = DimensionScale::fromStringList(settings.value("scale").toStringList());
+        documentScale.scale.scale = DimensionScale::fromStringList(settings.value("scale").toStringList());
+        documentScale.scale.drawingCorrection = qMax(settings.value("drawingCorrection", 0.0).toDouble(), 0.0);
         documentScale.lastUsed = settings.value("lastUsed").toDateTime();
 
-        const QVariantMap pageScales = settings.value("pageScales").toMap();
+        // Sheets are identified by the keys derived from their content, the
+        // scales stored under the page indices by the older versions are not
+        // loaded, because they may belong to different sheets now
+        const QVariantMap pageScales = settings.value("sheetScales").toMap();
         for (auto it = pageScales.cbegin(); it != pageScales.cend(); ++it)
         {
-            bool isPageIndexOk = false;
-            const pdf::PDFInteger pageIndex = it.key().toLongLong(&isPageIndexOk);
-            DimensionScale pageScale = DimensionScale::fromStringList(it.value().toStringList());
+            const QVariantMap item = it.value().toMap();
 
-            if (isPageIndexOk && pageIndex >= 0 && pageScale.isValid())
+            SheetScale pageScale;
+            pageScale.scale = DimensionScale::fromStringList(item.value("scale").toStringList());
+            pageScale.drawingCorrection = qMax(item.value("drawingCorrection", 0.0).toDouble(), 0.0);
+
+            if (!it.key().isEmpty() && pageScale.isValid())
             {
-                documentScale.pageScales[pageIndex] = qMove(pageScale);
+                documentScale.pageScales[it.key()] = qMove(pageScale);
             }
         }
 
@@ -226,6 +317,7 @@ void DimensionsSettingsStorage::save() const
     settings.setValue("storeAsAnnotations", m_settings.storageMode == DimensionsPluginSettings::StorageMode::Annotations);
     settings.setValue("scalePerDocument", m_settings.isScaleStoredPerDocument);
     settings.setValue("scalePerSheet", m_settings.isScaleAppliedPerSheet);
+    settings.setValue("snapToDrawing", m_settings.isSnapToDrawing);
     settings.setValue("font", m_settings.font.toString());
     settings.setValue("textColor", m_settings.textColor.name(QColor::HexArgb));
     settings.setValue("backgroundColor", m_settings.backgroundColor.name(QColor::HexArgb));
@@ -245,15 +337,20 @@ void DimensionsSettingsStorage::save() const
         settings.setArrayIndex(int(i));
         settings.setValue("path", m_documentScales[i].identity.filePath);
         settings.setValue("id", m_documentScales[i].identity.permanentId);
-        settings.setValue("scale", m_documentScales[i].scale.toStringList());
+        settings.setValue("scale", m_documentScales[i].scale.scale.toStringList());
+        settings.setValue("drawingCorrection", m_documentScales[i].scale.drawingCorrection);
         settings.setValue("lastUsed", m_documentScales[i].lastUsed);
 
         QVariantMap pageScales;
-        for (const auto& [pageIndex, pageScale] : m_documentScales[i].pageScales)
+        for (const auto& [pageKey, pageScale] : m_documentScales[i].pageScales)
         {
-            pageScales[QString::number(pageIndex)] = pageScale.toStringList();
+            QVariantMap item;
+            item["scale"] = pageScale.scale.toStringList();
+            item["drawingCorrection"] = pageScale.drawingCorrection;
+            pageScales[pageKey] = item;
         }
-        settings.setValue("pageScales", pageScales);
+        settings.setValue("sheetScales", pageScales);
+        settings.remove("pageScales");
     }
     settings.endArray();
 
@@ -332,14 +429,14 @@ const DimensionsSettingsStorage::DocumentScale* DimensionsSettingsStorage::findD
     return nullptr;
 }
 
-DimensionScale DimensionsSettingsStorage::getDocumentScale(const DocumentIdentity& identity) const
+SheetScale DimensionsSettingsStorage::getDocumentScale(const DocumentIdentity& identity) const
 {
     if (const DocumentScale* documentScale = findDocumentScale(identity))
     {
         return documentScale->scale;
     }
 
-    return DimensionScale();
+    return SheetScale();
 }
 
 DimensionsSettingsStorage::DocumentScale* DimensionsSettingsStorage::getOrCreateDocumentScale(const DocumentIdentity& identity)
@@ -372,21 +469,54 @@ void DimensionsSettingsStorage::discardOldDocumentScales()
     }
 }
 
-void DimensionsSettingsStorage::setDocumentScale(const DocumentIdentity& identity, const DimensionScale& scale)
+void DimensionsSettingsStorage::setDocumentScale(const DocumentIdentity& identity, const SheetScale& scale, bool keepPageScales)
 {
-    if (!identity.isValid() || !scale.isValid())
+    if (!identity.isValid())
     {
+        return;
+    }
+
+    if (!scale.isValid() && keepPageScales && !findDocumentScale(identity))
+    {
+        // Nothing to remove, no empty record is created
         return;
     }
 
     DocumentScale* documentScale = getOrCreateDocumentScale(identity);
     documentScale->scale = scale;
-    documentScale->pageScales.clear();
+
+    if (!keepPageScales)
+    {
+        documentScale->pageScales.clear();
+    }
 
     discardOldDocumentScales();
 }
 
-std::map<pdf::PDFInteger, DimensionScale> DimensionsSettingsStorage::getPageScales(const DocumentIdentity& identity) const
+void DimensionsSettingsStorage::copyDocumentScales(const DocumentIdentity& source, const DocumentIdentity& target)
+{
+    if (!target.isValid() || source == target)
+    {
+        return;
+    }
+
+    const DocumentScale* sourceScale = findDocumentScale(source);
+    if (!sourceScale || !sourceScale->isValid())
+    {
+        return;
+    }
+
+    // The record is copied first, the target record may be created
+    // in the same vector, which would invalidate the pointer
+    const DocumentScale copiedScale = *sourceScale;
+    DocumentScale* targetScale = getOrCreateDocumentScale(target);
+    targetScale->scale = copiedScale.scale;
+    targetScale->pageScales = copiedScale.pageScales;
+
+    discardOldDocumentScales();
+}
+
+std::map<QString, SheetScale> DimensionsSettingsStorage::getPageScales(const DocumentIdentity& identity) const
 {
     if (const DocumentScale* documentScale = findDocumentScale(identity))
     {
@@ -396,9 +526,9 @@ std::map<pdf::PDFInteger, DimensionScale> DimensionsSettingsStorage::getPageScal
     return {};
 }
 
-void DimensionsSettingsStorage::setPageScale(const DocumentIdentity& identity, pdf::PDFInteger pageIndex, const DimensionScale& scale)
+void DimensionsSettingsStorage::setPageScale(const DocumentIdentity& identity, const QString& pageKey, const SheetScale& scale)
 {
-    if (!identity.isValid() || pageIndex < 0)
+    if (!identity.isValid() || pageKey.isEmpty())
     {
         return;
     }
@@ -407,11 +537,11 @@ void DimensionsSettingsStorage::setPageScale(const DocumentIdentity& identity, p
 
     if (scale.isValid())
     {
-        documentScale->pageScales[pageIndex] = scale;
+        documentScale->pageScales[pageKey] = scale;
     }
     else
     {
-        documentScale->pageScales.erase(pageIndex);
+        documentScale->pageScales.erase(pageKey);
     }
 
     discardOldDocumentScales();

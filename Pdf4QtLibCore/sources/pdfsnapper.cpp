@@ -223,7 +223,7 @@ void PDFSnapper::updateSnappedPoint(const QPointF& mousePoint)
 
     // The points of interest have a priority over the geometry of the drawing,
     // so for example the first point of a polygon can always be picked to close it
-    if (!m_snappedPoint && m_geometrySnapping)
+    if (!m_snappedPoint && m_geometrySnapping && !m_geometrySnappingSuppressed)
     {
         updateSnappedGeometryPoint(mousePoint);
     }
@@ -827,6 +827,7 @@ void PDFSnapper::buildGeometryPages(const PDFWidgetSnapshot& snapshot)
         geometryPage.compiledPage = item.compiledPage;
         geometryPage.pathCount = item.compiledPage->getPathCount();
         geometryPage.pageToDeviceMatrix = item.pageToDeviceMatrix;
+        geometryPage.rect = item.rect;
 
         // The index depends only on the compiled page, not on the zoom, so the
         // index of a page, which was not compiled again, is reused
@@ -837,8 +838,10 @@ void PDFSnapper::buildGeometryPages(const PDFWidgetSnapshot& snapshot)
         {
             geometryPage.index = it->second.index;
         }
-        else
+        else if (isGeometryPageUnderPoint(geometryPage, m_mousePoint))
         {
+            // Building the index of a large drawing takes a noticeable time, so
+            // it is built only for the page, on which the user really works
             geometryPage.index = std::make_shared<const PDFPageGeometrySnapIndex>(PDFPageGeometrySnapIndex::create(item.compiledPage));
         }
 
@@ -847,6 +850,30 @@ void PDFSnapper::buildGeometryPages(const PDFWidgetSnapshot& snapshot)
 
     // Pages, which are not visible anymore, are released
     m_geometryPages = qMove(geometryPages);
+}
+
+bool PDFSnapper::isGeometryPageUnderPoint(const GeometryPage& geometryPage, const QPointF& mousePoint) const
+{
+    // The tolerance is added, so the points at the edge of the page snap too
+    return geometryPage.rect.adjusted(-m_snapPointTolerance, -m_snapPointTolerance, m_snapPointTolerance, m_snapPointTolerance).contains(mousePoint);
+}
+
+bool PDFSnapper::isGeometrySnapIndexMissing(const QPointF& mousePoint) const
+{
+    if (!m_geometrySnapping)
+    {
+        return false;
+    }
+
+    for (const auto& [pageIndex, geometryPage] : m_geometryPages)
+    {
+        if (!geometryPage.index && isSnappingAllowed(pageIndex) && isGeometryPageUnderPoint(geometryPage, mousePoint))
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool PDFSnapper::updateSnappedGeometryPoint(const QPointF& mousePoint)

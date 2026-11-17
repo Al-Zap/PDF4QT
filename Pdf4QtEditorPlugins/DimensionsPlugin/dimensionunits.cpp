@@ -404,6 +404,22 @@ DimensionScale DimensionScale::createFromMeasure(const pdf::PDFMeasure& measure,
     return DimensionScale(1.0, "pt", unitsPerPoint / userUnit, unit.id, measure.getScaleRatio());
 }
 
+DimensionScale DimensionScale::getReadable() const
+{
+    if (!isValid())
+    {
+        return *this;
+    }
+
+    const QByteArray& realUnitId = m_realUnitId;
+    const bool isImperial = realUnitId == "in" || realUnitId == "ft" || realUnitId == "yd" || realUnitId == "mi";
+    const DimensionUnit paperUnit = DimensionUnit::getLengthUnit(isImperial ? "in" : "mm");
+
+    // Real length of a single paper unit, in the real units
+    const pdf::PDFReal realValue = getScaleFactor() / paperUnit.scale * getRealUnit().scale;
+    return DimensionScale(1.0, paperUnit.id, realValue, m_realUnitId);
+}
+
 std::vector<DimensionScale> DimensionScale::getDefaultPresets()
 {
     std::vector<DimensionScale> presets;

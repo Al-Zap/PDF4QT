@@ -1569,6 +1569,12 @@ void PDFPickTool::mouseMoveEvent(QWidget* widget, QMouseEvent* event)
         m_mousePosition = mousePos;
         m_snapper.updateSnappedPoint(m_mousePosition);
 
+        if (m_snapper.isGeometrySnapIndexMissing(m_mousePosition))
+        {
+            // The mouse entered a page, whose geometry was not indexed yet
+            buildSnapData();
+        }
+
         // Update page index, if we are picking pages.
         if (m_mode == Mode::Pages)
         {
@@ -1654,6 +1660,13 @@ void PDFPickTool::setSnapToPageGeometry(bool snapToPageGeometry)
         m_snapper.setGeometrySnapping(snapToPageGeometry);
         buildSnapData();
     }
+}
+
+void PDFPickTool::setSnapToPageGeometrySuppressed(bool suppressed)
+{
+    m_snapper.setGeometrySnappingSuppressed(suppressed);
+    m_snapper.updateSnappedPoint(m_mousePosition);
+    Q_EMIT getProxy()->repaintNeeded();
 }
 
 void PDFPickTool::setActiveImpl(bool active)

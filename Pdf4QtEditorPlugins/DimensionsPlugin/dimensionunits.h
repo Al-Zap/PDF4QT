@@ -170,6 +170,12 @@ public:
     ///        the scale is applied, so it must be removed from the factor here.
     static DimensionScale createFromMeasure(const pdf::PDFMeasure& measure, pdf::PDFReal userUnit);
 
+    /// Returns the same scale expressed for a single paper unit, which people
+    /// use on drawings - an inch for the imperial real units, a millimeter
+    /// otherwise - for example 1 pt = 0.2778 ft becomes 1 in = 20 ft. The name
+    /// and the description are not kept, because they may describe another ratio.
+    DimensionScale getReadable() const;
+
     /// Returns the list of the predefined scales, which are offered to the user,
     /// if no scale presets were stored yet
     static std::vector<DimensionScale> getDefaultPresets();
