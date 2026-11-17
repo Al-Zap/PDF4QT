@@ -105,7 +105,8 @@ private:
     void onCustomScaleTriggered();
     void onScaleMenuAboutToShow();
     void onDrawSpaceChanged();
-    void onCalibrationLinePicked(pdf::PDFReal measuredLength);
+    void onCalibrationLinePicked(pdf::PDFInteger pageIndex, std::vector<QPointF> points, pdf::PDFReal measuredLength);
+    void onWindowTitleChanged();
     void onDimensionCreated(Dimension dimension);
 
     void updateActions();
@@ -116,8 +117,48 @@ private:
     /// is then always visible and it can be changed by a single click.
     void createStatusBarButton();
 
-    /// Returns the page, which the user is currently working on
+    /// Returns the page, which the user is currently looking at - the page
+    /// in the middle of the view, or the page, which occupies the largest
+    /// part of the view
     pdf::PDFInteger getCurrentPageIndex() const;
+
+    /// Returns the key of the sheet, under which its scale is remembered,
+    /// see \p DocumentIdentity::createPageKey. The keys are cached.
+    QString getPageKey(pdf::PDFInteger pageIndex) const;
+
+    /// Returns the scale set by the user for the sheet, or nullptr
+    const SheetScale* findPageScale(pdf::PDFInteger pageIndex) const;
+
+    /// Returns the correction of the scales defined by the drawing on the page
+    /// (1.0, if the drawing is not corrected)
+    pdf::PDFReal getDrawingCorrection(pdf::PDFInteger pageIndex) const;
+
+    /// Returns true, if the scales of the drawing on the page are corrected
+    bool isDrawingCorrected(pdf::PDFInteger pageIndex) const;
+
+    /// Returns the single scale defined by the viewports of the page (without
+    /// the correction), or an invalid scale, if the page defines no scale or
+    /// more different scales
+    DimensionScale getSingleRawViewportScale(pdf::PDFInteger pageIndex) const;
+
+    /// Measurement annotation created by this plugin, which displays a value
+    /// computed with the scale in effect
+    struct MeasurementAnnotation
+    {
+        pdf::PDFObjectReference reference;
+        Dimension dimension;    ///< Dimension, which the annotation displays
+        QString contents;       ///< Displayed text
+    };
+
+    /// Returns the measurement annotations of the document, which display
+    /// exactly the value computed with the scale currently in effect, i.e.
+    /// the annotations created by this plugin and not edited by the user
+    std::vector<MeasurementAnnotation> getMeasurementAnnotations() const;
+
+    /// Offers the user to update the measurement annotations, whose displayed
+    /// value has changed by the change of the scale
+    /// \param annotations Annotations collected before the scale was changed
+    void offerMeasurementAnnotationsUpdate(const std::vector<MeasurementAnnotation>& annotations);
 
     /// Returns the text describing the scale of the current sheet, which
     /// is displayed in the status bar, for example "1 in = 20 ft (from drawing)"
@@ -128,7 +169,11 @@ private:
 
     /// Shows the scale dialog for the scale either calibrated or entered by the user
     /// and applies the result
-    void execScaleDialog(ScaleDialog& dialog);
+    /// \param dialog Scale dialog
+    /// \param pageIndex Sheet, on which the scale was calibrated or entered
+    /// \param drawingScale Scale defined by the drawing at the calibrated line
+    ///        (without the correction), see \p setScale
+    void execScaleDialog(ScaleDialog& dialog, pdf::PDFInteger pageIndex, const DimensionScale& drawingScale);
 
     const DimensionsPluginSettings& getSettings() const { return m_settingsStorage.getSettings(); }
 
@@ -136,8 +181,17 @@ private:
     /// if it is requested by the settings, and stores everything to the application
     /// settings
     /// \param scale New scale
-    /// \param isThisSheetOnly Apply the scale to the current sheet (page) only
-    void setScale(const DimensionScale& scale, bool isThisSheetOnly);
+    /// \param isThisSheetOnly Apply the scale to the sheet (page) only
+    /// \param pageIndex Sheet, on which the scale was calibrated or selected
+    /// \param drawingScale Scale defined by the drawing itself (a viewport) at the
+    ///        place, where the scale was calibrated, without the correction. If it is
+    ///        valid, then the user overrides the scale of the drawing, for example
+    ///        because the sheet was printed at a different size, so the scales of the
+    ///        drawing are corrected in the same ratio.
+    void setScale(const DimensionScale& scale, bool isThisSheetOnly, pdf::PDFInteger pageIndex, const DimensionScale& drawingScale);
+
+    /// Stores the scale of the whole document and of the sheets in the settings
+    void storeDocumentScale(bool keepPageScales);
 
     /// Selects the scale for the currently opened document. The scale remembered
     /// for the document has the highest priority, then the scale defined by the
@@ -154,10 +208,19 @@ private:
 
     /// Returns the scale prescribed by the viewport, in which the point lies,
     /// or an invalid scale, if the point does not lie in a viewport with
-    /// a usable measure
+    /// a usable measure. The correction of the drawing set by the user is applied.
     /// \param pageIndex Page index
     /// \param point Point in the default user space of the page
     DimensionScale getScaleFromViewport(pdf::PDFInteger pageIndex, const QPointF& point) const;
+
+    /// Returns the scale prescribed by the viewport, in which the point lies,
+    /// exactly as it is defined by the document (without the correction)
+    /// \param pageIndex Page index
+    /// \param point Point in the default user space of the page
+    DimensionScale getRawScaleFromViewport(pdf::PDFInteger pageIndex, const QPointF& point) const;
+
+    /// Returns the scale with the real value multiplied by the correction
+    static DimensionScale applyDrawingCorrection(const DimensionScale& scale, pdf::PDFReal correction);
 
     /// Returns the scale, which applies to the dimension - either the scale
     /// prescribed by the document, or the scale currently selected by the user
@@ -213,6 +276,7 @@ private:
     QAction* m_settingsAction;
     QMenu* m_scaleMenu;
     QAction* m_scalePerSheetAction;
+    QAction* m_snapToDrawingAction;
     QToolButton* m_statusBarScaleButton;
     pdf::PDFInteger m_statusBarPageIndex;
 
@@ -229,8 +293,16 @@ private:
     /// Origin of the scale of the whole document
     ScaleSource m_scaleSource = ScaleSource::Default;
 
-    /// Scales set by the user for single sheets (pages) of the current document
-    std::map<pdf::PDFInteger, DimensionScale> m_pageScales;
+    /// Correction of the scales defined by the drawing for the whole document,
+    /// zero, if it is not set (see \p SheetScale::drawingCorrection)
+    pdf::PDFReal m_drawingCorrection = 0.0;
+
+    /// Scales set by the user for single sheets (pages) of the current document,
+    /// the key is the key of the sheet (see \p DocumentIdentity::createPageKey)
+    std::map<QString, SheetScale> m_pageScales;
+
+    /// Cached keys of the sheets of the current document, by page index
+    mutable std::vector<QString> m_pageKeys;
 };
 
 }   // namespace pdfplugin

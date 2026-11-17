@@ -202,7 +202,7 @@ public:
 
     bool isEmpty() const { return m_segments.empty(); }
 
-    static constexpr size_t DEFAULT_MAXIMAL_SEGMENT_COUNT = 4'000'000;
+    static constexpr size_t DEFAULT_MAXIMAL_SEGMENT_COUNT = 2'000'000;
 
 private:
     enum SegmentFlag : uint8_t
@@ -337,13 +337,20 @@ public:
 
     /// Enables snapping to the vector geometry of the pages - end points,
     /// intersections, midpoints of the lines and points on the lines. The
-    /// geometry index of a page is built when the page becomes visible
-    /// and it is kept, until the page is compiled again.
+    /// geometry index of a page is built, when the mouse cursor enters the page
+    /// for the first time, so scrolling over the pages builds nothing. The index
+    /// is kept, until the page is compiled again or it is scrolled out of view.
     /// \param geometrySnapping Snap to the vector geometry
     void setGeometrySnapping(bool geometrySnapping);
 
     /// Returns true, if snapping to the vector geometry is enabled
     bool isGeometrySnapping() const { return m_geometrySnapping; }
+
+    /// Temporarily suppresses snapping to the vector geometry, for example while
+    /// a modifier key is held, so a point can be placed freely. Unlike disabling
+    /// the snapping, the geometry indices of the pages are kept.
+    /// \param suppressed Suppress snapping to the vector geometry
+    void setGeometrySnappingSuppressed(bool suppressed) { m_geometrySnappingSuppressed = suppressed; }
 
     /// Returns the geometry index of a page, or nullptr, if it was not built
     /// \param pageIndex Page index
@@ -356,6 +363,13 @@ public:
     /// \param pagePoint Snapped point in the page coordinates
     bool getSnappedPagePoint(PDFInteger& pageIndex, QPointF& pagePoint) const;
 
+    /// Returns true, if the mouse point lies on a visible page, whose geometry
+    /// index is not built yet. The snap data must be built again from a new
+    /// snapshot of the widget then (the compiled pages are valid only, when
+    /// the snapshot is taken).
+    /// \param mousePoint Mouse point in the widget coordinates
+    bool isGeometrySnapIndexMissing(const QPointF& mousePoint) const;
+
     /// Returns type of the snapped point, or SnapType::Invalid, if no point is snapped
     SnapType getSnappedPointType() const { return m_snappedPoint ? m_snappedPoint->type : SnapType::Invalid; }
 
@@ -365,11 +379,15 @@ private:
         const PDFPrecompiledPage* compiledPage = nullptr;
         size_t pathCount = 0;
         QTransform pageToDeviceMatrix;
+        QRectF rect;    ///< Rectangle of the page in the widget coordinates
         std::shared_ptr<const PDFPageGeometrySnapIndex> index;
     };
 
     /// Updates the geometry indices of the visible pages
     void buildGeometryPages(const PDFWidgetSnapshot& snapshot);
+
+    /// Returns true, if the mouse point lies on the page (or near its edge)
+    bool isGeometryPageUnderPoint(const GeometryPage& geometryPage, const QPointF& mousePoint) const;
 
     /// Snaps the mouse point to the vector geometry, returns true, if it was snapped
     bool updateSnappedGeometryPoint(const QPointF& mousePoint);
@@ -380,6 +398,7 @@ private:
 
     std::map<PDFInteger, GeometryPage> m_geometryPages;
     bool m_geometrySnapping = false;
+    bool m_geometrySnappingSuppressed = false;
 
     struct SnappedPoint
     {

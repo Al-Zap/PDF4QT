@@ -64,6 +64,36 @@ struct DocumentIdentity
     /// \param document Document
     /// \param fileName Original file name of the document
     static DocumentIdentity create(const pdf::PDFDocument* document, const QString& fileName);
+
+    /// Returns the key of a sheet (page), under which its scale is remembered.
+    /// The key is derived from the content of the page (its media box, content
+    /// streams and the streams of its XObjects), not from its position in the
+    /// document, so the scale follows the sheet, when the pages are reordered,
+    /// deleted or inserted, and when the objects are renumbered by saving.
+    /// Annotations and the rotation of the page are not a part of the key,
+    /// so measuring or rotating a sheet keeps its scale. Returns an empty
+    /// string for an invalid page.
+    /// \param document Document
+    /// \param pageIndex Page index
+    static QString createPageKey(const pdf::PDFDocument* document, pdf::PDFInteger pageIndex);
+};
+
+/// Scale set by the user either for the whole document, or for a single sheet
+struct SheetScale
+{
+    /// Scale of the parts of the sheet, which do not define their own scale.
+    /// It can be invalid, if only the drawing correction is set.
+    DimensionScale scale;
+
+    /// Correction of the scales defined by the document itself (viewports with
+    /// a measure dictionary, typically from CAD or Bluebeam). The real values
+    /// of these scales are multiplied by it, so for example a sheet printed
+    /// at the half size has the correction 2. Zero means, that no correction
+    /// is set here (a sheet then uses the correction of the document).
+    pdf::PDFReal drawingCorrection = 0.0;
+
+    bool hasDrawingCorrection() const { return drawingCorrection > 0.0; }
+    bool isValid() const { return scale.isValid() || hasDrawingCorrection(); }
 };
 
 struct DimensionsPluginSettings
@@ -90,6 +120,10 @@ struct DimensionsPluginSettings
     /// If true, then a scale selected from the presets applies to the current
     /// sheet (page) only, otherwise to all sheets of the document
     bool isScaleAppliedPerSheet = false;
+
+    /// If true, then the picked points snap to the geometry of the drawing
+    /// (end points, intersections, midpoints and points on the lines)
+    bool isSnapToDrawing = true;
     QFont font;
     QColor textColor = QColor(Qt::black);
 
@@ -134,27 +168,36 @@ public:
     /// identifier, so a document, which was calibrated under its own path, is not
     /// affected by another document sharing the identifier with it.
     /// \param identity Document identification
-    DimensionScale getDocumentScale(const DocumentIdentity& identity) const;
+    SheetScale getDocumentScale(const DocumentIdentity& identity) const;
 
-    /// Stores the scale for the document. The scale applies to all sheets
-    /// (pages) of the document, so the scales of the single sheets are removed.
-    /// The oldest records are discarded, so the settings file does not grow
-    /// indefinitely.
+    /// Stores the scale for the document. An invalid scale removes the scale
+    /// of the whole document. The oldest records are discarded, so the settings
+    /// file does not grow indefinitely.
     /// \param identity Document identification
     /// \param scale Scale of the document
-    void setDocumentScale(const DocumentIdentity& identity, const DimensionScale& scale);
+    /// \param keepPageScales If false, the scales of the single sheets are removed,
+    ///        so the scale applies to all sheets of the document
+    void setDocumentScale(const DocumentIdentity& identity, const SheetScale& scale, bool keepPageScales);
 
     /// Returns the scales of the single sheets (pages) of the document, which
-    /// differ from the scale of the whole document. The key is the page index.
+    /// differ from the scale of the whole document. The key is the key of the
+    /// sheet, see \p DocumentIdentity::createPageKey.
     /// \param identity Document identification
-    std::map<pdf::PDFInteger, DimensionScale> getPageScales(const DocumentIdentity& identity) const;
+    std::map<QString, SheetScale> getPageScales(const DocumentIdentity& identity) const;
 
     /// Stores the scale of a single sheet (page) of the document. An invalid
     /// scale removes the scale of the sheet, so the scale of the document applies.
     /// \param identity Document identification
-    /// \param pageIndex Page index
+    /// \param pageKey Key of the sheet, see \p DocumentIdentity::createPageKey
     /// \param scale Scale of the sheet
-    void setPageScale(const DocumentIdentity& identity, pdf::PDFInteger pageIndex, const DimensionScale& scale);
+    void setPageScale(const DocumentIdentity& identity, const QString& pageKey, const SheetScale& scale);
+
+    /// Copies all the scales remembered for a document to another document,
+    /// for example when the document was saved under a new name. Nothing
+    /// happens, if nothing is remembered for the source document.
+    /// \param source Identification of the original document
+    /// \param target Identification of the new document
+    void copyDocumentScales(const DocumentIdentity& source, const DocumentIdentity& target);
 
 private:
     /// Maximum count of the documents, for which the scale is remembered
@@ -163,8 +206,8 @@ private:
     struct DocumentScale
     {
         DocumentIdentity identity;
-        DimensionScale scale;   ///< Scale of the whole document, it can be invalid, if only sheets were calibrated
-        std::map<pdf::PDFInteger, DimensionScale> pageScales;   ///< Scales of the single sheets
+        SheetScale scale;   ///< Scale of the whole document, it can be invalid, if only sheets were calibrated
+        std::map<QString, SheetScale> pageScales;   ///< Scales of the single sheets
         QDateTime lastUsed;
 
         bool isValid() const { return identity.isValid() && (scale.isValid() || !pageScales.empty()); }
