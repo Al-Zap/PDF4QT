@@ -468,6 +468,9 @@ protected:
 private:
     void buildSnapData();
 
+    /// Picks the point under the mouse cursor (in points or rectangles mode)
+    void pickSnappedPoint();
+
     /// Returns color adjusted color of the selection rectangle. See setSelectionRectangleColor.
     /// \param convertor Color convertor of the page content
     QColor getAdjustedSelectionRectangleColor(const PDFColorConvertor& convertor) const;
@@ -475,6 +478,8 @@ private:
     Mode m_mode;
     PDFSnapper m_snapper;
     QPoint m_mousePosition;
+    QPoint m_dragPickStartPosition;
+    bool m_isDragPickPossible = false;
     PDFInteger m_pageIndex;
     std::vector<QPointF> m_pickedPoints;
     Qt::KeyboardModifiers m_lastPickModifiers;

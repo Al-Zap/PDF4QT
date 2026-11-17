@@ -1891,6 +1891,9 @@ bool PDFDocumentBuilder::updateHighlightAnnotationAppearanceStream(PDFObjectRefe
     formDictionaryFactory.beginDictionaryItem("Resources");
     formDictionaryFactory << resourcesObject;
     formDictionaryFactory.endDictionaryItem();
+    formDictionaryFactory.beginDictionaryItem("Length");
+    formDictionaryFactory << PDFInteger(content.size());
+    formDictionaryFactory.endDictionaryItem();
     formDictionaryFactory.endDictionary();
 
     PDFObject formDictionaryObject = formDictionaryFactory.takeObject();

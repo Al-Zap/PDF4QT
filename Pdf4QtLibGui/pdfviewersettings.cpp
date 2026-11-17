@@ -372,7 +372,7 @@ PDFViewerSettings::Settings::Settings() :
     m_signatureIgnoreCertificateValidityTime(false),
     m_signatureUseSystemStore(true),
     m_autoGenerateBookmarks(true),
-    m_authorNameMode(pdf::PDFAuthorSettings::AuthorNameMode::Anonymous),
+    m_authorNameMode(pdf::PDFAuthorSettings::AuthorNameMode::SystemUserName),
     m_colorScheme(AutoScheme),
     m_sidebarButtonIconSize(SidebarButtonIconSizeLarge),
     m_showSidebarOnDocumentOpen(true),
