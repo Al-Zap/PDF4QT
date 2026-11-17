@@ -97,6 +97,31 @@ public:
     inline PDFLexicalTokenData(QByteArray value) : m_type(QMetaType::QByteArray), m_byteArray(qMove(value)) { }
     PDFLexicalTokenData(const void*) = delete;
 
+    /// Sets a boolean value (without a construction of a new value)
+    inline void setBoolean(bool value)
+    {
+        resetByteArray();
+        m_type = QMetaType::Bool;
+        m_value.integer = 0;
+        m_value.boolean = value;
+    }
+
+    /// Sets an integer value (without a construction of a new value)
+    inline void setInteger(qint64 value)
+    {
+        resetByteArray();
+        m_type = QMetaType::LongLong;
+        m_value.integer = value;
+    }
+
+    /// Sets a real value (without a construction of a new value)
+    inline void setReal(double value)
+    {
+        resetByteArray();
+        m_type = QMetaType::Double;
+        m_value.real = value;
+    }
+
     /// Returns type of the value (QMetaType::Bool, QMetaType::LongLong, QMetaType::Double,
     /// QMetaType::QByteArray, or QMetaType::UnknownType, if the token has no value)
     inline int typeId() const { return m_type; }
@@ -220,6 +245,14 @@ public:
     inline bool operator!=(const PDFLexicalTokenData& other) const { return !(*this == other); }
 
 private:
+    inline void resetByteArray()
+    {
+        if (!m_byteArray.isNull())
+        {
+            m_byteArray = QByteArray();
+        }
+    }
+
     union Value
     {
         bool boolean;

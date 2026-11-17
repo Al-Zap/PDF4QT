@@ -836,6 +836,19 @@ private:
     /// Process the content
     void processContent(const QByteArray& content);
 
+    /// Processes the content, whose tokens are read by another thread, while this
+    /// thread processes the commands. It is used for a large content, when a thread
+    /// is free. Returns false, if the content was not processed (and it must be
+    /// processed in the usual way).
+    bool processContentWithTokenizer(const QByteArray& content);
+
+    /// Processes inline image (operators BI, ID, EI). The parser is positioned after
+    /// the operator BI, and it is moved after the operator EI.
+    void processInlineImage(const QByteArray& content, PDFLexicalAnalyzer& parser);
+
+    /// Processes command of the content, which can refer to the content
+    void processContentCommand(const QByteArray& command);
+
     /// Processes single command
     void processCommand(const QByteArray& command);
 

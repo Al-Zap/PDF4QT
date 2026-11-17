@@ -25,6 +25,7 @@
 #include "pdfconstants.h"
 #include "pdfdocumentbuilder.h"
 #include "pdfdocumentreader.h"
+#include "pdfexecutionpolicy.h"
 #include "pdffont.h"
 #include "pdfimage.h"
 #include "pdfoptionalcontent.h"
@@ -50,6 +51,63 @@
 #include <functional>
 #include <memory>
 #include <vector>
+
+/// Records the operators with their operands, as they are processed, the painted
+/// paths and images. It can cancel the processing after a number of operators.
+class OperatorRecordingProcessor : public pdf::PDFPageContentProcessor, public pdf::PDFOperationControl
+{
+public:
+    using pdf::PDFPageContentProcessor::PDFPageContentProcessor;
+
+    QByteArrayList operators;
+    int pathCount = 0;
+    int imageCount = 0;
+    int cancelAfterOperatorCount = -1;
+
+    virtual bool isOperationCancelled() const override
+    {
+        return cancelAfterOperatorCount >= 0 && operators.size() >= cancelAfterOperatorCount;
+    }
+
+protected:
+    virtual void performInterceptInstruction(Operator currentOperator, ProcessOrder processOrder, const QByteArray& operatorAsText) override
+    {
+        pdf::PDFPageContentProcessor::performInterceptInstruction(currentOperator, processOrder, operatorAsText);
+
+        if (processOrder == ProcessOrder::BeforeOperation)
+        {
+            QByteArray text;
+            const auto& operands = getOperands();
+            for (size_t i = 0; i < operands.size(); ++i)
+            {
+                const pdf::PDFLexicalAnalyzer::Token& operand = operands[i];
+                text += QByteArray::number(int(operand.type)) + ":" + operand.data.toString().toLatin1() + " ";
+            }
+
+            // The text of the operator must own its data (it can be kept)
+            operators << text + QByteArray::number(int(currentOperator)) + ":" + operatorAsText;
+        }
+    }
+
+    virtual void performPathPainting(const QPainterPath& path, bool stroke, bool fill, bool text, Qt::FillRule fillRule) override
+    {
+        Q_UNUSED(path);
+        Q_UNUSED(stroke);
+        Q_UNUSED(fill);
+        Q_UNUSED(text);
+        Q_UNUSED(fillRule);
+        ++pathCount;
+    }
+
+    virtual bool performOriginalImagePainting(const pdf::PDFImage& image, const pdf::PDFStream* stream, pdf::PDFObjectReference reference) override
+    {
+        Q_UNUSED(image);
+        Q_UNUSED(stream);
+        Q_UNUSED(reference);
+        ++imageCount;
+        return true;
+    }
+};
 
 /// Records the text matrices at the beginning of each text object and the
 /// graphic state updates, which report a change of the text matrices after
@@ -126,6 +184,7 @@ private slots:
     void test_fonts_removed_from_cache_are_released_data();
     void test_fonts_removed_from_cache_are_released();
     void test_minus_sign_in_the_middle_of_number_is_ignored();
+    void test_large_content_read_by_another_thread();
     void test_invalid_token_keeps_previous_operands();
     void test_invalid_token_invalidates_operator();
     void test_form_xobject_fonts_are_preserved();
@@ -1688,6 +1747,128 @@ QList<pdf::PDFRenderError> ContentEditorTest::processPageContent(const pdf::PDFD
     QList<pdf::PDFRenderError> errors = processor.processContents();
     *content = processor.takeEditedPageContent();
     return errors;
+}
+
+void ContentEditorTest::test_large_content_read_by_another_thread()
+{
+    // Tokens of a large content are read by another thread. The operators, their
+    // operands, the errors and the rendered page must be the same, as when the
+    // content is read by a single thread - including inline images (the reading
+    // continues after the image), tokens, which can't be read, and unknown commands.
+    using Policy = pdf::PDFExecutionPolicy;
+
+    QByteArray pageContent;
+    int expectedImageCount = 0;
+    for (int i = 0; i < 30000; ++i)
+    {
+        const QByteArray x = QByteArray::number((i % 190) + 0.25);
+        const QByteArray y = QByteArray::number(((i / 190) % 190) + 0.5);
+        pageContent += "q " + QByteArray::number((i % 7) / 7.0) + " " + QByteArray::number((i % 5) / 5.0) + " 0.5 rg " +
+                       x + " " + y + " 4 -3.5 re f Q % comment with an operator re f\n";
+
+        if (i % 997 == 0)
+        {
+            // Inline image, its data contain operators and a broken token
+            pageContent += "q 10 0 0 10 " + x + " " + y + " cm BI /W 4 /H 2 /BPC 8 /CS /G ID " +
+                           QByteArray("Q)f\x00\xff Q(", 8) + "\nEI Q\n";
+            ++expectedImageCount;
+        }
+
+        if (i % 1501 == 0)
+        {
+            // Tokens, which can't be read
+            pageContent += "12x34 w 1 0 0 RG ) 0 0 m 5 5 l S\n";
+        }
+
+        if (i % 2003 == 0)
+        {
+            // Unknown command and operands of all types
+            pageContent += "/Name (string) [1 2.5 true null] << /Key 1 >> unknownCommand\n";
+        }
+    }
+
+    // Inline image without the end is the last
+    pageContent += "0 0 m 1 1 l S BI /W 1 /H 1 /BPC 8 /CS /G";
+    QVERIFY(pageContent.size() > 1024 * 1024);
+
+    pdf::PDFDocument document = createDocument(pageContent, [](pdf::PDFDocumentBuilder*) { return pdf::PDFDictionaryBuilder(); });
+    const pdf::PDFPage* page = document.getCatalog()->getPage(0);
+
+    pdf::PDFCMSGeneric cms;
+    pdf::PDFFontCache fontCache(32, 32);
+    pdf::PDFICCProfileCache iccProfileCache;
+    pdf::PDFOptionalContentActivity activity(&document, pdf::OCUsage::View, nullptr);
+    fontCache.setDocument(pdf::PDFModifiedDocument(&document, &activity));
+    iccProfileCache.setDocument(pdf::PDFModifiedDocument(&document, &activity));
+
+    auto strategyGuard = qScopeGuard([]() { Policy::setStrategy(Policy::Strategy::PageMultithreaded); });
+
+    struct Result
+    {
+        QByteArrayList operators;
+        QStringList errors;
+        int pathCount = 0;
+        int imageCount = 0;
+        QImage image;
+    };
+
+    auto process = [&](Policy::Strategy strategy, int cancelAfterOperatorCount)
+    {
+        Policy::setStrategy(strategy);
+
+        OperatorRecordingProcessor processor(page, &document, &fontCache, &iccProfileCache, &cms, &activity,
+                                             QTransform(), pdf::PDFMeshQualitySettings());
+        processor.cancelAfterOperatorCount = cancelAfterOperatorCount;
+        processor.setOperationControl(&processor);
+
+        Result result;
+        for (const pdf::PDFRenderError& error : processor.processContents())
+        {
+            result.errors << error.message;
+        }
+        result.operators = processor.operators;
+        result.pathCount = processor.pathCount;
+        result.imageCount = processor.imageCount;
+
+        if (cancelAfterOperatorCount < 0)
+        {
+            result.image = renderPage(&document);
+        }
+
+        return result;
+    };
+
+    const Result reference = process(Policy::Strategy::SingleThreaded, -1);
+    QVERIFY(reference.operators.size() > 150000);
+    QCOMPARE(reference.pathCount, 30000 + 20 + 1);
+    QCOMPARE(reference.imageCount, expectedImageCount);
+    QVERIFY(reference.errors.size() >= 2 * 20 + 16);
+    QVERIFY(reference.operators.contains(QByteArray("4:Name 3:string 5: 1:1 2:2.5 0:true 9: 6: 7: 4:Key 1:1 8: 73:unknownCommand")));
+
+    for (const Policy::Strategy strategy : { Policy::Strategy::PageMultithreaded, Policy::Strategy::AlwaysMultithreaded })
+    {
+        // Repeat it, the threads are scheduled in a different way each time
+        for (int i = 0; i < 3; ++i)
+        {
+            const Result result = process(strategy, -1);
+            QCOMPARE(result.operators.size(), reference.operators.size());
+            QVERIFY(result.operators == reference.operators);
+            QCOMPARE(result.errors, reference.errors);
+            QCOMPARE(result.pathCount, reference.pathCount);
+            QCOMPARE(result.imageCount, reference.imageCount);
+            QVERIFY(result.image == reference.image);
+        }
+    }
+
+    // Cancelled processing stops at the same operator and does not wait for the reading thread
+    for (const int cancelAfterOperatorCount : { 0, 1, 5000, 100001 })
+    {
+        const Result cancelledReference = process(Policy::Strategy::SingleThreaded, cancelAfterOperatorCount);
+        const Result cancelled = process(Policy::Strategy::PageMultithreaded, cancelAfterOperatorCount);
+        QCOMPARE(cancelledReference.operators.size(), cancelAfterOperatorCount);
+        QCOMPARE(cancelled.operators.size(), cancelAfterOperatorCount);
+        QVERIFY(cancelled.operators == cancelledReference.operators);
+    }
 }
 
 void ContentEditorTest::test_minus_sign_in_the_middle_of_number_is_ignored()

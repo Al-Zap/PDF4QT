@@ -84,6 +84,16 @@ bool PDFExecutionPolicy::isParallelizing(Scope scope)
     return false;
 }
 
+bool PDFExecutionPolicy::tryStart(Scope scope, QRunnable* runnable)
+{
+    if (s_execution_policy.policy.m_strategy.load(std::memory_order_relaxed) == Strategy::SingleThreaded)
+    {
+        return false;
+    }
+
+    return getThreadPool(scope)->tryStart(runnable);
+}
+
 int PDFExecutionPolicy::getActiveThreadCount(Scope scope)
 {
     return getThreadPool(scope)->activeThreadCount();
