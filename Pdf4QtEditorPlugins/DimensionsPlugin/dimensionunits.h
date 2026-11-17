@@ -60,6 +60,25 @@ struct DimensionUnit
     pdf::PDFReal scale = 1.0;
     QString symbol;
 
+    /// Identifier of the length unit, which is displayed as feet and inches
+    /// (for example 12'-6 1/2"). Internally it is the same unit as the foot.
+    static constexpr const char* FEET_AND_INCHES_ID = "ftin";
+
+    /// Returns true, if the unit is the length unit displayed as feet and inches
+    bool isFeetAndInches() const;
+
+    /// Formats the length expressed in this unit, for example "12.50 m", or
+    /// "12'-6\"" for the feet and inches
+    /// \param value Length in this unit
+    /// \param decimals Count of the decimal places (not used for feet and inches)
+    QString formatLength(pdf::PDFReal value, int decimals = 2) const;
+
+    /// Formats the length in feet as feet and inches rounded to the given
+    /// fraction of an inch, for example 12.541666 is formatted as 12'-6 1/2"
+    /// \param feet Length in feet
+    /// \param denominator Fractions of an inch, to which the value is rounded
+    static QString formatFeetAndInches(pdf::PDFReal feet, int denominator = 16);
+
     static DimensionUnits getLengthUnits();
     static DimensionUnits getAreaUnits();
     static DimensionUnits getAngleUnits();

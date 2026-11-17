@@ -27,6 +27,10 @@
 
 #include <QPainter>
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
 #include "pdfdbgheap.h"
 
 namespace pdf
@@ -178,7 +182,11 @@ void PDFSnapper::drawSnapPoints(QPainter* painter) const
         painter->drawPoint(point);
     }
 
-    if (isSnapped())
+    if (isSnapped() && getSnappedPointType() >= SnapType::GeometryEndpoint)
+    {
+        drawGeometryMarker(painter);
+    }
+    else if (isSnapped())
     {
         pen.setColor(Qt::yellow);
         painter->setPen(pen);
@@ -213,6 +221,13 @@ void PDFSnapper::updateSnappedPoint(const QPointF& mousePoint)
         }
     }
 
+    // The points of interest have a priority over the geometry of the drawing,
+    // so for example the first point of a polygon can always be picked to close it
+    if (!m_snappedPoint && m_geometrySnapping)
+    {
+        updateSnappedGeometryPoint(mousePoint);
+    }
+
     // Iterate trough all images, check, if some is under mouse cursor
     for (const ViewportSnapImage& snapImage : m_snapImages)
     {
@@ -239,6 +254,8 @@ void PDFSnapper::buildSnapPoints(const PDFWidgetSnapshot& snapshot)
 
         addSnapInfoImpl(item.pageIndex, item.pageToDeviceMatrix, *item.compiledPage->getSnapInfo(), true);
     }
+
+    buildGeometryPages(snapshot);
 
     // Third, update snap shot position
     updateSnappedPoint(m_mousePoint);
@@ -363,6 +380,18 @@ QPointF PDFSnapper::getSnappedPoint() const
     return m_mousePoint;
 }
 
+bool PDFSnapper::getSnappedPagePoint(PDFInteger& pageIndex, QPointF& pagePoint) const
+{
+    if (!m_snappedPoint)
+    {
+        return false;
+    }
+
+    pageIndex = m_snappedPoint->pageIndex;
+    pagePoint = m_snappedPoint->point;
+    return true;
+}
+
 const PDFSnapper::ViewportSnapImage* PDFSnapper::getSnappedImage() const
 {
     if (m_snappedImage.has_value())
@@ -399,6 +428,7 @@ void PDFSnapper::clear()
     m_customSnapPoints.clear();
     m_snapPoints.clear();
     m_snapImages.clear();
+    m_geometryPages.clear();
     m_snappedPoint = std::nullopt;
     m_snappedImage = std::nullopt;
     m_mousePoint = QPointF();
@@ -412,6 +442,529 @@ const std::vector<QPointF>& PDFSnapper::getCustomSnapPoints() const
 void PDFSnapper::setCustomSnapPoints(const std::vector<QPointF>& customSnapPoints)
 {
     m_customSnapPoints = customSnapPoints;
+}
+
+PDFPageGeometrySnapIndex PDFPageGeometrySnapIndex::create(const PDFPrecompiledPage* compiledPage, size_t maximalSegmentCount)
+{
+    PDFPageGeometrySnapIndex index;
+    index.m_maximalSegmentCount = maximalSegmentCount;
+
+    if (compiledPage)
+    {
+        compiledPage->enumerateVectorPaths([&index](const QPainterPath& path, const QTransform& matrix) { index.addPath(path, matrix); });
+    }
+
+    index.build();
+    return index;
+}
+
+void PDFPageGeometrySnapIndex::addPath(const QPainterPath& path, const QTransform& matrix)
+{
+    // Count of the line segments approximating a single cubic curve. Points
+    // on a curve are snapped only as the nearest points, so a rough
+    // approximation is sufficient.
+    constexpr int CURVE_SEGMENTS = 8;
+
+    QPointF currentPoint;
+    const int elementCount = path.elementCount();
+
+    for (int i = 0; i < elementCount; ++i)
+    {
+        const QPainterPath::Element& element = path.elementAt(i);
+
+        switch (element.type)
+        {
+            case QPainterPath::MoveToElement:
+                currentPoint = matrix.map(QPointF(element.x, element.y));
+                break;
+
+            case QPainterPath::LineToElement:
+            {
+                const QPointF point = matrix.map(QPointF(element.x, element.y));
+                addSegment(currentPoint, point, true, true, true);
+                currentPoint = point;
+                break;
+            }
+
+            case QPainterPath::CurveToElement:
+            {
+                if (i + 2 >= elementCount)
+                {
+                    // Malformed path, curve must have two data elements
+                    i = elementCount;
+                    break;
+                }
+
+                const QPointF p0 = currentPoint;
+                const QPointF p1 = matrix.map(QPointF(element.x, element.y));
+                const QPointF p2 = matrix.map(QPointF(path.elementAt(i + 1).x, path.elementAt(i + 1).y));
+                const QPointF p3 = matrix.map(QPointF(path.elementAt(i + 2).x, path.elementAt(i + 2).y));
+                i += 2;
+
+                QPointF previousPoint = p0;
+                for (int j = 1; j <= CURVE_SEGMENTS; ++j)
+                {
+                    const PDFReal t = PDFReal(j) / CURVE_SEGMENTS;
+                    const PDFReal u = 1.0 - t;
+                    const QPointF point = (j == CURVE_SEGMENTS) ? p3 : u * u * u * p0 + 3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t * p3;
+                    addSegment(previousPoint, point, false, j == 1, j == CURVE_SEGMENTS);
+                    previousPoint = point;
+                }
+
+                currentPoint = p3;
+                break;
+            }
+
+            default:
+                break;
+        }
+    }
+}
+
+void PDFPageGeometrySnapIndex::addSegment(QPointF p1, QPointF p2, bool isStraight, bool isP1Endpoint, bool isP2Endpoint)
+{
+    if (m_segments.size() >= m_maximalSegmentCount)
+    {
+        m_isTruncated = true;
+        return;
+    }
+
+    if (!qIsFinite(p1.x()) || !qIsFinite(p1.y()) || !qIsFinite(p2.x()) || !qIsFinite(p2.y()))
+    {
+        return;
+    }
+
+    Segment segment;
+    segment.x1 = float(p1.x());
+    segment.y1 = float(p1.y());
+    segment.x2 = float(p2.x());
+    segment.y2 = float(p2.y());
+    segment.flags = (isStraight ? Straight : 0) | (isP1Endpoint ? P1Endpoint : 0) | (isP2Endpoint ? P2Endpoint : 0);
+    m_segments.push_back(segment);
+}
+
+int PDFPageGeometrySnapIndex::getCellColumn(PDFReal x) const
+{
+    return qBound(0, int((x - m_bounds.left()) / m_cellSize), m_columns - 1);
+}
+
+int PDFPageGeometrySnapIndex::getCellRow(PDFReal y) const
+{
+    return qBound(0, int((y - m_bounds.top()) / m_cellSize), m_rows - 1);
+}
+
+template<typename Function>
+void PDFPageGeometrySnapIndex::forEachSegmentCell(const Segment& segment, Function function) const
+{
+    // The segment is walked in steps of a half of the cell, which visits each
+    // cell the segment passes through, except for cells, of which only a tiny
+    // corner is crossed. The query compensates it by searching one more cell
+    // around the queried area.
+    const PDFReal dx = segment.x2 - segment.x1;
+    const PDFReal dy = segment.y2 - segment.y1;
+    const PDFReal length = qSqrt(dx * dx + dy * dy);
+    const int steps = qMax(1, int(std::ceil(2.0 * length / m_cellSize)));
+
+    int lastCell = -1;
+    for (int i = 0; i <= steps; ++i)
+    {
+        const PDFReal t = PDFReal(i) / steps;
+        const int cell = getCellRow(segment.y1 + t * dy) * m_columns + getCellColumn(segment.x1 + t * dx);
+
+        if (cell != lastCell)
+        {
+            function(cell);
+            lastCell = cell;
+        }
+    }
+}
+
+void PDFPageGeometrySnapIndex::build()
+{
+    m_cellStart.clear();
+    m_cellItems.clear();
+    m_columns = 0;
+    m_rows = 0;
+
+    if (m_segments.empty())
+    {
+        return;
+    }
+
+    m_segments.shrink_to_fit();
+
+    PDFReal minX = std::numeric_limits<PDFReal>::max();
+    PDFReal minY = std::numeric_limits<PDFReal>::max();
+    PDFReal maxX = std::numeric_limits<PDFReal>::lowest();
+    PDFReal maxY = std::numeric_limits<PDFReal>::lowest();
+
+    for (const Segment& segment : m_segments)
+    {
+        minX = qMin(minX, PDFReal(qMin(segment.x1, segment.x2)));
+        minY = qMin(minY, PDFReal(qMin(segment.y1, segment.y2)));
+        maxX = qMax(maxX, PDFReal(qMax(segment.x1, segment.x2)));
+        maxY = qMax(maxY, PDFReal(qMax(segment.y1, segment.y2)));
+    }
+
+    m_bounds = QRectF(minX, minY, qMax(maxX - minX, 1.0), qMax(maxY - minY, 1.0));
+
+    // A cell holds roughly a few segments on average, the grid is limited,
+    // so the memory of the grid itself stays small even for huge drawings
+    constexpr int MAXIMAL_GRID_SIZE = 2048;
+    const PDFReal targetCellCount = qBound(1.0, PDFReal(m_segments.size()) * 0.5, PDFReal(MAXIMAL_GRID_SIZE) * MAXIMAL_GRID_SIZE);
+    m_cellSize = qSqrt(m_bounds.width() * m_bounds.height() / targetCellCount);
+    m_cellSize = qMax(m_cellSize, qMax(m_bounds.width(), m_bounds.height()) / MAXIMAL_GRID_SIZE);
+    m_columns = qBound(1, int(std::ceil(m_bounds.width() / m_cellSize)), MAXIMAL_GRID_SIZE);
+    m_rows = qBound(1, int(std::ceil(m_bounds.height() / m_cellSize)), MAXIMAL_GRID_SIZE);
+
+    // Counting sort of the segments into the cells (compressed sparse rows)
+    const size_t cellCount = size_t(m_columns) * size_t(m_rows);
+    m_cellStart.assign(cellCount + 1, 0);
+
+    for (const Segment& segment : m_segments)
+    {
+        forEachSegmentCell(segment, [this](int cell) { ++m_cellStart[cell + 1]; });
+    }
+
+    for (size_t i = 1; i <= cellCount; ++i)
+    {
+        m_cellStart[i] += m_cellStart[i - 1];
+    }
+
+    m_cellItems.resize(m_cellStart.back());
+    std::vector<uint32_t> fillPosition(m_cellStart.begin(), m_cellStart.end() - 1);
+
+    for (uint32_t segmentIndex = 0; segmentIndex < uint32_t(m_segments.size()); ++segmentIndex)
+    {
+        forEachSegmentCell(m_segments[segmentIndex], [&, segmentIndex](int cell) { m_cellItems[fillPosition[cell]++] = segmentIndex; });
+    }
+}
+
+PDFPageGeometrySnapIndex::Result PDFPageGeometrySnapIndex::find(QPointF point, PDFReal tolerance) const
+{
+    Result result;
+
+    if (m_segments.empty() || m_cellStart.empty() || tolerance <= 0.0)
+    {
+        return result;
+    }
+
+    const QRectF queryRect(point.x() - tolerance, point.y() - tolerance, 2.0 * tolerance, 2.0 * tolerance);
+    if (!queryRect.intersects(m_bounds.adjusted(-m_cellSize, -m_cellSize, m_cellSize, m_cellSize)))
+    {
+        return result;
+    }
+
+    // One more cell around, see forEachSegmentCell
+    const int column1 = qMax(0, getCellColumn(queryRect.left()) - 1);
+    const int column2 = qMin(m_columns - 1, getCellColumn(queryRect.right()) + 1);
+    const int row1 = qMax(0, getCellRow(queryRect.top()) - 1);
+    const int row2 = qMin(m_rows - 1, getCellRow(queryRect.bottom()) + 1);
+
+    std::vector<uint32_t> candidates;
+    for (int row = row1; row <= row2; ++row)
+    {
+        for (int column = column1; column <= column2; ++column)
+        {
+            const size_t cell = size_t(row) * size_t(m_columns) + size_t(column);
+            candidates.insert(candidates.end(), m_cellItems.begin() + m_cellStart[cell], m_cellItems.begin() + m_cellStart[cell + 1]);
+        }
+    }
+
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+    // Points of the same kind are compared by a score - the distance from the
+    // queried point, increased by the distance of the segment, to which the point
+    // belongs. On a dense drawing (hatching, contours) the end of the line under
+    // the cursor is then preferred to a slightly nearer end of a neighbouring line.
+    PDFReal bestScore = std::numeric_limits<PDFReal>::max();
+    auto updateResult = [&result, &bestScore, tolerance](Kind kind, QPointF snappedPoint, PDFReal distance, PDFReal score)
+    {
+        if (distance > tolerance)
+        {
+            return;
+        }
+
+        if (kind < result.kind || (kind == result.kind && score < bestScore))
+        {
+            result.kind = kind;
+            result.point = snappedPoint;
+            result.distance = distance;
+            bestScore = score;
+        }
+    };
+
+    auto getDistance = [point](QPointF other)
+    {
+        const QPointF difference = other - point;
+        return qSqrt(QPointF::dotProduct(difference, difference));
+    };
+
+    // Segments, which pass near the point, are candidates for the intersections
+    std::vector<QLineF> nearLines;
+
+    for (uint32_t segmentIndex : candidates)
+    {
+        const Segment& segment = m_segments[segmentIndex];
+        const QPointF p1(segment.x1, segment.y1);
+        const QPointF p2(segment.x2, segment.y2);
+
+        // Projection of the point onto the segment
+        const QPointF direction = p2 - p1;
+        const PDFReal squaredLength = QPointF::dotProduct(direction, direction);
+        QPointF nearestPoint = p1;
+        if (squaredLength > 0.0)
+        {
+            const PDFReal t = qBound(0.0, QPointF::dotProduct(point - p1, direction) / squaredLength, 1.0);
+            nearestPoint = p1 + t * direction;
+        }
+
+        const PDFReal nearestDistance = getDistance(nearestPoint);
+        updateResult(Kind::Nearest, nearestPoint, nearestDistance, nearestDistance);
+
+        constexpr PDFReal SEGMENT_DISTANCE_WEIGHT = 2.0;
+        PDFReal segmentPenalty = SEGMENT_DISTANCE_WEIGHT * nearestDistance;
+
+        // Segments shorter than twice the tolerance are mostly hatching, symbols or
+        // details too small to be measured at the current zoom, so their points
+        // are preferred less than the points of the long lines of the drawing
+        if (squaredLength < 4.0 * tolerance * tolerance)
+        {
+            segmentPenalty += tolerance;
+        }
+
+        if (segment.flags & P1Endpoint)
+        {
+            const PDFReal distance = getDistance(p1);
+            updateResult(Kind::Endpoint, p1, distance, distance + segmentPenalty);
+        }
+
+        if (segment.flags & P2Endpoint)
+        {
+            const PDFReal distance = getDistance(p2);
+            updateResult(Kind::Endpoint, p2, distance, distance + segmentPenalty);
+        }
+
+        if (segment.flags & Straight)
+        {
+            const QPointF midpoint = (p1 + p2) * 0.5;
+            const PDFReal distance = getDistance(midpoint);
+            updateResult(Kind::Midpoint, midpoint, distance, distance + segmentPenalty);
+        }
+
+        if (nearestDistance <= tolerance && squaredLength > 0.0)
+        {
+            nearLines.emplace_back(p1, p2);
+        }
+    }
+
+    // Intersections are searched only, if no end point was found, because an end
+    // point has a higher priority. The count of the tested pairs is limited, so
+    // a dense hatching cannot slow down the movement of the mouse.
+    constexpr size_t MAXIMAL_INTERSECTION_LINES = 256;
+    if (result.kind > Kind::Intersection && nearLines.size() >= 2 && nearLines.size() <= MAXIMAL_INTERSECTION_LINES)
+    {
+        const PDFReal epsilon = tolerance * 1e-3;
+        auto isEndOfLine = [epsilon](const QLineF& line, QPointF testedPoint)
+        {
+            return QLineF(line.p1(), testedPoint).length() <= epsilon || QLineF(line.p2(), testedPoint).length() <= epsilon;
+        };
+
+        for (size_t i = 0; i < nearLines.size(); ++i)
+        {
+            for (size_t j = i + 1; j < nearLines.size(); ++j)
+            {
+                QPointF intersectionPoint;
+                if (nearLines[i].intersects(nearLines[j], &intersectionPoint) == QLineF::BoundedIntersection &&
+                    !(isEndOfLine(nearLines[i], intersectionPoint) && isEndOfLine(nearLines[j], intersectionPoint)))
+                {
+                    // Consecutive segments of a polyline or of a curve touch each other
+                    // at their common vertex, which is not an intersection
+                    const PDFReal distance = getDistance(intersectionPoint);
+                    updateResult(Kind::Intersection, intersectionPoint, distance, distance);
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+void PDFSnapper::setGeometrySnapping(bool geometrySnapping)
+{
+    m_geometrySnapping = geometrySnapping;
+
+    if (!m_geometrySnapping)
+    {
+        m_geometryPages.clear();
+    }
+}
+
+const PDFPageGeometrySnapIndex* PDFSnapper::getGeometrySnapIndex(PDFInteger pageIndex) const
+{
+    auto it = m_geometryPages.find(pageIndex);
+    return (it != m_geometryPages.cend() && it->second.index) ? it->second.index.get() : nullptr;
+}
+
+void PDFSnapper::buildGeometryPages(const PDFWidgetSnapshot& snapshot)
+{
+    if (!m_geometrySnapping)
+    {
+        return;
+    }
+
+    std::map<PDFInteger, GeometryPage> geometryPages;
+
+    for (const PDFWidgetSnapshot::SnapshotItem& item : snapshot.items)
+    {
+        if (!item.compiledPage || !item.compiledPage->isValid())
+        {
+            continue;
+        }
+
+        GeometryPage geometryPage;
+        geometryPage.compiledPage = item.compiledPage;
+        geometryPage.pathCount = item.compiledPage->getPathCount();
+        geometryPage.pageToDeviceMatrix = item.pageToDeviceMatrix;
+
+        // The index depends only on the compiled page, not on the zoom, so the
+        // index of a page, which was not compiled again, is reused
+        auto it = m_geometryPages.find(item.pageIndex);
+        if (it != m_geometryPages.end() &&
+            it->second.compiledPage == geometryPage.compiledPage &&
+            it->second.pathCount == geometryPage.pathCount)
+        {
+            geometryPage.index = it->second.index;
+        }
+        else
+        {
+            geometryPage.index = std::make_shared<const PDFPageGeometrySnapIndex>(PDFPageGeometrySnapIndex::create(item.compiledPage));
+        }
+
+        geometryPages[item.pageIndex] = qMove(geometryPage);
+    }
+
+    // Pages, which are not visible anymore, are released
+    m_geometryPages = qMove(geometryPages);
+}
+
+bool PDFSnapper::updateSnappedGeometryPoint(const QPointF& mousePoint)
+{
+    for (const auto& [pageIndex, geometryPage] : m_geometryPages)
+    {
+        if (!geometryPage.index || !isSnappingAllowed(pageIndex) || !geometryPage.pageToDeviceMatrix.isInvertible())
+        {
+            continue;
+        }
+
+        const QTransform deviceToPageMatrix = geometryPage.pageToDeviceMatrix.inverted();
+        const PDFReal pixelsPerPageUnit = qSqrt(qAbs(geometryPage.pageToDeviceMatrix.determinant()));
+
+        if (qFuzzyIsNull(pixelsPerPageUnit))
+        {
+            continue;
+        }
+
+        const PDFReal tolerance = m_snapPointTolerance / pixelsPerPageUnit;
+        const PDFPageGeometrySnapIndex::Result result = geometryPage.index->find(deviceToPageMatrix.map(mousePoint), tolerance);
+
+        if (!result.isValid())
+        {
+            continue;
+        }
+
+        ViewportSnapPoint snapPoint;
+        snapPoint.point = result.point;
+        snapPoint.pageIndex = pageIndex;
+        snapPoint.viewportPoint = geometryPage.pageToDeviceMatrix.map(result.point);
+
+        switch (result.kind)
+        {
+            case PDFPageGeometrySnapIndex::Kind::Endpoint:
+                snapPoint.type = SnapType::GeometryEndpoint;
+                break;
+
+            case PDFPageGeometrySnapIndex::Kind::Intersection:
+                snapPoint.type = SnapType::GeometryIntersection;
+                break;
+
+            case PDFPageGeometrySnapIndex::Kind::Midpoint:
+                snapPoint.type = SnapType::GeometryMidpoint;
+                break;
+
+            default:
+                snapPoint.type = SnapType::GeometryNearest;
+                break;
+        }
+
+        m_snappedPoint = snapPoint;
+        return true;
+    }
+
+    return false;
+}
+
+void PDFSnapper::drawGeometryMarker(QPainter* painter) const
+{
+    if (!m_snappedPoint)
+    {
+        return;
+    }
+
+    const SnapType type = m_snappedPoint->type;
+    if (type != SnapType::GeometryEndpoint &&
+        type != SnapType::GeometryIntersection &&
+        type != SnapType::GeometryMidpoint &&
+        type != SnapType::GeometryNearest)
+    {
+        return;
+    }
+
+    const QPointF center = m_snappedPoint->viewportPoint;
+    const PDFReal size = qMax(4.0, m_snapPointPixelSize * 0.6);
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setBrush(Qt::NoBrush);
+
+    // Dark outline under the colored marker keeps it visible on any drawing
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        QPen pen(pass == 0 ? QColor(Qt::black) : QColor(0, 200, 0));
+        pen.setWidthF(pass == 0 ? 4.0 : 2.0);
+        pen.setCosmetic(true);
+        painter->setPen(pen);
+
+        switch (type)
+        {
+            case SnapType::GeometryEndpoint:
+                painter->drawRect(QRectF(center.x() - size, center.y() - size, 2.0 * size, 2.0 * size));
+                break;
+
+            case SnapType::GeometryIntersection:
+                painter->drawLine(center + QPointF(-size, -size), center + QPointF(size, size));
+                painter->drawLine(center + QPointF(-size, size), center + QPointF(size, -size));
+                break;
+
+            case SnapType::GeometryMidpoint:
+            {
+                const QPointF triangle[] = { center + QPointF(0, -size), center + QPointF(size, size), center + QPointF(-size, size) };
+                painter->drawPolygon(triangle, 3);
+                break;
+            }
+
+            default:
+            {
+                // Hourglass marks the nearest point on a line
+                const QPointF hourglass[] = { center + QPointF(-size, -size), center + QPointF(size, -size), center + QPointF(-size, size), center + QPointF(size, size) };
+                painter->drawPolygon(hourglass, 4);
+                break;
+            }
+        }
+    }
+
+    painter->restore();
 }
 
 }   // namespace pdf

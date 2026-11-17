@@ -68,6 +68,15 @@ public:
     /// Returns the scale defined by the dialog
     DimensionScale getScale() const;
 
+    /// Shows the choice, whether the scale applies to all sheets (pages)
+    /// of the document, or to the current sheet only
+    /// \param isThisSheetDefault Is the current sheet selected by default
+    /// \param pageNumber Number of the current sheet (one based)
+    void setApplyToSheetChoice(bool isThisSheetDefault, int pageNumber);
+
+    /// Returns true, if the user has chosen to apply the scale to the current sheet only
+    bool isAppliedToThisSheetOnly() const;
+
 private:
     void initialize(const DimensionScale& scale, Mode mode);
     void initializeUnitComboBox(QComboBox* comboBox, const QByteArray& currentUnitId);
@@ -86,6 +95,10 @@ private:
     pdf::PDFReal m_measuredLength;
 
     DimensionUnits m_lengthUnits;
+
+    /// Choice of the sheets, to which the scale applies, it exists only,
+    /// when it was requested by setApplyToSheetChoice
+    QComboBox* m_applyToComboBox = nullptr;
 };
 
 #endif // SCALEDIALOG_H

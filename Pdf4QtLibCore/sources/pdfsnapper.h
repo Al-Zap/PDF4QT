@@ -27,12 +27,14 @@
 
 #include <QImage>
 #include <QPainterPath>
+#include <QTransform>
 
 #include <array>
+#include <map>
+#include <memory>
 #include <optional>
 
 class QPainter;
-class QTransform;
 
 namespace pdf
 {
@@ -49,7 +51,11 @@ enum class SnapType
     LineCenter,        ///< Center of line
     GeneratedLineProjection,   ///< Generated point to line projections
     Annotation,        ///< Annotation geometry point
-    Custom  ///< Custom snap point
+    Custom,  ///< Custom snap point
+    GeometryEndpoint,       ///< End point of a line of the drawing (see PDFPageGeometrySnapIndex)
+    GeometryIntersection,   ///< Intersection of two lines of the drawing
+    GeometryMidpoint,       ///< Midpoint of a line of the drawing
+    GeometryNearest         ///< Nearest point on a line of the drawing
 };
 
 /// Contain informations for snap points in the pdf page. Snap points
@@ -123,6 +129,116 @@ private:
     std::vector<SnapPoint> m_snapPoints;
     std::vector<QLineF> m_snapLines;
     std::vector<SnapImage> m_snapImages;
+};
+
+/// Spatial index of the vector geometry of a single page - the segments of all
+/// drawn paths, their end points, midpoints and mutual intersections. It allows
+/// to snap to the drawing itself like in a CAD application (end of a line,
+/// corner of a building, midpoint of a wall, point on a property line), which
+/// is needed for an exact measurement on a plan. Coordinates are page coordinates.
+/// The index is immutable after \p build, so it can be shared between threads.
+class PDF4QTLIBCORESHARED_EXPORT PDFPageGeometrySnapIndex
+{
+public:
+    explicit PDFPageGeometrySnapIndex() = default;
+
+    /// Kind of the snapped point, ordered by priority - when more points
+    /// lie within the tolerance, the kind with lower value wins
+    enum class Kind
+    {
+        Endpoint,       ///< End point of a line or a curve, corner of a polyline or a rectangle
+        Intersection,   ///< Intersection of two segments
+        Midpoint,       ///< Midpoint of a straight segment
+        Nearest,        ///< Nearest point lying on a segment
+        None            ///< Nothing snapped
+    };
+
+    struct Result
+    {
+        Kind kind = Kind::None;
+        QPointF point;          ///< Snapped point in page coordinates
+        PDFReal distance = 0.0; ///< Distance from the queried point
+
+        bool isValid() const { return kind != Kind::None; }
+    };
+
+    /// Creates the index from the vector graphics of a compiled page. Text is
+    /// not included. If the page contains more segments, than the limit, then
+    /// the remaining ones are ignored, so the memory consumption is bounded.
+    /// \param compiledPage Compiled page
+    /// \param maximalSegmentCount Maximal count of the indexed segments
+    static PDFPageGeometrySnapIndex create(const PDFPrecompiledPage* compiledPage, size_t maximalSegmentCount = DEFAULT_MAXIMAL_SEGMENT_COUNT);
+
+    /// Adds all segments of a path. Curves are approximated by line segments,
+    /// but only their real end points are snapped as end points. Call \p build
+    /// after all paths are added.
+    /// \param path Path
+    /// \param matrix Matrix mapping the path to the page coordinates
+    void addPath(const QPainterPath& path, const QTransform& matrix);
+
+    /// Adds a single segment. Call \p build after all segments are added.
+    /// \param p1 Start point
+    /// \param p2 End point
+    /// \param isStraight Is it a real straight segment (otherwise it is a part of a curve, which has no midpoint)
+    /// \param isP1Endpoint Is the start point a real end point (otherwise it is an inner point of a curve approximation)
+    /// \param isP2Endpoint Is the end point a real end point
+    void addSegment(QPointF p1, QPointF p2, bool isStraight, bool isP1Endpoint, bool isP2Endpoint);
+
+    /// Builds the spatial index, must be called after the segments are added
+    void build();
+
+    /// Finds the point of the geometry, to which the given point snaps. The kind
+    /// of the point with the highest priority wins, the nearest point is selected
+    /// from the points of the same kind.
+    /// \param point Point in page coordinates
+    /// \param tolerance Maximal distance in page coordinates
+    Result find(QPointF point, PDFReal tolerance) const;
+
+    /// Returns count of the indexed segments
+    size_t getSegmentCount() const { return m_segments.size(); }
+
+    /// Returns true, if the segment limit was reached and some geometry was ignored
+    bool isTruncated() const { return m_isTruncated; }
+
+    bool isEmpty() const { return m_segments.empty(); }
+
+    static constexpr size_t DEFAULT_MAXIMAL_SEGMENT_COUNT = 4'000'000;
+
+private:
+    enum SegmentFlag : uint8_t
+    {
+        Straight = 0x01,
+        P1Endpoint = 0x02,
+        P2Endpoint = 0x04
+    };
+
+    // Single precision is sufficient - it is a precision of about 0.01 pt
+    // for coordinates of the largest drawings
+    struct Segment
+    {
+        float x1 = 0.0f;
+        float y1 = 0.0f;
+        float x2 = 0.0f;
+        float y2 = 0.0f;
+        uint8_t flags = 0;
+    };
+
+    /// Calls the function for each cell, through which the segment passes
+    template<typename Function>
+    void forEachSegmentCell(const Segment& segment, Function function) const;
+
+    int getCellColumn(PDFReal x) const;
+    int getCellRow(PDFReal y) const;
+
+    std::vector<Segment> m_segments;
+    std::vector<uint32_t> m_cellStart;  ///< Index of the first item of each cell, one more for the end
+    std::vector<uint32_t> m_cellItems;  ///< Indices of the segments in the cells
+    QRectF m_bounds;
+    PDFReal m_cellSize = 1.0;
+    int m_columns = 0;
+    int m_rows = 0;
+    size_t m_maximalSegmentCount = DEFAULT_MAXIMAL_SEGMENT_COUNT;
+    bool m_isTruncated = false;
 };
 
 /// Snap engine, which handles snapping of points on the page.
@@ -219,7 +335,52 @@ public:
     /// \param customSnapPoints Custom snap points
     void setCustomSnapPoints(const std::vector<QPointF>& customSnapPoints);
 
+    /// Enables snapping to the vector geometry of the pages - end points,
+    /// intersections, midpoints of the lines and points on the lines. The
+    /// geometry index of a page is built when the page becomes visible
+    /// and it is kept, until the page is compiled again.
+    /// \param geometrySnapping Snap to the vector geometry
+    void setGeometrySnapping(bool geometrySnapping);
+
+    /// Returns true, if snapping to the vector geometry is enabled
+    bool isGeometrySnapping() const { return m_geometrySnapping; }
+
+    /// Returns the geometry index of a page, or nullptr, if it was not built
+    /// \param pageIndex Page index
+    const PDFPageGeometrySnapIndex* getGeometrySnapIndex(PDFInteger pageIndex) const;
+
+    /// Returns the snapped point in the page coordinates. It is exact, unlike the
+    /// snapped point in the widget coordinates, which is rounded to pixels, when
+    /// it is mapped to the page. Returns false, if no point is snapped.
+    /// \param pageIndex Page index of the snapped point
+    /// \param pagePoint Snapped point in the page coordinates
+    bool getSnappedPagePoint(PDFInteger& pageIndex, QPointF& pagePoint) const;
+
+    /// Returns type of the snapped point, or SnapType::Invalid, if no point is snapped
+    SnapType getSnappedPointType() const { return m_snappedPoint ? m_snappedPoint->type : SnapType::Invalid; }
+
 private:
+    struct GeometryPage
+    {
+        const PDFPrecompiledPage* compiledPage = nullptr;
+        size_t pathCount = 0;
+        QTransform pageToDeviceMatrix;
+        std::shared_ptr<const PDFPageGeometrySnapIndex> index;
+    };
+
+    /// Updates the geometry indices of the visible pages
+    void buildGeometryPages(const PDFWidgetSnapshot& snapshot);
+
+    /// Snaps the mouse point to the vector geometry, returns true, if it was snapped
+    bool updateSnappedGeometryPoint(const QPointF& mousePoint);
+
+    /// Draws a marker of the snapped point of the geometry, the shape
+    /// of the marker shows the kind of the point, as in CAD applications
+    void drawGeometryMarker(QPainter* painter) const;
+
+    std::map<PDFInteger, GeometryPage> m_geometryPages;
+    bool m_geometrySnapping = false;
+
     struct SnappedPoint
     {
         PDFInteger pageIndex = -1;

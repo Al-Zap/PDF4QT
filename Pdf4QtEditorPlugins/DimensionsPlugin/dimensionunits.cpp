@@ -28,6 +28,7 @@
 #include <QtMath>
 
 #include <algorithm>
+#include <numeric>
 #include <utility>
 
 namespace dimensionunits
@@ -99,11 +100,63 @@ DimensionUnits DimensionUnit::getLengthUnits()
     units.emplace_back("cm", POINT_TO_CENTIMETER, translateUnit("cm"));
     units.emplace_back("m", POINT_TO_METER, translateUnit("m"));
     units.emplace_back("ft", POINT_TO_FOOT, translateUnit("ft"));
+    units.emplace_back(FEET_AND_INCHES_ID, POINT_TO_FOOT, translateUnit("ft-in"));
     units.emplace_back("yd", POINT_TO_YARD, translateUnit("yd"));
     units.emplace_back("km", POINT_TO_KILOMETER, translateUnit("km"));
     units.emplace_back("mi", POINT_TO_MILE, translateUnit("mi"));
 
     return units;
+}
+
+bool DimensionUnit::isFeetAndInches() const
+{
+    return id == FEET_AND_INCHES_ID;
+}
+
+QString DimensionUnit::formatLength(pdf::PDFReal value, int decimals) const
+{
+    if (isFeetAndInches())
+    {
+        return formatFeetAndInches(value);
+    }
+
+    return QString("%1 %2").arg(QLocale().toString(value, 'f', decimals), symbol);
+}
+
+QString DimensionUnit::formatFeetAndInches(pdf::PDFReal feet, int denominator)
+{
+    if (!qIsFinite(feet))
+    {
+        return QString();
+    }
+
+    denominator = qMax(1, denominator);
+
+    // Rounded to the nearest fraction of an inch first, so a value like
+    // 11' 11.99" becomes 12'-0" and never 11'-12"
+    const qint64 fractions = qRound64(qAbs(feet) * 12.0 * denominator);
+    const qint64 fractionsPerFoot = 12 * qint64(denominator);
+    const qint64 wholeFeet = fractions / fractionsPerFoot;
+    const qint64 remainder = fractions % fractionsPerFoot;
+    const qint64 wholeInches = remainder / denominator;
+    qint64 numerator = remainder % denominator;
+    qint64 reducedDenominator = denominator;
+
+    if (numerator > 0)
+    {
+        const qint64 divisor = std::gcd(numerator, reducedDenominator);
+        numerator /= divisor;
+        reducedDenominator /= divisor;
+    }
+
+    QString inches = QString::number(wholeInches);
+    if (numerator > 0)
+    {
+        inches += QString(" %1/%2").arg(numerator).arg(reducedDenominator);
+    }
+
+    const QString sign = (feet < 0.0 && fractions > 0) ? QString("-") : QString();
+    return QString("%1%2'-%3\"").arg(sign).arg(wholeFeet).arg(inches);
 }
 
 DimensionUnits DimensionUnit::getAreaUnits()
@@ -363,10 +416,24 @@ std::vector<DimensionScale> DimensionScale::getDefaultPresets()
     presets.emplace_back(1.0, "mm", 500.0, "mm", tr("Metric 1:500"), QString());
     presets.emplace_back(1.0, "mm", 1.0, "m", tr("Metric 1:1000"), QString());
     presets.emplace_back(1.0, "cm", 100.0, "m", tr("Metric 1:10000"), QString());
-    presets.emplace_back(0.125, "in", 1.0, "ft", tr("Architectural 1/8\" = 1'"), QString());
-    presets.emplace_back(0.25, "in", 1.0, "ft", tr("Architectural 1/4\" = 1'"), QString());
-    presets.emplace_back(1.0, "in", 10.0, "ft", tr("Engineering 1\" = 10'"), QString());
-    presets.emplace_back(1.0, "in", 100.0, "ft", tr("Engineering 1\" = 100'"), QString());
+
+    // Civil and site plans
+    for (int feet : { 10, 20, 30, 40, 50, 60, 100, 200 })
+    {
+        presets.emplace_back(1.0, "in", feet, "ft", tr("Engineering 1\" = %1'").arg(feet), QString());
+    }
+
+    // Architectural plans, the paper distance is a fraction of an inch per foot
+    const std::pair<pdf::PDFReal, const char*> architecturalScales[] = {
+        { 1.0 / 16.0, "1/16" }, { 3.0 / 32.0, "3/32" }, { 1.0 / 8.0, "1/8" }, { 3.0 / 16.0, "3/16" },
+        { 1.0 / 4.0, "1/4" }, { 3.0 / 8.0, "3/8" }, { 1.0 / 2.0, "1/2" }, { 3.0 / 4.0, "3/4" },
+        { 1.0, "1" }, { 1.5, "1 1/2" }, { 3.0, "3" }
+    };
+
+    for (const auto& [paperInches, text] : architecturalScales)
+    {
+        presets.emplace_back(paperInches, "in", 1.0, "ft", tr("Architectural %1\" = 1'-0\"").arg(QString::fromLatin1(text)), QString());
+    }
 
     return presets;
 }
