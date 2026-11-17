@@ -280,6 +280,16 @@ set_target_properties(UnitTestsTextLayout PROPERTIES
 )
 add_test(UnitTestsTextLayout "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsTextLayout")
 
+add_executable(UnitTestsDocxExporter tst_docxexportertest.cpp)
+target_link_libraries(UnitTestsDocxExporter PRIVATE Pdf4QtLibCore Qt6::Core Qt6::Gui Qt6::Test ZLIB::ZLIB)
+set_target_properties(UnitTestsDocxExporter PROPERTIES
+    WIN32_EXECUTABLE OFF
+    MACOSX_BUNDLE OFF
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+)
+add_test(UnitTestsDocxExporter "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsDocxExporter")
+set_tests_properties(UnitTestsDocxExporter PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
     add_executable(UnitTestsAnnotationTools tst_annotationtoolstest.cpp)
     target_link_libraries(UnitTestsAnnotationTools PRIVATE Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
