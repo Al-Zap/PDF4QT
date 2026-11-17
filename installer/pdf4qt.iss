@@ -89,9 +89,9 @@ ChangesAssociations=yes
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
-english::DefaultAppTask=Make {#AppName} my default PDF app (opens Windows Settings to confirm)
-english::ToolsGroup={#AppName} tools
-english::RemoveUserData=Also remove your settings and downloaded OCR language models of {#AppName}?%n%nChoose No to keep them for a later installation.
+english.DefaultAppTask=Make {#AppName} my default PDF app (opens Windows Settings to confirm)
+english.ToolsGroup={#AppName} tools
+english.RemoveUserData=Also remove your settings and downloaded OCR language models of {#AppName}?%n%nChoose No to keep them for a later installation.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
