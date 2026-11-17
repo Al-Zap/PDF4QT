@@ -175,7 +175,7 @@ private:
 using AnnotationBorderStyle = PDFAnnotationBorder::Style;
 
 /// Annotation border effect
-class PDFAnnotationBorderEffect
+class PDF4QTLIBCORESHARED_EXPORT PDFAnnotationBorderEffect
 {
 public:
     explicit inline PDFAnnotationBorderEffect() = default;
@@ -225,7 +225,7 @@ private:
 /// to three main categories - normal, rollower and down. Each category can have different
 /// states, for example, checkbox can have on/off state. This container can also resolve
 /// queries to obtain appropriate appearance stream.
-class PDFAppeareanceStreams
+class PDF4QTLIBCORESHARED_EXPORT PDFAppeareanceStreams
 {
 public:
     explicit inline PDFAppeareanceStreams() = default;
