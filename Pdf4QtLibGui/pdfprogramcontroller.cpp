@@ -2220,6 +2220,16 @@ void PDFProgramController::readSettings(Settings settingsFlags)
         settings.beginGroup("Plugins");
         m_loadAllPlugins = !settings.contains("EnabledPlugins");
         m_enabledPlugins = settings.value("EnabledPlugins").toStringList();
+        if (settings.contains("KnownPlugins"))
+        {
+            m_knownPlugins = settings.value("KnownPlugins").toStringList();
+        }
+        else
+        {
+            // Settings written before the list of the known plugins existed: the user could
+            // have disabled only the plugins distributed at that time, a plugin added later is new.
+            m_knownPlugins = QStringList({ "AudioBook", "Dimensions", "Editor", "ObjectInspector", "OutputPreview", "Redact", "Scanner", "Signature", "SoftProofing" });
+        }
         settings.endGroup();
     }
 
@@ -2921,6 +2931,16 @@ void PDFProgramController::loadPlugins()
             m_plugins.back().pluginFileWithPath = pluginFileName;
 
             QString pluginName = m_plugins.back().name;
+            if (!m_knownPlugins.contains(pluginName))
+            {
+                // A plugin seen for the first time is enabled, the user can disable it later in the settings
+                m_knownPlugins << pluginName;
+                if (!m_enabledPlugins.contains(pluginName))
+                {
+                    m_enabledPlugins << pluginName;
+                }
+            }
+
             if (!m_enabledPlugins.contains(pluginName) && !m_loadAllPlugins)
             {
                 loader.unload();
@@ -3048,6 +3068,7 @@ void PDFProgramController::writeSettings()
     // Save allowed plugins
     settings.beginGroup("Plugins");
     settings.setValue("EnabledPlugins", m_enabledPlugins);
+    settings.setValue("KnownPlugins", m_knownPlugins);
     settings.endGroup();
 
     // Save trusted certificates
