@@ -2056,7 +2056,7 @@ void PDFDocumentBuilder::mergeNames(PDFObjectReference a, PDFObjectReference b)
 
         for (const auto& item : aMap)
         {
-            factory << WrapName(item.first);
+            factory << WrapString(item.first);
             factory << item.second;
         }
 
@@ -2066,8 +2066,8 @@ void PDFDocumentBuilder::mergeNames(PDFObjectReference a, PDFObjectReference b)
         factory.beginDictionaryItem("Limits");
         factory.beginArray();
 
-        factory << WrapName((*aMap.begin()).first);
-        factory << WrapName((*aMap.rbegin()).first);
+        factory << WrapString((*aMap.begin()).first);
+        factory << WrapString((*aMap.rbegin()).first);
 
         factory.endArray();
         factory.endDictionaryItem();
