@@ -70,6 +70,10 @@ public:
         }
         manipulator.setOutlineMode(sourceDocuments.size() > 1 ? PDFDocumentManipulator::OutlineMode::Merge : PDFDocumentManipulator::OutlineMode::NoOutline);
 
+        // The first document is the organized document, it keeps its document information,
+        // metadata, form, layers and named destinations, when pages of another document are inserted.
+        manipulator.setPrimaryDocument(0);
+
         PDFOperationResult result = manipulator.assemble(pages);
         if (!result)
         {

@@ -27,6 +27,8 @@
 #include "pdfutils.h"
 
 #include <QImage>
+
+#include <set>
 #include <QMarginsF>
 
 namespace pdf
@@ -77,6 +79,15 @@ public:
     /// \param document Document
     void addDocument(int documentIndex, const PDFDocument* document) { m_documents[documentIndex] = document; }
 
+    /// Sets the primary document. When pages of more documents are assembled, the assembled
+    /// document is the primary document with the changed pages - it keeps its document
+    /// information, metadata, identifier, viewer preferences, form, layers, named
+    /// destinations and outline, the form fields, layers, named destinations and
+    /// outlines of the other documents are added to them. Without the primary document
+    /// (index -1, default), pages of more documents are assembled into a new document.
+    /// \param documentIndex Document index, or -1
+    void setPrimaryDocument(int documentIndex) { m_primaryDocumentIndex = documentIndex; }
+
     /// Adds image with given index to available image list
     /// \param imageIndex Image index
     /// \param image Image
@@ -125,6 +136,7 @@ private:
         None            = 0x0000,
         SingleDocument  = 0x0001, ///< We are assembling a single page document (possibly with blank pages / image pages
         RemovedPages    = 0x0002, ///< Document contains removed pages
+        PrimaryDocument = 0x0004, ///< Pages of other documents are added to the primary document
     };
     Q_DECLARE_FLAGS(AssembleFlags, AssembleFlag)
 
@@ -156,8 +168,10 @@ private:
                                     const AssembledPages& pages,
                                     const std::vector<PDFObjectReference>& adjustedPages);
     void filterOutline(PDFDocumentBuilder& documentBuilder,
-                       const PDFDocument* singleDocument,
-                       const std::vector<PDFObjectReference>& adjustedPages);
+                       const PDFDocument* singleDocument);
+    void mergeOutlines(PDFDocumentBuilder& documentBuilder, const AssembledPages& pages);
+    void removeReferencesToRemovedPages(PDFDocumentBuilder& documentBuilder);
+    void updatePageLabels(PDFDocumentBuilder& documentBuilder, const ProcessedPages& processedPages);
 
     std::map<PDFInteger, const PDFDocument*> m_documents;
     std::map<PDFInteger, QImage> m_images;
@@ -166,6 +180,15 @@ private:
     PDFDocument m_assembledDocument;
     OutlineMode m_outlineMode = OutlineMode::DocumentParts;
     std::map<PDFInteger, PDFObjectReference> m_outlines;
+    PDFInteger m_primaryDocumentIndex = -1;
+
+    /// Pages of the source documents, which are not used in the assembled document
+    /// (references in the assembled document)
+    std::set<PDFObjectReference> m_removedPages;
+
+    /// Named destinations of the assembled document, which were removed, because
+    /// they pointed to the removed pages
+    std::set<QByteArray> m_removedNamedDestinations;
 };
 
 }   // namespace pdf
