@@ -22,6 +22,7 @@
 
 #include "pdfocrdocumentdialog.h"
 #include "pdfocrbatchdialog.h"
+#include "pdfocrbackgroundtask.h"
 #include "pdfdocumentwriter.h"
 #include "pdfdocumentreader.h"
 #include "pdfocrengine.h"
@@ -310,6 +311,7 @@ private slots:
     void perspectiveInDialog();
     void pageOverrideInDialog();
     void batchDialog();
+    void makeSearchableInBackground();
 
 private:
     static PDFDocument createScanDocument(const QStringList& pageTexts, const QByteArray& digitalText = QByteArray());
@@ -2130,6 +2132,115 @@ void OCRDialogTest::batchDialog()
     openResultButton->click();
     QCOMPARE(dialog.result(), int(QDialog::Accepted));
     QCOMPARE(QFileInfo(dialog.getDocumentToOpen()).absoluteFilePath(), QFileInfo(firstOutput).absoluteFilePath());
+}
+
+void OCRDialogTest::makeSearchableInBackground()
+{
+    // One click recognition of the editor (Make Searchable): the pages are recognized
+    // on a worker thread and the text layer is written into a new revision of the document
+    setLinesHandler({ { QStringLiteral("Searchable"), QStringLiteral("sheet") } });
+
+    PDFDocumentPointer document(new PDFDocument(createScanDocument({ QStringLiteral("Searchable sheet"), QStringLiteral("Searchable sheet") })));
+    QCOMPARE(document->getCatalog()->getPageCount(), size_t(2));
+
+    // Large sheets of a drawing set are recognized with the sparse text layout
+    QVERIFY(!pdfviewer::PDFOCRBackgroundTask::isDrawingSheet(document->getCatalog()->getPage(0)));
+    {
+        PDFDocumentBuilder builder;
+        builder.appendPage(QRectF(0, 0, 2592, 1728));   // ARCH D, 36 x 24 inch
+        builder.appendPage(QRectF(0, 0, 792, 1224));    // ANSI B, 11 x 17 inch
+        builder.appendPage(QRectF(0, 0, 842, 1191));    // A3
+        builder.appendPage(QRectF(0, 0, 612, 1008));    // legal
+        builder.appendPage(QRectF(0, 0, 612, 792));     // letter
+        const PDFDocument sheets = builder.build();
+        QCOMPARE(sheets.getCatalog()->getPageCount(), size_t(5));
+        QVERIFY(pdfviewer::PDFOCRBackgroundTask::isDrawingSheet(sheets.getCatalog()->getPage(0)));
+        QVERIFY(pdfviewer::PDFOCRBackgroundTask::isDrawingSheet(sheets.getCatalog()->getPage(1)));
+        QVERIFY(pdfviewer::PDFOCRBackgroundTask::isDrawingSheet(sheets.getCatalog()->getPage(2)));
+        QVERIFY(!pdfviewer::PDFOCRBackgroundTask::isDrawingSheet(sheets.getCatalog()->getPage(3)));
+        QVERIFY(!pdfviewer::PDFOCRBackgroundTask::isDrawingSheet(sheets.getCatalog()->getPage(4)));
+        QVERIFY(!pdfviewer::PDFOCRBackgroundTask::isDrawingSheet(nullptr));
+    }
+
+    // The settings of the dialog Recognize Text are adjusted: the text is always written,
+    // only into the pages without text, and the images are never re-encoded
+    PDFOCRConfiguration configuration;
+    configuration.engineId = QLatin1String(PDFOCRTestEngineFactory::IDENTIFIER);
+    configuration.detectBlankPages = false;
+    configuration.workerCount = 1;
+    configuration.existingTextPolicy = PDFOCRExistingTextPolicy::ReviewOnly;
+    configuration.compression.mode = PDFOCRCompressionMode::Lossless;
+    QString errorMessage = pdfviewer::PDFOCRBackgroundTask::prepareConfiguration(configuration, nullptr, nullptr);
+    QVERIFY2(errorMessage.isEmpty(), qPrintable(errorMessage));
+    QVERIFY(configuration.existingTextPolicy == PDFOCRExistingTextPolicy::OnlyPagesWithoutText);
+    QVERIFY(configuration.compression.mode == PDFOCRCompressionMode::Off);
+    QCOMPARE(configuration.languages, QStringList({ QStringLiteral("eng") }));
+    QVERIFY(configuration.preprocessing.deskew);
+    configuration.preprocessing.deskew = false;
+
+    // An unknown engine is reported before the start
+    {
+        PDFOCRConfiguration unknownEngine = configuration;
+        unknownEngine.engineId = QStringLiteral("unknown-engine");
+        QVERIFY(!pdfviewer::PDFOCRBackgroundTask::prepareConfiguration(unknownEngine, nullptr, nullptr).isEmpty());
+    }
+
+    pdfviewer::PDFOCRBackgroundTask task(nullptr);
+    QSignalSpy progressSpy(&task, &pdfviewer::PDFOCRBackgroundTask::progressChanged);
+    QSignalSpy finishedSpy(&task, &pdfviewer::PDFOCRBackgroundTask::finished);
+
+    errorMessage = task.start(document, QString(), PDFCMSPointer(), configuration, nullptr);
+    QVERIFY2(errorMessage.isEmpty(), qPrintable(errorMessage));
+    QVERIFY(task.isRunning());
+    QVERIFY(!task.start(document, QString(), PDFCMSPointer(), configuration, nullptr).isEmpty());
+    QVERIFY(finishedSpy.wait(60000));
+    QVERIFY(!task.isRunning());
+    QVERIFY(!progressSpy.isEmpty());
+
+    pdfviewer::PDFOCRBackgroundTask::Outcome outcome = task.takeOutcome();
+    QVERIFY2(outcome.errorMessage.isEmpty(), qPrintable(outcome.errorMessage));
+    QVERIFY(!outcome.cancelled);
+    QVERIFY(outcome.sourceDocument == document);
+    QCOMPARE(outcome.pageCount, 2);
+    QCOMPARE(outcome.drawingPages, 0);
+    QCOMPARE(outcome.recognizedPages, 2);
+    QCOMPARE(outcome.writtenPages, 2);
+    QCOMPARE(outcome.failedPages, 0);
+    QVERIFY(outcome.wordCount > 0);
+    QVERIFY(outcome.resultDocument);
+    QVERIFY(extractText(*outcome.resultDocument, 0).contains(QStringLiteral("Searchable")));
+    QVERIFY(extractText(*outcome.resultDocument, 1).contains(QStringLiteral("sheet")));
+
+    // The source document is not changed (the editor keeps it for the undo)
+    QVERIFY(!extractText(*document, 0).contains(QStringLiteral("Searchable")));
+
+    // When the document changed during the recognition, the results are written into the
+    // current revision; the pages, whose content is the same, get the text
+    const pdfviewer::PDFOCRBackgroundTask::WriteResult rewritten = pdfviewer::PDFOCRBackgroundTask::writeResults(document.data(), QString(), outcome.results, nullptr, nullptr, nullptr);
+    QVERIFY2(rewritten.errorMessage.isEmpty(), qPrintable(rewritten.errorMessage));
+    QCOMPARE(rewritten.writtenPages, 2);
+    QVERIFY(rewritten.document);
+
+    // A stopped recognition discards its result
+    m_testEngine->setRecognitionDelay(1000);
+    errorMessage = task.start(document, QString(), PDFCMSPointer(), configuration, nullptr);
+    QVERIFY2(errorMessage.isEmpty(), qPrintable(errorMessage));
+    task.cancel();
+    QVERIFY(task.isCancelling());
+    QVERIFY(finishedSpy.wait(60000));
+    outcome = task.takeOutcome();
+    QVERIFY(outcome.cancelled);
+    QVERIFY(!outcome.resultDocument);
+    QVERIFY(outcome.results.empty());
+
+    // A task destroyed while it runs stops its worker
+    {
+        pdfviewer::PDFOCRBackgroundTask runningTask(nullptr);
+        errorMessage = runningTask.start(document, QString(), PDFCMSPointer(), configuration, nullptr);
+        QVERIFY2(errorMessage.isEmpty(), qPrintable(errorMessage));
+        QVERIFY(runningTask.isRunning());
+    }
+    m_testEngine->setRecognitionDelay(0);
 }
 
 QTEST_MAIN(OCRDialogTest)

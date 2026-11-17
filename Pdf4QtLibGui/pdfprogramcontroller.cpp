@@ -44,6 +44,7 @@
 #include "pdfscanpreparationdialog.h"
 #include "pdfocrlanguagesdialog.h"
 #include "pdfocrbatchdialog.h"
+#include "pdfocrmakesearchable.h"
 
 #ifdef PDF4QT_OCR_TESSERACT
 #include "pdftesseractocrengine.h"
@@ -443,6 +444,10 @@ PDFProgramController::PDFProgramController(QObject* parent) :
 
 PDFProgramController::~PDFProgramController()
 {
+    // A running recognition is stopped, before the widgets of the main window are destroyed
+    delete m_makeSearchable;
+    m_makeSearchable = nullptr;
+
     // Application is closed normally, recovery copy is not needed
     removeRecoveryCopy(m_fileInfo.originalFileName);
 
@@ -613,6 +618,10 @@ void PDFProgramController::initialize(Features features,
     if (QAction* action = m_actionManager->getAction(PDFActionManager::BatchRecognizeText))
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::onActionBatchRecognizeTextTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::MakeSearchable))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionMakeSearchableTriggered);
     }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::Encryption))
     {
@@ -2052,6 +2061,29 @@ void PDFProgramController::onActionManageOCRLanguagesTriggered()
     dialog.exec();
 }
 
+void PDFProgramController::onActionMakeSearchableTriggered()
+{
+    if (!m_pdfDocument || m_pdfDocument->getCatalog()->getPageCount() == 0)
+    {
+        return;
+    }
+
+    if (!m_makeSearchable)
+    {
+        m_makeSearchable = new PDFOCRMakeSearchable(m_mainWindow, [this]() { return m_pdfDocument; }, this);
+        connect(m_makeSearchable, &PDFOCRMakeSearchable::documentReady, this, [this](pdf::PDFDocumentPointer document)
+        {
+            // Single change of the document and a single undo/redo step, like the dialog Recognize Text
+            onDocumentModified(pdf::PDFModifiedDocument(std::move(document), m_optionalContentActivity, pdf::PDFModifiedDocument::ModificationFlags(pdf::PDFModifiedDocument::PageContents)));
+        });
+        connect(m_makeSearchable, &PDFOCRMakeSearchable::runningChanged, this, &PDFProgramController::updateActionsAvailability);
+    }
+
+    // The recognition runs in the background, the document can be viewed and edited meanwhile
+    const QString fileName = m_fileInfo.absoluteFilePath.isEmpty() ? m_fileInfo.originalFileName : m_fileInfo.absoluteFilePath;
+    m_makeSearchable->start(fileName, m_CMSManager->getCurrentCMS());
+}
+
 void PDFProgramController::onActionCreateBitonalDocumentTriggered()
 {
     auto cms = m_CMSManager->getCurrentCMS();
@@ -2429,6 +2461,7 @@ void PDFProgramController::updateActionsAvailability()
     m_actionManager->setEnabled(PDFActionManager::RecognizeText, hasValidDocument && m_pdfDocument->getCatalog()->getPageCount() > 0);
     m_actionManager->setEnabled(PDFActionManager::ManageOCRLanguages, !isBusy);
     m_actionManager->setEnabled(PDFActionManager::BatchRecognizeText, !isBusy);
+    m_actionManager->setEnabled(PDFActionManager::MakeSearchable, hasValidDocument && m_pdfDocument->getCatalog()->getPageCount() > 0 && !(m_makeSearchable && m_makeSearchable->isRunning()));
 
     // Preparation of the scanned pages changes the pages (crop, split, deskew)
     m_actionManager->setEnabled(PDFActionManager::PrepareScannedPages, hasValidDocument && canModify && m_pdfDocument->getCatalog()->getPageCount() > 0);
@@ -2838,6 +2871,12 @@ void PDFProgramController::closeDocument()
         }
 
         savePageLayoutPerDocument();
+    }
+
+    if (m_makeSearchable)
+    {
+        // The text of the closed document is not written into the next one
+        m_makeSearchable->cancel();
     }
 
     // Document is closed normally (user was asked to save the changes),

@@ -217,6 +217,7 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_actionManager->setAction(PDFActionManager::ManageOCRLanguages, ui->actionManageOCRLanguages);
     m_actionManager->setAction(PDFActionManager::PrepareScannedPages, ui->actionPrepareScannedPages);
     m_actionManager->setAction(PDFActionManager::BatchRecognizeText, ui->actionBatchRecognizeText);
+    m_actionManager->setAction(PDFActionManager::MakeSearchable, ui->actionMakeSearchable);
     m_actionManager->setAction(PDFActionManager::Encryption, ui->actionEncryption);
     m_actionManager->setAction(PDFActionManager::FitPage, ui->actionFitPage);
     m_actionManager->setAction(PDFActionManager::FitWidth, ui->actionFitWidth);
@@ -452,6 +453,7 @@ void PDFEditorMainWindow::createSimpleToolbar()
     m_toolbarSlots->addAction(Section::File, ui->actionOpen);
     m_toolbarSlots->addAction(Section::File, ui->actionSave);
     m_toolbarSlots->addAction(Section::File, ui->actionPrint);
+    m_toolbarSlots->addAction(Section::File, ui->actionMakeSearchable);
     m_toolbarSlots->addSeparator(Section::File);
     m_toolbarSlots->addAction(Section::File, ui->actionUndo);
     m_toolbarSlots->addAction(Section::File, ui->actionRedo);
@@ -543,6 +545,14 @@ void PDFEditorMainWindow::createAdvancedMenu()
     m_toolbarSlots->addToAdvancedMenu(ui->actionRecognizeText, ocrMenu);
     m_toolbarSlots->addToAdvancedMenu(ui->actionBatchRecognizeText, ocrMenu);
     m_toolbarSlots->addToAdvancedMenu(ui->actionManageOCRLanguages, ocrMenu);
+
+    // One click OCR stays in the File menu and on the toolbar, it is offered
+    // also at the top of the OCR submenu (not detached from the File menu)
+    ui->menuEdit->removeAction(ui->actionMakeSearchable);
+    if (QMenu* ocrSubmenu = m_toolbarSlots->getAdvancedSubmenu(ocrMenu))
+    {
+        ocrSubmenu->insertAction(ui->actionPrepareScannedPages, ui->actionMakeSearchable);
+    }
 
     m_toolbarSlots->addToAdvancedMenu(ui->actionEncryption, documentMenu);
     m_toolbarSlots->addToAdvancedMenu(ui->actionOptimize, documentMenu);

@@ -64,6 +64,7 @@ class PDFRecentFileManager;
 class PDFTextToSpeech;
 class PDFActionComboBox;
 class PDFFullscreenWidget;
+class PDFOCRMakeSearchable;
 
 class IMainWindow
 {
@@ -152,6 +153,7 @@ public:
         ManageOCRLanguages,
         PrepareScannedPages,
         BatchRecognizeText,
+        MakeSearchable,
         Encryption,
         FitPage,
         FitWidth,
@@ -419,6 +421,7 @@ private:
     void onActionPrepareScannedPagesTriggered();
     void onActionBatchRecognizeTextTriggered();
     void onActionManageOCRLanguagesTriggered();
+    void onActionMakeSearchableTriggered();
     void onActionEncryptionTriggered();
     void onActionFitPageTriggered();
     void onActionFitWidthTriggered();
@@ -547,6 +550,7 @@ private:
     std::vector<std::pair<pdf::PDFPluginInfo, pdf::PDFPlugin*>> m_loadedPlugins;
     bool m_isFullscreenMode;
     PDFFullscreenWidget* m_fullscreenWidget;
+    PDFOCRMakeSearchable* m_makeSearchable = nullptr;
 
     PDFRecoveryManager m_recoveryManager;
     QTimer* m_recoveryTimer = nullptr;
