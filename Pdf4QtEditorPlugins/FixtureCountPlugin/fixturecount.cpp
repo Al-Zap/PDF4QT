@@ -26,6 +26,7 @@
 #include "pdfcatalog.h"
 #include "pdfdocument.h"
 #include "pdfdocumentbuilder.h"
+#include "pdfocrpagepreparer.h"
 #include "pdfoutline.h"
 #include "pdfutils.h"
 
@@ -419,6 +420,43 @@ bool FixtureCountEditor::changeMarkerType(pdf::PDFDocumentBuilder* builder,
         return false;
     }
 
+    // Marker of the same shape is changed in place, so its position, its size
+    // (it could be resized as an ordinary annotation) and its replies are kept
+    const pdf::PDFDictionary* dictionary = document->getDictionaryFromObject(document->getObjectByReference(marker.annotation));
+    if (dictionary)
+    {
+        pdf::PDFDocumentDataLoaderDecorator loader(document);
+        const QByteArray shapeKey = loader.readNameFromDictionary(dictionary, FixtureCountData::FIXTURE_SHAPE_KEY);
+        if (shapeKey == FixtureType::getShapeKey(type.shape).toLatin1())
+        {
+            pdf::PDFObjectFactory factory;
+            factory.beginDictionary();
+            factory.beginDictionaryItem("C");
+            factory << pdf::WrapAnnotationColor(type.color);
+            factory.endDictionaryItem();
+            factory.beginDictionaryItem("IC");
+            factory << pdf::WrapAnnotationColor(type.color);
+            factory.endDictionaryItem();
+            factory.beginDictionaryItem("Subj");
+            factory << FixtureCountHelper::getSubject(type);
+            factory.endDictionaryItem();
+            factory.beginDictionaryItem("Contents");
+            factory << FixtureCountHelper::getContents(type);
+            factory.endDictionaryItem();
+            factory.beginDictionaryItem(FixtureCountData::FIXTURE_TYPE_KEY);
+            factory << type.name;
+            factory.endDictionaryItem();
+            factory.beginDictionaryItem(FixtureCountData::FIXTURE_DESCRIPTION_KEY);
+            factory << type.description;
+            factory.endDictionaryItem();
+            factory.endDictionary();
+
+            builder->mergeTo(marker.annotation, factory.takeObject());
+            builder->updateAnnotationAppearanceStreams(marker.annotation);
+            return true;
+        }
+    }
+
     const pdf::PDFObjectReference pageReference = catalog->getPage(marker.pageIndex)->getPageReference();
     const pdf::PDFReal size = marker.size > 0.0 ? marker.size : qMin(marker.rect.width(), marker.rect.height());
     builder->removeAnnotation(pageReference, marker.annotation);
@@ -500,7 +538,17 @@ QStringList FixtureCountReport::getSheetNames(const pdf::PDFDocument* document)
 
     for (size_t i = 0; i < pageCount; ++i)
     {
-        names << QCoreApplication::translate("pdfplugin::FixtureCountReport", "Page %1").arg(i + 1);
+        // Page label of a plan set is the sheet number (E-101). AutoCAD writes
+        // the index of the layout before it ("[1] Light LT-1"). Plain page
+        // numbers are not sheet names.
+        QString label = pdf::PDFOCRPagePreparer::getPageLabel(document, pdf::PDFInteger(i)).simplified();
+        if (label.startsWith(QChar('[')) && label.indexOf(QChar(']')) > 0)
+        {
+            label = label.mid(label.indexOf(QChar(']')) + 1).trimmed();
+        }
+
+        const bool hasLetter = std::any_of(label.cbegin(), label.cend(), [](QChar character) { return character.isLetter(); });
+        names << (hasLetter ? label : QCoreApplication::translate("pdfplugin::FixtureCountReport", "Page %1").arg(i + 1));
     }
 
     FixtureCountHelper::collectSheetNames(document, catalog->getOutlineRootPtr().get(), names, assigned);
@@ -560,8 +608,17 @@ std::vector<QStringList> FixtureCountReport::createTable(const FixtureTypes& typ
     return table;
 }
 
-QString FixtureCountReport::escapeCsvField(const QString& text)
+QString FixtureCountReport::escapeCsvField(const QString& fieldText)
 {
+    // Spreadsheets evaluate a field starting with these characters as a formula.
+    // The text comes from the document (bookmarks, type names), so it is
+    // prefixed by an apostrophe, which makes it a plain text.
+    QString text = fieldText;
+    if (!text.isEmpty() && QStringLiteral("=+-@\t\r").contains(text.front()))
+    {
+        text.prepend(QChar('\''));
+    }
+
     if (text.contains(QChar(',')) || text.contains(QChar('"')) || text.contains(QChar('\n')) || text.contains(QChar('\r')) ||
         text.startsWith(QChar(' ')) || text.endsWith(QChar(' ')))
     {

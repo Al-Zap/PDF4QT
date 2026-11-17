@@ -57,6 +57,9 @@ private slots:
     void csvEscaping();
     void defaultTypesDiffer();
     void shapePolygons();
+    void changeMarkerTypeInPlace();
+    void sheetNamesFromPageLabels();
+    void csvFormulaInjection();
     void findSimilarSymbols();
     void findSimilarSymbolsWithoutRotations();
     void findSimilarSymbolsEmptySample();
@@ -593,6 +596,110 @@ int FixtureCountTest::countMatchesNear(const std::vector<FixtureSymbolFinder::Ma
         }
     }
     return count;
+}
+
+void FixtureCountTest::changeMarkerTypeInPlace()
+{
+    PDFDocumentBuilder builder;
+    const PDFObjectReference page = builder.appendPage(QRectF(0, 0, 612, 792));
+    FixtureCountEditor::createMarker(&builder, page, QPointF(100, 100), 16.0, type("A1", FixtureMarkerShape::Circle, Qt::red, "Troffer"));
+    const PDFDocument document = builder.build();
+    const FixtureMarker marker = FixtureCountData::scan(&document).getMarkers().front();
+
+    // Type of the same shape (renamed, another color) - the annotation is kept,
+    // so the replies to the marker and its geometry are not lost
+    const FixtureType renamedType = type("A1E", FixtureMarkerShape::Circle, Qt::blue, QString());
+    const PDFDocument modified = modify(document, [&](PDFDocumentBuilder* builder) { QVERIFY(FixtureCountEditor::changeMarkerType(builder, &document, marker, renamedType)); });
+
+    const FixtureCountData modifiedData = FixtureCountData::scan(&modified);
+    QCOMPARE(modifiedData.getMarkers().size(), size_t(1));
+    QCOMPARE(modifiedData.getCount("A1"), 0);
+    QCOMPARE(modifiedData.getCount("A1E"), 1);
+
+    const FixtureMarker& changedMarker = modifiedData.getMarkers().front();
+    QCOMPARE(changedMarker.annotation, marker.annotation);
+    QCOMPARE(changedMarker.rect, marker.rect);
+    QCOMPARE(changedMarker.size, marker.size);
+
+    const FixtureType changedType = modifiedData.getTypes().front();
+    QCOMPARE(changedType.name, QString("A1E"));
+    QCOMPARE(changedType.color.rgb(), QColor(Qt::blue).rgb());
+    QCOMPARE(changedType.shape, FixtureMarkerShape::Circle);
+    QVERIFY(changedType.description.isEmpty());
+
+    // Another shape needs another annotation
+    const PDFDocument reshaped = modify(modified, [&](PDFDocumentBuilder* builder) { QVERIFY(FixtureCountEditor::changeMarkerType(builder, &modified, changedMarker, type("A1E", FixtureMarkerShape::Square))); });
+    const FixtureCountData reshapedData = FixtureCountData::scan(&reshaped);
+    QCOMPARE(reshapedData.getMarkers().size(), size_t(1));
+    QCOMPARE(reshapedData.getTypes().front().shape, FixtureMarkerShape::Square);
+    QVERIFY(reshapedData.getMarkers().front().annotation != marker.annotation);
+}
+
+void FixtureCountTest::sheetNamesFromPageLabels()
+{
+    PDFDocumentBuilder builder;
+    builder.appendPage(QRectF(0, 0, 612, 792));
+    builder.appendPage(QRectF(0, 0, 612, 792));
+    builder.appendPage(QRectF(0, 0, 612, 792));
+    const PDFObjectReference page4 = builder.appendPage(QRectF(0, 0, 612, 792));
+
+    // Labels as AutoCAD writes them, a plain sheet number and a plain page number
+    PDFObjectFactory factory;
+    factory.beginDictionary();
+    factory.beginDictionaryItem("PageLabels");
+    factory.beginDictionary();
+    factory.beginDictionaryItem("Nums");
+    factory.beginArray();
+    factory << PDFInteger(0);
+    factory.beginDictionary();
+    factory.beginDictionaryItem("P");
+    factory << QString("[1] Light LT-1");
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    factory << PDFInteger(1);
+    factory.beginDictionary();
+    factory.beginDictionaryItem("P");
+    factory << QString("E-102");
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    factory << PDFInteger(2);
+    factory.beginDictionary();
+    factory.beginDictionaryItem("S");
+    factory << WrapName("D");
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    factory.endArray();
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    builder.mergeTo(builder.getCatalogReference(), factory.takeObject());
+
+    // Bookmark has the precedence over the label
+    PDFOutlineItem root;
+    QSharedPointer<PDFOutlineItem> sheet4(new PDFOutlineItem());
+    sheet4->setTitle("E-501 Details");
+    sheet4->setAction(PDFActionPtr(new PDFActionGoTo(PDFDestination::createFit(page4), PDFDestination())));
+    root.addChild(sheet4);
+    builder.setOutline(&root);
+
+    PDFDocumentReader reader(nullptr, nullptr, false, false);
+    const PDFDocument document = reader.readFromBuffer(write(builder.build()));
+    QCOMPARE(reader.getReadingResult(), PDFDocumentReader::Result::OK);
+
+    const QStringList names = FixtureCountReport::getSheetNames(&document);
+    QCOMPARE(names, (QStringList{ "Light LT-1", "E-102", "Page 3", "E-501 Details" }));
+}
+
+void FixtureCountTest::csvFormulaInjection()
+{
+    // Text from the document must not be evaluated as a formula by a spreadsheet
+    QCOMPARE(FixtureCountReport::escapeCsvField("=HYPERLINK(\"http://x\")"), QString("\"'=HYPERLINK(\"\"http://x\"\")\""));
+    QCOMPARE(FixtureCountReport::escapeCsvField("+1"), QString("'+1"));
+    QCOMPARE(FixtureCountReport::escapeCsvField("-A"), QString("'-A"));
+    QCOMPARE(FixtureCountReport::escapeCsvField("@SUM(A1)"), QString("'@SUM(A1)"));
+    QCOMPARE(FixtureCountReport::escapeCsvField("E-101"), QString("E-101"));
+    QCOMPARE(FixtureCountReport::escapeCsvField("12"), QString("12"));
 }
 
 void FixtureCountTest::findSimilarSymbols()

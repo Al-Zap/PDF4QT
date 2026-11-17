@@ -40,6 +40,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QLineF>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QSettings>
@@ -95,6 +96,11 @@ void FixtureCountPlugin::setWidget(pdf::PDFWidget* widget)
 
     m_countTool = new FixtureCountTool(widget->getDrawWidgetProxy(), m_countAction, this);
     widget->getToolManager()->addTool(m_countTool);
+
+    m_countTool->setMarkerHitTest([this](pdf::PDFInteger pageIndex, const QPointF& pagePoint)
+    {
+        return m_data.findMarker(pageIndex, pagePoint, m_markerSize * 0.25) != nullptr;
+    });
 
     connect(m_countTool, &FixtureCountTool::toolActivityChanged, this, &FixtureCountPlugin::onCountToolActivityChanged);
     connect(m_countTool, &FixtureCountTool::markerRequested, this, &FixtureCountPlugin::onMarkerRequested);
@@ -224,9 +230,14 @@ void FixtureCountPlugin::onMarkerRemoveRequested(pdf::PDFInteger pageIndex, QPoi
         return;
     }
 
+    // The marker is owned by the data, which are scanned again by the modification
+    const QString typeName = marker->typeName;
+
     pdf::PDFDocumentModifier modifier(m_document);
     FixtureCountEditor::removeMarker(modifier.getBuilder(), m_document, *marker);
     finishModification(modifier);
+
+    Q_EMIT m_countTool->messageDisplayRequest(tr("Marker of %1 removed. Ctrl + Z puts it back.").arg(typeName), 4000);
 }
 
 void FixtureCountPlugin::onTypeRequested(int index)
@@ -328,7 +339,12 @@ void FixtureCountPlugin::onExportTriggered()
         return;
     }
 
-    const std::vector<QStringList> table = FixtureCountReport::createTable(m_types, m_data, m_sheetNames);
+    // Types of other plan sets (they are remembered and offered for the next
+    // file), which are not counted in this document, are not exported
+    FixtureTypes countedTypes;
+    std::copy_if(m_types.cbegin(), m_types.cend(), std::back_inserter(countedTypes), [this](const FixtureType& type) { return m_data.getCount(type.name) > 0; });
+
+    const std::vector<QStringList> table = FixtureCountReport::createTable(countedTypes, m_data, m_sheetNames);
     const QString csv = FixtureCountReport::createCsv(table);
 
     QFile file(fileName);
@@ -404,15 +420,35 @@ void FixtureCountPlugin::onSampleSelected(pdf::PDFInteger pageIndex, QRectF samp
         return;
     }
 
+    // So many matches are not fixtures, the sample is a part of the drawing
+    // (a light level mark, a hatch, a piece of a line)
+    if (centers.size() > MAXIMAL_FOUND_SYMBOLS)
+    {
+        Q_EMIT m_countTool->messageDisplayRequest(tr("%1 matches were found, so the selected rectangle is probably not a fixture symbol. "
+                                                     "Nothing was added. Zoom in and drag the rectangle tightly around one fixture symbol.").arg(centers.size()), 10000);
+        return;
+    }
+
     // Fixtures, which are already counted (by any type), are skipped
     const FixtureType& type = m_types[m_currentTypeIndex];
     const pdf::PDFPage* page = m_document->getCatalog()->getPage(pageIndex);
     pdf::PDFDocumentModifier modifier(m_document);
     int addedCount = 0;
 
+    // A fixture counted by a click has its marker anywhere on the symbol,
+    // not exactly in its center
+    const pdf::PDFReal symbolSize = qMax(qMax(sampleRect.width(), sampleRect.height()), m_markerSize);
+    const pdf::PDFReal minimalDistance = 0.75 * symbolSize;
+    const FixtureMarkers& existingMarkers = m_data.getMarkers();
+
     for (const QPointF& center : centers)
     {
-        if (m_data.findMarker(pageIndex, center, m_markerSize * 0.25))
+        const bool isCounted = std::any_of(existingMarkers.cbegin(), existingMarkers.cend(), [&](const FixtureMarker& marker)
+        {
+            return marker.pageIndex == pageIndex && QLineF(marker.getCenter(), center).length() < minimalDistance;
+        });
+
+        if (isCounted || m_data.findMarker(pageIndex, center, m_markerSize * 0.25))
         {
             continue;
         }
@@ -514,29 +550,40 @@ std::vector<QPointF> FixtureCountPlugin::findSimilarSymbols(pdf::PDFInteger page
         return image;
     };
 
+    // Amount of the ink (darkness) of the sample drawn from the page
+    auto getSampleInk = [&](const pdf::PDFPrecompiledPage& candidatePage)
+    {
+        const QImage sampleImage = drawPage(candidatePage, sampleImageRect).convertToFormat(QImage::Format_Grayscale8);
+        double ink = 0.0;
+        for (int y = 0; y < sampleImage.height(); ++y)
+        {
+            const uchar* line = sampleImage.constScanLine(y);
+            for (int x = 0; x < sampleImage.width(); ++x)
+            {
+                ink += 255 - line[x];
+            }
+        }
+        return ink;
+    };
+
     // Photos (aerial images of site plans), scans and text (light levels, labels,
     // title block) are not drawn, so they do not disturb the search. The sample
     // symbol itself can be a part of an image (scanned plan) or of the text
-    // (symbol font), so the content is removed only if the sample stays visible.
-    auto hasSample = [&](const pdf::PDFPrecompiledPage& candidatePage)
-    {
-        const QImage sampleImage = drawPage(candidatePage, sampleImageRect).convertToFormat(QImage::Format_Grayscale8);
-        return !FixtureSymbolFinder::getInkBoundingRect(sampleImage, sampleImage.rect()).isEmpty();
-    };
-
-    pdf::PDFPrecompiledPage reducedPage = *compiledPage;
-    reducedPage.removeImages();
+    // (glyph of a symbol font): images are removed only if something of the sample
+    // stays visible, text only if most of the sample stays visible.
+    pdf::PDFPrecompiledPage vectorPage = *compiledPage;
+    vectorPage.removeImages();
+    pdf::PDFPrecompiledPage reducedPage = vectorPage;
     reducedPage.removeText();
 
-    const pdf::PDFPrecompiledPage* pageToSearch = &reducedPage;
-    if (!hasSample(reducedPage))
+    constexpr double minimalInk = 255.0;
+    constexpr double minimalInkWithoutText = 0.6;
+    const double vectorInk = getSampleInk(vectorPage);
+
+    const pdf::PDFPrecompiledPage* pageToSearch = compiledPage;
+    if (vectorInk >= minimalInk)
     {
-        reducedPage = *compiledPage;
-        reducedPage.removeImages();
-        if (!hasSample(reducedPage))
-        {
-            pageToSearch = compiledPage;
-        }
+        pageToSearch = getSampleInk(reducedPage) >= minimalInkWithoutText * vectorInk ? &reducedPage : &vectorPage;
     }
 
     const QImage image = drawPage(*pageToSearch, QRect(QPoint(0, 0), imageSize));
@@ -605,6 +652,9 @@ void FixtureCountPlugin::showPanel()
         m_panel->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
         mainWindow->addDockWidget(Qt::RightDockWidgetArea, m_panel);
         m_panel->setFloating(false);
+
+        // The sheet needs the space, the panel is a narrow column
+        mainWindow->resizeDocks({ m_panel }, { m_panel->fontMetrics().horizontalAdvance(QChar('x')) * PANEL_WIDTH_IN_CHARACTERS }, Qt::Horizontal);
         m_panel->setMarkerSize(m_markerSize);
 
         connect(m_panel, &FixtureCountPanel::currentTypeChanged, this, &FixtureCountPlugin::onCurrentTypeChanged);
@@ -652,6 +702,17 @@ void FixtureCountPlugin::mergeDocumentTypes()
         {
             m_types.push_back(documentType);
         }
+        else
+        {
+            // Markers of the document show its own symbol and color, so the remembered
+            // type of the same name (from another plan set) must not differ from them
+            it->color = documentType.color;
+            it->shape = documentType.shape;
+            if (!documentType.description.isEmpty())
+            {
+                it->description = documentType.description;
+            }
+        }
     }
 
     if (m_currentTypeIndex < 0 && !m_types.empty())
@@ -673,8 +734,15 @@ pdf::PDFInteger FixtureCountPlugin::getCurrentPageIndex() const
         return -1;
     }
 
-    // In continuous mode more pages can be visible, then the page in the middle
-    // of the list is the one, which the user looks at
+    // More pages can be visible, then the page in the middle of the view
+    // is the one, which the user looks at
+    const QWidget* drawWidget = m_widget->getDrawWidget()->getWidget();
+    const pdf::PDFInteger centerPageIndex = m_widget->getDrawWidgetProxy()->getPageUnderPoint(drawWidget->rect().center(), nullptr);
+    if (centerPageIndex != -1)
+    {
+        return centerPageIndex;
+    }
+
     return currentPages[currentPages.size() / 2];
 }
 
