@@ -1605,6 +1605,16 @@ private:
     /// Pixel size of the font
     PDFReal m_pixelSize;
 
+    /// Scale of the outlines and advances of the glyphs. It is one, unless the pixel size
+    /// is larger than the largest size FreeType can set (see setFreeTypeSize).
+    PDFReal m_glyphScale = 1.0;
+
+    /// Sets the pixel size to the face. FreeType limits the size to 65535 pixels and the size
+    /// is multiplied by PIXEL_SIZE_MULTIPLIER, so a font larger than 655 units (plots
+    /// of CAD programs use such sizes together with a small scale of the page) is set
+    /// in the largest size and its glyphs are scaled by m_glyphScale.
+    void setFreeTypeSize(PDFReal pixelSize);
+
     /// Parent font
     PDFFontPointer m_parentFont;
 
@@ -2060,6 +2070,17 @@ void PDFRealizedFontImpl::dumpFontToTreeItem(ITreeFactory* treeFactory) const
     treeFactory->popItem();
 }
 
+void PDFRealizedFontImpl::setFreeTypeSize(PDFReal pixelSize)
+{
+    constexpr PDFReal MAX_FREETYPE_PIXEL_SIZE = 65535.0;
+
+    const PDFReal requestedSize = pixelSize * PIXEL_SIZE_MULTIPLIER;
+    const PDFReal realSize = qBound(1.0, PDFReal(qRound64(qMin(requestedSize, MAX_FREETYPE_PIXEL_SIZE))), MAX_FREETYPE_PIXEL_SIZE);
+
+    m_glyphScale = (requestedSize > MAX_FREETYPE_PIXEL_SIZE) ? (requestedSize / realSize) : 1.0;
+    checkFreeTypeError(FT_Set_Pixel_Sizes(m_face, 0, FT_UInt(realSize)));
+}
+
 int PDFRealizedFontImpl::outlineMoveTo(const FT_Vector* to, void* user)
 {
     QPainterPath* path = reinterpret_cast<QPainterPath*>(user);
@@ -2127,10 +2148,15 @@ const PDFRealizedFontImpl::Glyph& PDFRealizedFontImpl::getGlyph(unsigned int gly
         checkFreeTypeError(FT_Outline_Decompose(&m_face->glyph->outline, &glyphOutlineInterface, &path));
         path.closeSubpath();
 
+        if (m_glyphScale != 1.0)
+        {
+            path = QTransform::fromScale(m_glyphScale, m_glyphScale).map(path);
+        }
+
         Glyph glyph;
         glyph.outline = PDFGlyphOutline(path);
         glyph.advance = !m_isVertical ? m_face->glyph->advance.x : m_face->glyph->advance.y;
-        glyph.advance *= FONT_MULTIPLIER;
+        glyph.advance *= FONT_MULTIPLIER * m_glyphScale;
 
         it = m_glyphCache.insert(std::make_pair(glyphIndex, qMove(glyph))).first;
     }
@@ -2306,7 +2332,7 @@ PDFRealizedFontPointer PDFRealizedFont::createRealizedFont(PDFFontPointer font, 
 
             PDFRealizedFontImpl::checkFreeTypeError(FT_New_Memory_Face(impl->m_library, reinterpret_cast<const FT_Byte*>(impl->m_embeddedFontData.constData()), impl->m_embeddedFontData.size(), 0, &impl->m_face));
             FT_Select_Charmap(impl->m_face, FT_ENCODING_UNICODE); // We try to select unicode encoding, but if it fails, we don't do anything (use glyph indices instead)
-            PDFRealizedFontImpl::checkFreeTypeError(FT_Set_Pixel_Sizes(impl->m_face, 0, qRound(pixelSize * PDFRealizedFontImpl::PIXEL_SIZE_MULTIPLIER)));
+            impl->setFreeTypeSize(pixelSize);
             impl->m_isVertical = cmap ? cmap->isVertical() : false;
             impl->m_isEmbedded = true;
             impl->initializeLookupTables();
@@ -2337,7 +2363,7 @@ PDFRealizedFontPointer PDFRealizedFont::createRealizedFont(PDFFontPointer font, 
             }
             PDFRealizedFontImpl::checkFreeTypeError(FT_New_Memory_Face(impl->m_library, reinterpret_cast<const FT_Byte*>(impl->m_systemFontData.constData()), static_cast<FT_Long>(impl->m_systemFontData.size()), impl->m_systemFontFaceIndex, &impl->m_face));
             FT_Select_Charmap(impl->m_face, FT_ENCODING_UNICODE); // We try to select unicode encoding, but if it fails, we don't do anything (use glyph indices instead)
-            PDFRealizedFontImpl::checkFreeTypeError(FT_Set_Pixel_Sizes(impl->m_face, 0, qRound(pixelSize * PDFRealizedFontImpl::PIXEL_SIZE_MULTIPLIER)));
+            impl->setFreeTypeSize(pixelSize);
             impl->m_isVertical = cmap ? cmap->isVertical() : false;
             impl->m_isEmbedded = false;
             if (const char* postScriptName = FT_Get_Postscript_Name(impl->m_face))
