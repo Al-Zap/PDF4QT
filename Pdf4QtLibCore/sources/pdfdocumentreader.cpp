@@ -620,7 +620,11 @@ PDFDocument PDFDocumentReader::readFromBuffer(const QByteArray& buffer)
         processObjectStreams(&xrefTable, objects);
 
         PDFObjectStorage storage(std::move(objects), PDFObject(xrefTable.getTrailerDictionary()), qMove(m_securityHandler));
-        return PDFDocument(std::move(storage), m_version, hash(buffer));
+        // Hash of a large file takes a long time (more than a second for hundreds
+        // of megabytes), it is computed in the background, so the document can
+        // be shown immediately. Only few functions need it.
+        std::shared_future<QByteArray> sourceDataHash = std::async(std::launch::async, [buffer]() { return hash(buffer); }).share();
+        return PDFDocument(std::move(storage), m_version, std::move(sourceDataHash));
     }
     catch (const PDFException &parserException)
     {

@@ -24,6 +24,7 @@
 #include "pdfrenderer.h"
 #include "pdfpainter.h"
 #include "pdfcompiler.h"
+#include "pdfpagerastercache.h"
 #include "pdfconstants.h"
 #include "pdfcms.h"
 #include "pdfannotation.h"
@@ -481,6 +482,7 @@ PDFDrawWidgetProxy::PDFDrawWidgetProxy(QObject* parent) :
     m_compiler(new PDFAsynchronousPageCompiler(this)),
     m_textLayoutCompiler(new PDFAsynchronousTextLayoutCompiler(this)),
     m_rasterizer(new PDFRasterizer(this)),
+    m_pageRasterCache(new PDFAsynchronousPageRasterCache(this)),
     m_progress(nullptr),
     m_cacheClearTimer(new QTimer(this)),
     m_rendererEngine(RendererEngine::Blend2D_MultiThread)
@@ -491,6 +493,7 @@ PDFDrawWidgetProxy::PDFDrawWidgetProxy(QObject* parent) :
     connect(m_controller, &PDFDrawSpaceController::pageImageChanged, this, &PDFDrawWidgetProxy::pageImageChanged);
     connect(m_compiler, &PDFAsynchronousPageCompiler::renderingError, this, &PDFDrawWidgetProxy::renderingError);
     connect(m_compiler, &PDFAsynchronousPageCompiler::pageImageChanged, this, &PDFDrawWidgetProxy::pageImageChanged);
+    connect(m_pageRasterCache, &PDFAsynchronousPageRasterCache::imageReady, this, &PDFDrawWidgetProxy::repaintNeeded);
     connect(m_textLayoutCompiler, &PDFAsynchronousTextLayoutCompiler::textLayoutChanged, this, &PDFDrawWidgetProxy::onTextLayoutChanged);
     connect(m_cacheClearTimer, &QTimer::timeout, this, &PDFDrawWidgetProxy::performPageCacheClear);
 }
@@ -507,6 +510,12 @@ void PDFDrawWidgetProxy::setDocument(const PDFModifiedDocument& document, std::v
         m_cacheClearTimer->stop();
         m_scaledImageCache.clear();
         m_compiler->stop(document.hasReset() || document.hasPageContentsChanged());
+
+        if (document.hasReset())
+        {
+            m_pageRasterCache->clear();
+        }
+
         m_textLayoutCompiler->stop(document.hasReset() || document.hasPageContentsChanged());
         m_controller->setDocument(document);
 
@@ -834,6 +843,9 @@ void PDFDrawWidgetProxy::drawPages(QPainter* painter, QRect rect, PDFRenderer::F
     PDFColorConvertor convertor = cms->getColorConvertor();
     PDFRenderer::applyFeaturesToColorConvertor(features, convertor);
 
+    // Pages drawn from the cache of the rasterized pages, other images are released
+    std::vector<PDFInteger> rasterCachePages;
+
     // Iterate trough pages and display them on the painter device
     for (const LayoutItem& item : m_layout.items)
     {
@@ -875,7 +887,14 @@ void PDFDrawWidgetProxy::drawPages(QPainter* painter, QRect rect, PDFRenderer::F
 
                 if (isCompiledPageValid && !isPageContentDrawSuppressed)
                 {
-                    compiledPage->draw(painter, page->getCropBox(), matrix, features, groupInfo.transparency, &m_scaledImageCache);
+                    if (drawPageFromRasterCache(painter, item.pageIndex, page, placedRect, rect, baseMatrix, features, groupInfo, paperColor))
+                    {
+                        rasterCachePages.push_back(item.pageIndex);
+                    }
+                    else
+                    {
+                        compiledPage->draw(painter, page->getCropBox(), matrix, features, groupInfo.transparency, &m_scaledImageCache);
+                    }
                 }
 
                 // Draw text blocks/text lines, if it is enabled
@@ -984,6 +1003,74 @@ void PDFDrawWidgetProxy::drawPages(QPainter* painter, QRect rect, PDFRenderer::F
             }
         }
     }
+
+    if (PDFAsynchronousPageRasterCache::isPainterSupported(painter))
+    {
+        std::sort(rasterCachePages.begin(), rasterCachePages.end());
+        m_pageRasterCache->retainPages(rasterCachePages);
+    }
+}
+
+bool PDFDrawWidgetProxy::drawPageFromRasterCache(QPainter* painter,
+                                                 PDFInteger pageIndex,
+                                                 const PDFPage* page,
+                                                 const QRect& placedRect,
+                                                 const QRect& rect,
+                                                 const QTransform& baseMatrix,
+                                                 PDFRenderer::Features features,
+                                                 const GroupInfo& groupInfo,
+                                                 const QColor& paperColor)
+{
+    // The cache draws an opaque image of the page on the paper, so it can't be used
+    // for transparent pages or pages without paper. It can't be used also for other
+    // painters, than the painter of the page view (for example a magnifier, a printer).
+    // The cache can be switched off by an environment variable, to compare it with the direct drawing
+    static const bool isRasterCacheDisabled = qEnvironmentVariableIsSet("PDF4QT_DISABLE_PAGE_RASTER_CACHE");
+
+    if (isRasterCacheDisabled || !groupInfo.drawPaper || !qFuzzyCompare(groupInfo.transparency, 1.0) ||
+        baseMatrix.type() > QTransform::TxTranslate ||
+        features.testFlag(PDFRenderer::DisplayTimes))
+    {
+        return false;
+    }
+
+    QTransform savedWorldTransform = painter->worldTransform();
+    painter->setWorldTransform(QTransform());
+    const bool isSupported = PDFAsynchronousPageRasterCache::isPainterSupported(painter);
+    painter->setWorldTransform(savedWorldTransform);
+
+    if (!isSupported)
+    {
+        return false;
+    }
+
+    PDFAsynchronousPageRasterCache::PageDrawParameters parameters;
+    parameters.pageIndex = pageIndex;
+    parameters.page = m_compiler->getCompiledPageShared(pageIndex, PDFAsynchronousPageCompiler::CompileMode::None);
+
+    if (!parameters.page)
+    {
+        return false;
+    }
+
+    parameters.cropBox = page->getCropBox();
+    parameters.pageSize = placedRect.size();
+    parameters.pageToLocal = createPagePointToDevicePointMatrix(page, QRectF(QPointF(0.0, 0.0), QSizeF(placedRect.size())));
+    parameters.pageTopLeft = baseMatrix.map(QPointF(placedRect.topLeft()));
+    parameters.visibleRegion = placedRect.intersected(rect).translated(-placedRect.topLeft());
+    parameters.devicePixelRatio = painter->device()->devicePixelRatioF();
+    parameters.features = features;
+    parameters.paperColor = paperColor;
+
+    painter->save();
+    painter->setWorldTransform(QTransform());
+    m_pageRasterCache->drawPage(painter, parameters);
+    painter->restore();
+
+    // Page is handled by the cache even when nothing has been drawn yet - the image
+    // is being rasterized in the background and the page view is repainted, when it
+    // is ready. Meanwhile, only the paper is visible (or a preview of the page).
+    return true;
 }
 
 QImage PDFDrawWidgetProxy::drawThumbnailImage(PDFInteger pageIndex, int pixelSize) const
@@ -1065,6 +1152,13 @@ std::vector<PDFInteger> PDFDrawWidgetProxy::getActivePages() const
             for (PDFInteger i = pageIndex + 1; i < pageEnd; ++i)
             {
                 activePages.push_back(i);
+            }
+
+            // The page before the first current page is active too (see prefetchPages)
+            const PDFInteger firstPageIndex = activePages.front();
+            if (firstPageIndex > 0)
+            {
+                activePages.insert(activePages.begin(), firstPageIndex - 1);
             }
         }
     }
@@ -1958,6 +2052,14 @@ void PDFDrawWidgetProxy::prefetchPages(PDFInteger pageIndex)
         const PDFInteger pageCount = document->getCatalog()->getPageCount();
         const PDFInteger pageEnd = qMin(pageCount, pageIndex + prefetchCount + 1);
         for (PDFInteger i = pageIndex + 1; i < pageEnd; ++i)
+        {
+            m_compiler->getCompiledPage(i, PDFAsynchronousPageCompiler::CompileMode::Viewport);
+        }
+
+        // Pages before the current pages are prefetched too, plan sheets are often
+        // compared with the previous sheet. Index of the page is the last current page.
+        const PDFInteger firstCurrentPage = pageIndex - (prefetchCount - 1);
+        for (PDFInteger i = qMax(PDFInteger(0), firstCurrentPage - prefetchCount); i < firstCurrentPage; ++i)
         {
             m_compiler->getCompiledPage(i, PDFAsynchronousPageCompiler::CompileMode::Viewport);
         }

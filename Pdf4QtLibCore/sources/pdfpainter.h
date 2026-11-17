@@ -36,6 +36,8 @@
 #include <QBrush>
 #include <QElapsedTimer>
 
+#include <atomic>
+
 namespace pdf
 {
 
@@ -224,6 +226,28 @@ public:
               PDFReal opacity,
               PDFScaledImageCache* scaledImageCache = nullptr) const;
 
+    /// Draws the page into the raster image using multiple threads. The image is divided
+    /// into horizontal bands, each band is drawn by its own thread with its own painter,
+    /// and the paths and images, which lie outside of the band, are skipped. The bands
+    /// share no painter paths with each other nor with other threads: each band draws
+    /// its own copies of them (see the note about the painter paths in CLAUDE.md), so
+    /// this function can be called on a worker thread while the page is also drawn
+    /// by the main thread. The image must be already filled by its background.
+    /// \param image Target image (its device pixel ratio is taken into account)
+    /// \param cropBox Crop box of the page
+    /// \param pagePointToDevicePointMatrix Matrix mapping page points to the logical pixels of the image
+    /// \param features Renderer features
+    /// \param opacity Opacity of the page
+    /// \param bandCount Number of bands (and threads), at least 1
+    /// \param cancelFlag Optional flag, drawing stops early, when it is set
+    void drawParallel(QImage* image,
+                      const QRectF& cropBox,
+                      const QTransform& pagePointToDevicePointMatrix,
+                      PDFRenderer::Features features,
+                      PDFReal opacity,
+                      int bandCount,
+                      const std::atomic_bool* cancelFlag = nullptr) const;
+
     /// Redact path - remove all content intersecting given path,
     /// and fill redact path with given color.
     /// \param redactPath Redaction path in page coordinates
@@ -328,14 +352,33 @@ private:
             path(qMove(path)),
             isText(isText)
         {
-
+            updateBounds();
         }
+
+        /// Computes the bounds of the painted area in the coordinates of the path
+        /// (before the world matrix is applied). Must be called by the thread, which
+        /// owns the path, after each change of the path or of the pen.
+        void updateBounds();
 
         QPen pen;
         QBrush brush;
         QPainterPath path;
+        QRectF bounds; ///< Conservative bounds of the painted area (path control points + stroke)
+        bool isCosmeticPen = false; ///< Pen width is in the device pixels
+        PDFReal cosmeticPenWidth = 0.0;
         bool isText = false;
     };
+
+    struct DrawContext;
+
+    /// Draws the instructions, see \p draw and \p drawParallel
+    void drawImpl(QPainter* painter,
+                  const QRectF& cropBox,
+                  const QTransform& pagePointToDevicePointMatrix,
+                  PDFRenderer::Features features,
+                  PDFReal opacity,
+                  PDFScaledImageCache* scaledImageCache,
+                  const DrawContext& context) const;
 
     struct ClipData
     {
@@ -343,10 +386,17 @@ private:
         inline ClipData(QPainterPath path) :
             clipPath(qMove(path))
         {
-
+            updateBounds();
         }
 
+        /// Computes the bounds of the clip path and detects, if the clip path is
+        /// an axis aligned rectangle. Must be called by the thread, which owns
+        /// the path, after each change of the path.
+        void updateBounds();
+
         QPainterPath clipPath;
+        QRectF bounds; ///< Control point rectangle of the clip path
+        bool isRectangle = false; ///< Clip path is an axis aligned rectangle equal to \p bounds
     };
 
     struct ImageData

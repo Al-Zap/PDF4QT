@@ -25,10 +25,13 @@
 #include "pdfcms.h"
 #include "pdfpainterutils.h"
 #include "pdfpathboolean.h"
+#include "pdfexecutionpolicy.h"
 
 #include <QPainter>
 #include <QCryptographicHash>
 #include <QtMath>
+
+#include <numeric>
 
 #include "pdfdbgheap.h"
 
@@ -544,12 +547,258 @@ void PDFPrecompiledPageGenerator::setCompositionMode(QPainter::CompositionMode m
     m_precompiledPage->addSetCompositionMode(mode);
 }
 
+class PDFPrecompiledPageHelper
+{
+public:
+    PDFPrecompiledPageHelper() = delete;
+
+    /// Returns rectangle in the logical coordinates of the painter (with identity world matrix),
+    /// outside of which nothing can be visible, or invalid rectangle, if culling is not possible.
+    /// \param painter Painter
+    /// \param region Region to be drawn (invalid rectangle means the whole device)
+    static QRectF getCullRectangle(QPainter* painter, const QRectF& region);
+
+    /// Returns true, if the path with given bounds can be visible in the cull rectangle
+    static bool isPathVisible(const QRectF& bounds, bool isCosmeticPen, PDFReal cosmeticPenWidth, const QTransform& matrix, const QRectF& cullRect);
+
+    /// Creates a copy of the path, which does not share any data with the original path
+    static QPainterPath createIsolatedCopy(const QPainterPath& path);
+};
+
+QRectF PDFPrecompiledPageHelper::getCullRectangle(QPainter* painter, const QRectF& region)
+{
+    const QPaintDevice* device = painter->device();
+    if (!device || painter->worldTransform().type() != QTransform::TxNone)
+    {
+        return QRectF();
+    }
+
+    switch (device->devType())
+    {
+        case QInternal::Widget:
+        case QInternal::Pixmap:
+        case QInternal::Image:
+        case QInternal::CustomRaster:
+            break;
+
+        default:
+            return QRectF();
+    }
+
+    // Some devices report their size in the logical pixels, others in the physical
+    // ones. A larger rectangle never removes a visible item, so we take the larger one.
+    const qreal devicePixelRatio = qMax(qreal(1.0), device->devicePixelRatioF());
+    QRectF cullRect(0.0, 0.0, device->width() * devicePixelRatio, device->height() * devicePixelRatio);
+
+    if (painter->hasClipping())
+    {
+        cullRect = cullRect.intersected(painter->clipBoundingRect());
+    }
+
+    if (region.isValid())
+    {
+        cullRect = cullRect.intersected(region);
+    }
+
+    if (!cullRect.isValid())
+    {
+        // Nothing is visible - an empty, but valid rectangle culls everything
+        return QRectF(-1.0e9, -1.0e9, 0.5, 0.5);
+    }
+
+    // Antialiasing can touch the neighbouring pixels
+    return cullRect.adjusted(-2.0, -2.0, 2.0, 2.0);
+}
+
+bool PDFPrecompiledPageHelper::isPathVisible(const QRectF& bounds, bool isCosmeticPen, PDFReal cosmeticPenWidth, const QTransform& matrix, const QRectF& cullRect)
+{
+    if (bounds.isNull())
+    {
+        // Bounds are unknown, path must be drawn
+        return true;
+    }
+
+    QRectF deviceBounds = matrix.mapRect(bounds);
+    const qreal margin = 1.0 + (isCosmeticPen ? cosmeticPenWidth : 0.0);
+    deviceBounds.adjust(-margin, -margin, margin, margin);
+    return deviceBounds.intersects(cullRect);
+}
+
+QPainterPath PDFPrecompiledPageHelper::createIsolatedCopy(const QPainterPath& path)
+{
+    // A change of an element detaches the copy - the elements are copied and the copy
+    // gets its own private data (including the cached data of the paint engine).
+    QPainterPath copy = path;
+    if (copy.elementCount() > 0)
+    {
+        const QPainterPath::Element element = copy.elementAt(0);
+        copy.setElementPositionAt(0, element.x, element.y);
+    }
+    return copy;
+}
+
+struct PDFPrecompiledPage::DrawContext
+{
+    QRectF region; ///< Region of the device to be drawn, invalid rectangle means whole device
+    bool isolatePaths = false; ///< Draw copies of the paths, which share no data with the page
+    const std::atomic_bool* cancelFlag = nullptr;
+};
+
+void PDFPrecompiledPage::PathPaintData::updateBounds()
+{
+    isCosmeticPen = false;
+    cosmeticPenWidth = 0.0;
+
+    if (path.isEmpty())
+    {
+        // Null rectangle means unknown bounds, empty path is drawn as before
+        bounds = QRectF();
+        return;
+    }
+
+    bounds = path.controlPointRect();
+
+    if (pen.style() != Qt::NoPen)
+    {
+        const PDFReal penWidth = pen.widthF();
+        if (pen.isCosmetic())
+        {
+            isCosmeticPen = true;
+            cosmeticPenWidth = qMax(penWidth, 1.0);
+        }
+        else
+        {
+            // Miter joins can reach far from the path, square caps add half of the
+            // width diagonally. Both are covered by the generous multiplier.
+            const bool isMiterJoin = pen.joinStyle() == Qt::MiterJoin || pen.joinStyle() == Qt::SvgMiterJoin;
+            const PDFReal miterFactor = isMiterJoin ? qMax(pen.miterLimit(), 1.0) : 1.0;
+            const PDFReal halfWidth = 0.75 * penWidth * miterFactor;
+            bounds.adjust(-halfWidth, -halfWidth, halfWidth, halfWidth);
+        }
+    }
+
+    if (bounds.isNull())
+    {
+        // A single point (for example a round cap dot of zero length), keep it valid
+        bounds.adjust(-0.5, -0.5, 0.5, 0.5);
+    }
+}
+
+void PDFPrecompiledPage::ClipData::updateBounds()
+{
+    isRectangle = false;
+
+    if (clipPath.isEmpty())
+    {
+        bounds = QRectF();
+        return;
+    }
+
+    bounds = clipPath.controlPointRect();
+
+    // Rectangle is a single subpath of four corners, optionally closed by a fifth
+    // point equal to the first one, with each edge horizontal or vertical.
+    const int elementCount = clipPath.elementCount();
+    if (elementCount == 4 || elementCount == 5)
+    {
+        std::array<QPointF, 5> points;
+        bool isPolygon = clipPath.elementAt(0).isMoveTo();
+        for (int i = 0; i < elementCount && isPolygon; ++i)
+        {
+            const QPainterPath::Element element = clipPath.elementAt(i);
+            isPolygon = (i == 0) ? element.isMoveTo() : element.isLineTo();
+            points[i] = QPointF(element.x, element.y);
+        }
+
+        if (isPolygon && (elementCount == 4 || points[4] == points[0]))
+        {
+            points[4] = points[0];
+            bool isAxisAligned = true;
+            for (size_t i = 0; i < 4 && isAxisAligned; ++i)
+            {
+                const QPointF& a = points[i];
+                const QPointF& b = points[i + 1];
+                isAxisAligned = qFuzzyCompare(a.x(), b.x()) || qFuzzyCompare(a.y(), b.y());
+            }
+
+            // Edges must alternate - a degenerate "rectangle" along a single line is not one
+            const bool isAlternating = qFuzzyCompare(points[0].x(), points[1].x()) != qFuzzyCompare(points[1].x(), points[2].x());
+            isRectangle = isAxisAligned && isAlternating && bounds.width() > 0.0 && bounds.height() > 0.0;
+        }
+    }
+}
+
 void PDFPrecompiledPage::draw(QPainter* painter,
                               const QRectF& cropBox,
                               const QTransform& pagePointToDevicePointMatrix,
                               PDFRenderer::Features features,
                               PDFReal opacity,
                               PDFScaledImageCache* scaledImageCache) const
+{
+    drawImpl(painter, cropBox, pagePointToDevicePointMatrix, features, opacity, scaledImageCache, DrawContext());
+}
+
+void PDFPrecompiledPage::drawParallel(QImage* image,
+                                      const QRectF& cropBox,
+                                      const QTransform& pagePointToDevicePointMatrix,
+                                      PDFRenderer::Features features,
+                                      PDFReal opacity,
+                                      int bandCount,
+                                      const std::atomic_bool* cancelFlag) const
+{
+    Q_ASSERT(image);
+
+    if (image->isNull() || !pagePointToDevicePointMatrix.isInvertible())
+    {
+        return;
+    }
+
+    const int height = image->height();
+    bandCount = qBound(1, bandCount, qMax(1, height / 16));
+    const qreal devicePixelRatio = image->devicePixelRatio();
+
+    std::vector<int> bands(bandCount, 0);
+    std::iota(bands.begin(), bands.end(), 0);
+
+    // Bits are taken here, by the calling thread - a non-const access to the
+    // image from the worker threads could detach it.
+    uchar* bits = image->bits();
+    const qsizetype bytesPerLine = image->bytesPerLine();
+    const int width = image->width();
+    const QImage::Format format = image->format();
+
+    auto drawBand = [&](int band)
+    {
+        const int top = height * band / bandCount;
+        const int bottom = height * (band + 1) / bandCount;
+
+        // The band image shares the memory of the target image, each band
+        // writes only into its own rows.
+        QImage bandImage(bits + qsizetype(top) * bytesPerLine, width, bottom - top, bytesPerLine, format);
+        bandImage.setDevicePixelRatio(devicePixelRatio);
+
+        const qreal logicalTop = top / devicePixelRatio;
+        const QTransform bandMatrix = pagePointToDevicePointMatrix * QTransform::fromTranslate(0.0, -logicalTop);
+
+        DrawContext context;
+        context.isolatePaths = true;
+        context.cancelFlag = cancelFlag;
+
+        QPainter painter(&bandImage);
+        drawImpl(&painter, cropBox, bandMatrix, features, opacity, nullptr, context);
+        painter.end();
+    };
+
+    PDFExecutionPolicy::execute(PDFExecutionPolicy::Scope::Unknown, bands.begin(), bands.end(), drawBand);
+}
+
+void PDFPrecompiledPage::drawImpl(QPainter* painter,
+                                  const QRectF& cropBox,
+                                  const QTransform& pagePointToDevicePointMatrix,
+                                  PDFRenderer::Features features,
+                                  PDFReal opacity,
+                                  PDFScaledImageCache* scaledImageCache,
+                                  const DrawContext& context) const
 {
     Q_ASSERT(painter);
     Q_ASSERT(pagePointToDevicePointMatrix.isInvertible());
@@ -570,27 +819,76 @@ void PDFPrecompiledPage::draw(QPainter* painter,
 
     painter->setRenderHint(QPainter::SmoothPixmapTransform, features.testFlag(PDFRenderer::SmoothImages));
 
+    // The world matrix of the painter is mirrored here, so the paths and the images lying
+    // outside of the visible area can be skipped without asking the painter. Each skipped
+    // path saves its whole stroking and rasterization, which matters a lot for the large plan
+    // sheets with hundreds of thousands of paths viewed at a high zoom. The culling is done
+    // only for the raster devices - a pdf writer or a printer gets all the content.
+    //
+    // The clip paths narrow the visible area further. Plan sets exported from CAD programs
+    // often clip each drawn object by the rectangle of its viewport (as a path, not as a
+    // rectangle operator). Such clip is skipped, when it contains the whole visible area,
+    // and it is set as a rectangle otherwise - a clip path is converted to the spans of
+    // the clip region by the raster engine, which is slow, a rectangle is not.
+    const QRectF cullRect = PDFPrecompiledPageHelper::getCullRectangle(painter, context.region);
+    const bool isCullingEnabled = cullRect.isValid();
+
+    struct CullState
+    {
+        QTransform matrix;
+        QRectF visibleRect; ///< Visible area in device coordinates, null rectangle means nothing is visible
+    };
+
+    CullState cullState;
+    cullState.visibleRect = cullRect;
+    std::vector<CullState> cullStateStack;
+    const QTransform& currentMatrix = cullState.matrix;
+
     // Process all instructions
+    size_t instructionIndex = 0;
     for (const Instruction& instruction : m_instructions)
     {
+        if (context.cancelFlag && (++instructionIndex % 1024) == 0 && context.cancelFlag->load(std::memory_order_relaxed))
+        {
+            break;
+        }
+
         switch (instruction.type)
         {
             case InstructionType::DrawPath:
             {
                 const PathPaintData& data = m_paths[instruction.dataIndex];
 
+                if (isCullingEnabled && !PDFPrecompiledPageHelper::isPathVisible(data.bounds, data.isCosmeticPen, data.cosmeticPenWidth, currentMatrix, cullState.visibleRect))
+                {
+                    break;
+                }
+
                 // Set antialiasing
                 const bool antialiasing = (data.isText && features.testFlag(PDFRenderer::TextAntialiasing)) || (!data.isText && features.testFlag(PDFRenderer::Antialiasing));
                 painter->setRenderHint(QPainter::Antialiasing, antialiasing);
                 painter->setPen(data.pen);
                 painter->setBrush(data.brush);
-                painter->drawPath(data.path);
+
+                if (context.isolatePaths)
+                {
+                    painter->drawPath(PDFPrecompiledPageHelper::createIsolatedCopy(data.path));
+                }
+                else
+                {
+                    painter->drawPath(data.path);
+                }
                 break;
             }
 
             case InstructionType::DrawImage:
             {
                 const ImageData& data = m_images[instruction.dataIndex];
+
+                if (isCullingEnabled && !currentMatrix.mapRect(QRectF(0.0, 0.0, 1.0, 1.0)).adjusted(-1.0, -1.0, 1.0, 1.0).intersects(cullState.visibleRect))
+                {
+                    break;
+                }
 
                 painter->save();
 
@@ -640,6 +938,11 @@ void PDFPrecompiledPage::draw(QPainter* painter,
             {
                 const MeshPaintData& data = m_meshes[instruction.dataIndex];
 
+                if (isCullingEnabled && cullState.visibleRect.isNull())
+                {
+                    break;
+                }
+
                 painter->save();
                 painter->setWorldTransform(QTransform(pagePointToDevicePointMatrix));
                 data.mesh.paint(painter, data.alpha);
@@ -649,25 +952,70 @@ void PDFPrecompiledPage::draw(QPainter* painter,
 
             case InstructionType::Clip:
             {
-                painter->setClipPath(m_clips[instruction.dataIndex].clipPath, Qt::IntersectClip);
+                const ClipData& clipData = m_clips[instruction.dataIndex];
+                const QPainterPath& clipPath = clipData.clipPath;
+                const bool isAxisAligned = currentMatrix.type() <= QTransform::TxScale;
+
+                if (isCullingEnabled)
+                {
+                    if (cullState.visibleRect.isNull())
+                    {
+                        // Nothing is visible, so the clip does not matter
+                        break;
+                    }
+
+                    if (!clipData.bounds.isNull())
+                    {
+                        const QRectF clipDeviceBounds = currentMatrix.mapRect(clipData.bounds);
+
+                        if (clipData.isRectangle && isAxisAligned && clipDeviceBounds.contains(cullState.visibleRect))
+                        {
+                            // Clip contains whole visible area, it has no effect
+                            break;
+                        }
+
+                        cullState.visibleRect = cullState.visibleRect.intersected(clipDeviceBounds.adjusted(-1.0, -1.0, 1.0, 1.0));
+                        if (!cullState.visibleRect.isValid())
+                        {
+                            cullState.visibleRect = QRectF();
+                        }
+                    }
+                }
+
+                if (clipData.isRectangle && isAxisAligned)
+                {
+                    painter->setClipRect(clipData.bounds, Qt::IntersectClip);
+                }
+                else
+                {
+                    painter->setClipPath(context.isolatePaths ? PDFPrecompiledPageHelper::createIsolatedCopy(clipPath) : clipPath, Qt::IntersectClip);
+                }
                 break;
             }
 
             case InstructionType::SaveGraphicState:
             {
                 painter->save();
+                cullStateStack.push_back(cullState);
                 break;
             }
 
             case InstructionType::RestoreGraphicState:
             {
                 painter->restore();
+
+                if (!cullStateStack.empty())
+                {
+                    cullState = cullStateStack.back();
+                    cullStateStack.pop_back();
+                }
                 break;
             }
 
             case InstructionType::SetWorldMatrix:
             {
-                painter->setWorldTransform(QTransform(m_matrices[instruction.dataIndex] * pagePointToDevicePointMatrix));
+                cullState.matrix = QTransform(m_matrices[instruction.dataIndex] * pagePointToDevicePointMatrix);
+                painter->setWorldTransform(cullState.matrix);
                 break;
             }
 
@@ -715,6 +1063,7 @@ void PDFPrecompiledPage::redact(QPainterPath redactPath, const QTransform& matri
                 QPainterPath mappedRedactPath = currentMatrix.map(redactPath);
                 PathPaintData& path = m_paths[instruction.dataIndex];
                 path.path = PDFPathBoolean::subtract(path.path, mappedRedactPath);
+                path.updateBounds();
                 break;
             }
 
@@ -747,6 +1096,7 @@ void PDFPrecompiledPage::redact(QPainterPath redactPath, const QTransform& matri
                 QTransform currentMatrix = worldMatrixStack.top().inverted();
                 QPainterPath mappedRedactPath = currentMatrix.map(redactPath);
                 m_clips[instruction.dataIndex].clipPath = PDFPathBoolean::subtract(m_clips[instruction.dataIndex].clipPath, mappedRedactPath);
+                m_clips[instruction.dataIndex].updateBounds();
                 break;
             }
 

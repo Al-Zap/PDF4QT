@@ -1016,7 +1016,7 @@ PDFDocument PDFOCRImageCompressor::compress(const PDFDocument* document,
 
         if (PDFOperationControl::isOperationCancelled(operationControl))
         {
-            return PDFDocument(std::move(storage), version, document->getSourceDataHash());
+            return PDFDocument(std::move(storage), version, document->getSourceDataHashFuture());
         }
 
         bool usesJbig2 = false;
@@ -1052,7 +1052,7 @@ PDFDocument PDFOCRImageCompressor::compress(const PDFDocument* document,
         }
     }
 
-    return PDFDocument(std::move(storage), version, document->getSourceDataHash());
+    return PDFDocument(std::move(storage), version, document->getSourceDataHashFuture());
 }
 
 std::vector<PDFOCRImageCompressor::Preview> PDFOCRImageCompressor::createPreview(const PDFDocument* document,
