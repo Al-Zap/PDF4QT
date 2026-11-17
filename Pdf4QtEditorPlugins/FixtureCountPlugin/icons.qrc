@@ -1,0 +1,11 @@
+<RCC>
+    <qresource prefix="/pdfplugins/fixturecount">
+        <file>count.svg</file>
+        <file>add-type.svg</file>
+        <file>edit-type.svg</file>
+        <file>remove-type.svg</file>
+        <file>export.svg</file>
+        <file>panel.svg</file>
+        <file>find-similar.svg</file>
+    </qresource>
+</RCC>
