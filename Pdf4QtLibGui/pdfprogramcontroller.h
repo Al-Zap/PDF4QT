@@ -74,6 +74,27 @@ public:
     virtual void setDocument(const pdf::PDFModifiedDocument& document) = 0;
     virtual void adjustToolbar(QToolBar* toolbar) = 0;
     virtual pdf::PDFTextSelection getSelectedText() const = 0;
+
+    /// Places the user interface of a plugin into the main window. The main window
+    /// can place the toolbar actions of the plugin into its own toolbar, or hide
+    /// them. In that case, \p toolbarActionsPlaced is set to true and no toolbar
+    /// is created for the plugin. Otherwise the plugin gets its own toolbar.
+    /// The default implementation keeps the classic behaviour.
+    /// \param plugin Plugin
+    /// \param pluginName Name of the plugin (from its metadata)
+    /// \param toolbarActions Toolbar actions of the plugin (nullptr is a separator)
+    /// \param toolbarActionsPlaced Set to true, if no plugin toolbar is needed
+    /// \returns Menu, into which all actions of the plugin are inserted
+    virtual QMenu* addPluginUserInterface(pdf::PDFPlugin* plugin,
+                                          const QString& pluginName,
+                                          const std::vector<QAction*>& toolbarActions,
+                                          bool& toolbarActionsPlaced)
+    {
+        Q_UNUSED(pluginName);
+        Q_UNUSED(toolbarActions);
+        toolbarActionsPlaced = false;
+        return addToolMenu(plugin->getPluginMenuName(), plugin->getPluginMenuLocation());
+    }
 };
 
 class PDF4QTLIBGUILIBSHARED_EXPORT PDFActionManager : public QObject

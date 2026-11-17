@@ -2747,6 +2747,15 @@ void PDFProgramController::loadPlugins()
         {
             QToolBar* toolBar = nullptr;
 
+            // The main window decides, where the menu of the plugin is placed, and it
+            // can place the toolbar actions into its own toolbar (simplified layout).
+            bool toolbarActionsPlaced = false;
+            QMenu* menu = m_mainWindowInterface->addPluginUserInterface(plugin.second, plugin.first.name, toolbarActions, toolbarActionsPlaced);
+            if (toolbarActionsPlaced)
+            {
+                toolbarActions.clear();
+            }
+
             // A plugin with many actions can keep its toolbar small, or have no
             // toolbar at all, and offer all the actions in its menu only.
             if (!toolbarActions.empty())
@@ -2767,7 +2776,6 @@ void PDFProgramController::loadPlugins()
                 m_mainWindowInterface->adjustToolbar(toolBar);
             }
 
-            QMenu* menu = m_mainWindowInterface->addToolMenu(plugin.second->getPluginMenuName(), plugin.second->getPluginMenuLocation());
             for (QAction* action : actions)
             {
                 if (!action)

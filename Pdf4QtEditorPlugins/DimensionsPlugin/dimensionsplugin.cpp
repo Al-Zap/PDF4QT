@@ -249,6 +249,11 @@ QString DimensionsPlugin::getPluginMenuName() const
     return tr("&Dimensions");
 }
 
+QString DimensionsPlugin::getToolbarSection() const
+{
+    return QStringLiteral("measure");
+}
+
 void DimensionsPlugin::drawPage(QPainter* painter,
                                 pdf::PDFInteger pageIndex,
                                 const pdf::PDFPrecompiledPage* compiledPage,

@@ -1206,6 +1206,8 @@ void PDFToolManager::onToolActivityChanged(bool active)
             m_pickPageCallback = nullptr;
         }
     }
+
+    Q_EMIT activeToolChanged();
 }
 
 void PDFToolManager::onToolActionTriggered(bool checked)
