@@ -410,7 +410,10 @@ void PDFTextEditPseudowidget::setAppearance(const PDFAnnotationDefaultAppearance
     qreal fontSize = appearance.getFontSize();
     if (qFuzzyIsNull(fontSize))
     {
-        fontSize = rect.height();
+        // Auto size (font size is zero) - the text fits into the height of the field
+        // with a small margin, as in other PDF applications. Using the whole height
+        // makes the text much larger, than the other applications show it.
+        fontSize = qMax<qreal>(1.0, (rect.height() - 4.0) * 0.7);
     }
 
     QFont font(appearance.getFontName());
