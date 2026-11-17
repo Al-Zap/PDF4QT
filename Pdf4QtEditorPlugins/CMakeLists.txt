@@ -22,6 +22,7 @@
 
 add_subdirectory(AudioBookPlugin)
 add_subdirectory(DimensionsPlugin)
+add_subdirectory(FixtureCountPlugin)
 add_subdirectory(ObjectInspectorPlugin)
 add_subdirectory(OutputPreviewPlugin)
 add_subdirectory(RedactPlugin)

@@ -41,6 +41,7 @@
 #include "pdfplugin.h"
 #include "pdfprogramcontroller.h"
 #include "pdfwintaskbarprogress.h"
+#include "pdftoolbarslots.h"
 
 #include <QFuture>
 #include <QTreeView>
@@ -49,10 +50,13 @@
 #include <QLabel>
 #include <QProgressBar>
 
+#include <map>
+
 class QLabel;
 class QSpinBox;
 class QSettings;
 class QDoubleSpinBox;
+class QToolButton;
 
 namespace Ui
 {
@@ -91,6 +95,22 @@ public:
     virtual void setDocument(const pdf::PDFModifiedDocument& document) override;
     virtual void adjustToolbar(QToolBar* toolbar) override final;
     virtual pdf::PDFTextSelection getSelectedText() const override;
+    virtual QMenu* addPluginUserInterface(pdf::PDFPlugin* plugin,
+                                          const QString& pluginName,
+                                          const std::vector<QAction*>& toolbarActions,
+                                          bool& toolbarActionsPlaced) override;
+
+    /// Returns the sections of the simplified main toolbar, into which the features
+    /// place their actions. Returns nullptr, if the classic layout is used.
+    PDFToolbarSlots* getToolbarSlots() const { return m_toolbarSlots; }
+
+    /// Returns true, if the classic layout (all toolbars and menus of PDF4QT)
+    /// is used instead of the simplified one. The setting takes effect after
+    /// the application is restarted.
+    static bool isClassicLayoutEnabled();
+
+    /// Enables or disables the classic layout (takes effect after restart)
+    static void setClassicLayoutEnabled(bool enabled);
 
 protected:
     virtual void dragEnterEvent(QDragEnterEvent* event) override;
@@ -109,6 +129,14 @@ private:
     void onProgressFinished();
 
     void updateDeveloperMenu();
+
+    void createClassicToolbar(QToolButton* insertStickyNoteButton);
+    void createSimpleToolbar();
+    void createAdvancedMenu();
+    void setSimpleLayoutShortcuts();
+    void updateHandToolAction();
+    void onHandToolTriggered();
+    void onClassicLayoutToggled(bool checked);
 
     QIcon createStickyNoteIcon(QString key) const;
 
@@ -130,6 +158,13 @@ private:
     QProgressBar* m_progressBarOnStatusBar;
     QLabel* m_progressBarLeftLabelOnStatusBar;
     bool m_isChangingProgressStep;
+
+    bool m_isClassicLayout;
+    PDFToolbarSlots* m_toolbarSlots;
+    QMenu* m_advancedMenu;
+    QAction* m_handToolAction;
+    QAction* m_measureShortcutAction;
+    std::map<PDFToolbarSlots::Section, QMenu*> m_sectionMenus;
 };
 
 }   // namespace pdfviewer

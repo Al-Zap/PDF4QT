@@ -44,6 +44,7 @@
 #include "pdfscanpreparationdialog.h"
 #include "pdfocrlanguagesdialog.h"
 #include "pdfocrbatchdialog.h"
+#include "pdfocrmakesearchable.h"
 
 #ifdef PDF4QT_OCR_TESSERACT
 #include "pdftesseractocrengine.h"
@@ -61,6 +62,8 @@
 #include "pdfactioncombobox.h"
 #include "pdffullscreenwidget.h"
 #include "pdfpagegeometry.h"
+#include "pdfdocxexporter.h"
+#include "pdfoperationcontrol.h"
 
 #include <QMenu>
 #include <QPrinter>
@@ -75,7 +78,16 @@
 #include <QToolBar>
 #include <QXmlStreamWriter>
 #include <QMenuBar>
+#include <QStatusBar>
+#include <QLocale>
+#include <QDir>
 #include <QComboBox>
+#include <QProgressDialog>
+#include <QEventLoop>
+#include <QTimer>
+
+#include <atomic>
+#include <numeric>
 
 #include "pdfdbgheap.h"
 
@@ -432,6 +444,13 @@ PDFProgramController::PDFProgramController(QObject* parent) :
 
 PDFProgramController::~PDFProgramController()
 {
+    // A running recognition is stopped, before the widgets of the main window are destroyed
+    delete m_makeSearchable;
+    m_makeSearchable = nullptr;
+
+    // Application is closed normally, recovery copy is not needed
+    removeRecoveryCopy(m_fileInfo.originalFileName);
+
     delete m_formManager;
     m_formManager = nullptr;
 
@@ -528,6 +547,10 @@ void PDFProgramController::initialize(Features features,
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::performSaveAs);
     }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::SaveFlattenedCopy))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::performSaveFlattenedCopy);
+    }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::RotateLeft))
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::onActionRotateLeftTriggered);
@@ -551,6 +574,10 @@ void PDFProgramController::initialize(Features features,
     if (QAction* action = m_actionManager->getAction(PDFActionManager::RenderToImages))
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::onActionRenderToImagesTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::ExportToWord))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionExportToWordTriggered);
     }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::Optimize))
     {
@@ -591,6 +618,10 @@ void PDFProgramController::initialize(Features features,
     if (QAction* action = m_actionManager->getAction(PDFActionManager::BatchRecognizeText))
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::onActionBatchRecognizeTextTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::MakeSearchable))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionMakeSearchableTriggered);
     }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::Encryption))
     {
@@ -789,6 +820,13 @@ void PDFProgramController::initActionComboBox(PDFActionComboBox* comboBox)
 void PDFProgramController::finishInitialization()
 {
     readSettings(Settings(WindowSettings | ActionSettings));
+
+    // Recovery copies of documents with unsaved changes are written periodically
+    m_recoveryTimer = new QTimer(this);
+    m_recoveryTimer->setInterval(30 * 1000);
+    connect(m_recoveryTimer, &QTimer::timeout, this, &PDFProgramController::onRecoveryTimerTimeout);
+    m_recoveryTimer->start();
+    QTimer::singleShot(0, this, &PDFProgramController::offerRecoveryOfPreviousSession);
 
     if (m_textToSpeech)
     {
@@ -1166,6 +1204,11 @@ void PDFProgramController::initializeToolManager()
         pdf::PDFCreateFreeTextTool* createFreeTextTool = new pdf::PDFCreateFreeTextTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, action, this);
         m_toolManager->addTool(createFreeTextTool);
     }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateTypewriter))
+    {
+        pdf::PDFCreateTypewriterTool* createTypewriterTool = new pdf::PDFCreateTypewriterTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, action, this);
+        m_toolManager->addTool(createTypewriterTool);
+    }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateStraightLine))
     {
         pdf::PDFCreateLineTypeTool* createStraightLineTool = new pdf::PDFCreateLineTypeTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, pdf::PDFCreateLineTypeTool::Type::Line, action, this);
@@ -1287,6 +1330,52 @@ void PDFProgramController::performSaveAs()
     }
 }
 
+void PDFProgramController::performSaveFlattenedCopy()
+{
+    if (!m_pdfDocument || !m_formManager || !askForWriteUnwrittenChanges())
+    {
+        return;
+    }
+
+    // Suggest "<name> (flattened).pdf" next to the original file
+    QFileInfo fileInfo(m_fileInfo.originalFileName);
+    QString suggestedFileName = fileInfo.dir().absoluteFilePath(tr("%1 (flattened).pdf").arg(fileInfo.completeBaseName()));
+    QString saveFileName = QFileDialog::getSaveFileName(m_mainWindow, tr("Save Flattened Copy"), suggestedFileName, tr("Portable Document (*.pdf);;All files (*.*)"));
+    if (saveFileName.isEmpty())
+    {
+        return;
+    }
+
+    if (QFileInfo(saveFileName) == fileInfo)
+    {
+        QMessageBox::critical(m_mainWindow, tr("Error"), tr("Flattened copy can't replace the opened document. Choose another file name."));
+        return;
+    }
+
+    pdf::PDFDocument flattenedDocument;
+    try
+    {
+        flattenedDocument = m_formManager->createFlattenedDocument();
+    }
+    catch (const pdf::PDFException& exception)
+    {
+        QMessageBox::critical(m_mainWindow, tr("Error"), exception.getMessage());
+        return;
+    }
+
+    // The flattened copy is written as a new file, the opened document is not changed
+    pdf::PDFDocumentWriter writer(nullptr);
+    pdf::PDFOperationResult result = writer.write(saveFileName, &flattenedDocument, true);
+    if (!result)
+    {
+        QMessageBox::critical(m_mainWindow, tr("Error"), result.getErrorMessage());
+    }
+    else
+    {
+        m_mainWindow->statusBar()->showMessage(tr("Flattened copy saved to %1").arg(QDir::toNativeSeparators(saveFileName)), 5000);
+    }
+}
+
 void PDFProgramController::performSave()
 {
     if (!askForWriteUnwrittenChanges())
@@ -1351,6 +1440,9 @@ void PDFProgramController::saveDocument(const QString& fileName)
             m_undoRedoManager->setIsCurrentSaved(true);
         }
 
+        // Changes are saved, recovery copy is not needed
+        removeRecoveryCopy(m_fileInfo.originalFileName);
+
         updateFileInfo(fileName);
         updateTitle();
 
@@ -1365,6 +1457,140 @@ void PDFProgramController::saveDocument(const QString& fileName)
     }
 
     updateFileWatcher();
+}
+
+void PDFProgramController::onRecoveryTimerTimeout()
+{
+    if (!m_pdfDocument ||
+        m_fileInfo.originalFileName.isEmpty() ||
+        !m_undoRedoManager ||
+        m_undoRedoManager->isCurrentSaved() ||
+        m_recoveryRevision == m_documentRevision ||
+        m_recoveryFuture.isRunning())
+    {
+        return;
+    }
+
+    // Document is immutable and shared, so it can be written in a worker thread
+    pdf::PDFDocumentPointer document = m_pdfDocument;
+    QString fileName = m_fileInfo.originalFileName;
+    PDFRecoveryManager recoveryManager = m_recoveryManager;
+    m_recoveryRevision = m_documentRevision;
+    m_recoveryFuture = QtConcurrent::run([recoveryManager, document, fileName]() { return recoveryManager.writeRecoveryCopy(fileName, document.data()); });
+}
+
+void PDFProgramController::removeRecoveryCopy(const QString& fileName)
+{
+    // Recovery copy can be being written just now
+    m_recoveryFuture.waitForFinished();
+    m_recoveryManager.removeRecoveryCopy(fileName);
+    m_recoveryRevision = m_documentRevision;
+}
+
+void PDFProgramController::offerRecoveryOfOpenedDocument()
+{
+    const QString fileName = m_fileInfo.originalFileName;
+    std::optional<PDFRecoveryManager::RecoveryItem> item = m_recoveryManager.findRecoveryItem(fileName);
+
+    const bool isAutoRecover = !m_autoRecoverFileName.isEmpty() && QFileInfo(m_autoRecoverFileName) == QFileInfo(fileName);
+    m_autoRecoverFileName.clear();
+
+    if (!item)
+    {
+        return;
+    }
+
+    if (!isAutoRecover)
+    {
+        QString message = tr("The application closed unexpectedly while this document had unsaved changes. "
+                             "A recovered copy from %1 is available.\n\nDo you want to restore the unsaved changes?")
+                              .arg(QLocale::system().toString(item->time, QLocale::ShortFormat));
+        if (QMessageBox::question(m_mainWindow, tr("Recover Unsaved Changes"), message, QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+        {
+            m_recoveryManager.removeRecoveryCopy(fileName);
+            return;
+        }
+    }
+
+    auto queryPassword = [this](bool* ok)
+    {
+        QString result;
+        *ok = false;
+        Q_EMIT queryPasswordRequest(&result, ok);
+        return result;
+    };
+
+    pdf::PDFDocumentReader reader(m_progress, qMove(queryPassword), true, false);
+    pdf::PDFDocument recoveredDocument = reader.readFromFile(item->recoveryFileName);
+    if (reader.getReadingResult() != pdf::PDFDocumentReader::Result::OK)
+    {
+        QMessageBox::critical(m_mainWindow, tr("Recover Unsaved Changes"), tr("Recovered copy can't be read: %1").arg(reader.getErrorMessage()));
+        return;
+    }
+
+    // Recovered document is a modification of the opened document, so the
+    // changes can be undone, and the document is marked as unsaved.
+    pdf::PDFDocumentPointer pointer(new pdf::PDFDocument(qMove(recoveredDocument)));
+    pdf::PDFModifiedDocument::ModificationFlags flags(pdf::PDFModifiedDocument::Reset | pdf::PDFModifiedDocument::PreserveUndoRedo | pdf::PDFModifiedDocument::PreserveView);
+    onDocumentModified(pdf::PDFModifiedDocument(pointer, m_optionalContentActivity, flags));
+    m_mainWindowInterface->setStatusBarMessage(tr("Unsaved changes were restored. Save the document to keep them."), 6000);
+}
+
+void PDFProgramController::offerRecoveryOfPreviousSession()
+{
+    if (m_pdfDocument || m_futureWatcher)
+    {
+        // Recovery copy of the opened document is offered when it is opened
+        return;
+    }
+
+    std::vector<PDFRecoveryManager::RecoveryItem> items = m_recoveryManager.getRecoveryItems();
+    if (items.empty())
+    {
+        return;
+    }
+
+    const PDFRecoveryManager::RecoveryItem& item = items.front();
+    QString message = tr("The application closed unexpectedly while '%1' had unsaved changes. "
+                         "A recovered copy from %2 is available.\n\nDo you want to open the document and restore the unsaved changes?")
+                          .arg(QDir::toNativeSeparators(item.originalFileName), QLocale::system().toString(item.time, QLocale::ShortFormat));
+
+    if (items.size() > 1)
+    {
+        message += QString("\n\n") + tr("Recovered copies of %1 other documents are offered, when you open them.").arg(items.size() - 1);
+    }
+
+    switch (QMessageBox::question(m_mainWindow, tr("Recover Unsaved Changes"), message, QMessageBox::Yes | QMessageBox::No | QMessageBox::Discard, QMessageBox::Yes))
+    {
+        case QMessageBox::Yes:
+        {
+            if (QFileInfo::exists(item.originalFileName))
+            {
+                m_autoRecoverFileName = item.originalFileName;
+                openDocument(item.originalFileName);
+            }
+            else
+            {
+                // Original document doesn't exist anymore, open the recovered copy
+                // under a new name, so user can save it by Save As.
+                QString copyFileName = QFileInfo(item.recoveryFileName).dir().absoluteFilePath(QFileInfo(item.originalFileName).completeBaseName() + tr(" (recovered).pdf"));
+                QFile::remove(copyFileName);
+                if (QFile::copy(item.recoveryFileName, copyFileName))
+                {
+                    m_recoveryManager.removeRecoveryCopy(item.originalFileName);
+                    openDocument(copyFileName);
+                }
+            }
+            break;
+        }
+
+        case QMessageBox::Discard:
+            m_recoveryManager.removeRecoveryCopy(item.originalFileName);
+            break;
+
+        default:
+            break;
+    }
 }
 
 void PDFProgramController::savePageLayoutPerDocument()
@@ -1520,6 +1746,110 @@ void PDFProgramController::onActionRenderToImagesTriggered()
 {
     PDFRenderToImagesDialog dialog(m_pdfDocument.data(), m_pdfWidget->getDrawWidgetProxy(), m_progress, m_mainWindow);
     dialog.exec();
+}
+
+/// Cancellation of the export to Word from the progress dialog
+class PDFExportToWordOperationControl : public pdf::PDFOperationControl
+{
+public:
+    virtual bool isOperationCancelled() const override { return m_cancelled.load(); }
+    void cancel() { m_cancelled.store(true); }
+
+private:
+    std::atomic_bool m_cancelled = false;
+};
+
+void PDFProgramController::onActionExportToWordTriggered()
+{
+    if (!m_pdfDocument)
+    {
+        return;
+    }
+
+    const pdf::PDFSecurityHandler* securityHandler = m_pdfDocument->getStorage().getSecurityHandler();
+    if (securityHandler && !securityHandler->isAllowed(pdf::PDFSecurityHandler::Permission::CopyContent))
+    {
+        QMessageBox::critical(m_mainWindow, tr("Export to Word"), tr("The document doesn't allow copying of its content."));
+        return;
+    }
+
+    // Default file: the same name as the PDF, in the same folder
+    QString defaultFileName = tr("Document.docx");
+    if (!m_fileInfo.originalFileName.isEmpty())
+    {
+        QFileInfo fileInfo(m_fileInfo.originalFileName);
+        defaultFileName = fileInfo.dir().filePath(fileInfo.completeBaseName() + QStringLiteral(".docx"));
+    }
+
+    QString fileName = QFileDialog::getSaveFileName(m_mainWindow, tr("Export to Word"), defaultFileName, tr("Word Document (*.docx)"));
+    if (fileName.isEmpty())
+    {
+        return;
+    }
+
+    if (!fileName.endsWith(QStringLiteral(".docx"), Qt::CaseInsensitive))
+    {
+        fileName += QStringLiteral(".docx");
+    }
+
+    // The document is held by the shared pointer, so it stays valid during the export
+    pdf::PDFDocumentPointer document = m_pdfDocument;
+    const size_t pageCount = document->getCatalog()->getPageCount();
+    std::vector<pdf::PDFInteger> pageIndices(pageCount, 0);
+    std::iota(pageIndices.begin(), pageIndices.end(), pdf::PDFInteger(0));
+
+    PDFExportToWordOperationControl operationControl;
+    std::atomic<size_t> processedPages = 0;
+
+    pdf::PDFDocxExporter exporter;
+    exporter.setOperationControl(&operationControl);
+    exporter.setProgressCallback([&processedPages](size_t processed, size_t total) { Q_UNUSED(total); processedPages.store(processed); });
+
+    QProgressDialog progressDialog(tr("Exporting to Word..."), tr("Cancel"), 0, int(pageCount), m_mainWindow);
+    progressDialog.setWindowTitle(tr("Export to Word"));
+    progressDialog.setWindowModality(Qt::WindowModal);
+    progressDialog.setMinimumDuration(500);
+    progressDialog.setValue(0);
+
+    QFutureWatcher<QString> watcher;
+    QEventLoop eventLoop;
+    QTimer timer;
+    timer.setInterval(100);
+
+    connect(&watcher, &QFutureWatcher<QString>::finished, &eventLoop, &QEventLoop::quit);
+    connect(&progressDialog, &QProgressDialog::canceled, &progressDialog, [&operationControl]() { operationControl.cancel(); });
+    connect(&timer, &QTimer::timeout, &progressDialog, [&progressDialog, &processedPages]() { progressDialog.setValue(int(processedPages.load())); });
+
+    watcher.setFuture(QtConcurrent::run([&exporter, document, pageIndices, fileName]() -> QString
+    {
+        pdf::PDFOperationResult result = exporter.exportDocument(document.data(), pageIndices, fileName);
+        return result ? QString() : result.getErrorMessage();
+    }));
+
+    timer.start();
+    if (!watcher.isFinished())
+    {
+        eventLoop.exec();
+    }
+    timer.stop();
+    progressDialog.reset();
+
+    const QString errorMessage = watcher.result();
+    if (operationControl.isOperationCancelled())
+    {
+        return;
+    }
+
+    if (!errorMessage.isEmpty())
+    {
+        QMessageBox::critical(m_mainWindow, tr("Export to Word"), tr("The document can't be exported: %1").arg(errorMessage));
+        return;
+    }
+
+    if (QMessageBox::question(m_mainWindow, tr("Export to Word"), tr("The document was exported to %1.\n\nDo you want to open it now?").arg(QDir::toNativeSeparators(fileName))) == QMessageBox::Yes)
+    {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(fileName));
+    }
 }
 
 void PDFProgramController::onActionOptimizeTriggered()
@@ -1729,6 +2059,29 @@ void PDFProgramController::onActionManageOCRLanguagesTriggered()
 {
     PDFOCRLanguagesDialog dialog(nullptr, m_mainWindow);
     dialog.exec();
+}
+
+void PDFProgramController::onActionMakeSearchableTriggered()
+{
+    if (!m_pdfDocument || m_pdfDocument->getCatalog()->getPageCount() == 0)
+    {
+        return;
+    }
+
+    if (!m_makeSearchable)
+    {
+        m_makeSearchable = new PDFOCRMakeSearchable(m_mainWindow, [this]() { return m_pdfDocument; }, this);
+        connect(m_makeSearchable, &PDFOCRMakeSearchable::documentReady, this, [this](pdf::PDFDocumentPointer document)
+        {
+            // Single change of the document and a single undo/redo step, like the dialog Recognize Text
+            onDocumentModified(pdf::PDFModifiedDocument(std::move(document), m_optionalContentActivity, pdf::PDFModifiedDocument::ModificationFlags(pdf::PDFModifiedDocument::PageContents)));
+        });
+        connect(m_makeSearchable, &PDFOCRMakeSearchable::runningChanged, this, &PDFProgramController::updateActionsAvailability);
+    }
+
+    // The recognition runs in the background, the document can be viewed and edited meanwhile
+    const QString fileName = m_fileInfo.absoluteFilePath.isEmpty() ? m_fileInfo.originalFileName : m_fileInfo.absoluteFilePath;
+    m_makeSearchable->start(fileName, m_CMSManager->getCurrentCMS());
 }
 
 void PDFProgramController::onActionCreateBitonalDocumentTriggered()
@@ -2015,6 +2368,16 @@ void PDFProgramController::readSettings(Settings settingsFlags)
         settings.beginGroup("Plugins");
         m_loadAllPlugins = !settings.contains("EnabledPlugins");
         m_enabledPlugins = settings.value("EnabledPlugins").toStringList();
+        if (settings.contains("KnownPlugins"))
+        {
+            m_knownPlugins = settings.value("KnownPlugins").toStringList();
+        }
+        else
+        {
+            // Settings written before the list of the known plugins existed: the user could
+            // have disabled only the plugins distributed at that time, a plugin added later is new.
+            m_knownPlugins = QStringList({ "AudioBook", "Dimensions", "Editor", "ObjectInspector", "OutputPreview", "Redact", "Scanner", "Signature", "SoftProofing" });
+        }
         settings.endGroup();
     }
 
@@ -2085,6 +2448,7 @@ void PDFProgramController::updateActionsAvailability()
     m_actionManager->setEnabled(PDFActionManager::Find, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Print, hasValidDocument && canPrint);
     m_actionManager->setEnabled(PDFActionManager::RenderToImages, hasValidDocument && canPrint);
+    m_actionManager->setEnabled(PDFActionManager::ExportToWord, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Optimize, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::OptimizeImages, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Sanitize, hasValidDocument);
@@ -2097,12 +2461,14 @@ void PDFProgramController::updateActionsAvailability()
     m_actionManager->setEnabled(PDFActionManager::RecognizeText, hasValidDocument && m_pdfDocument->getCatalog()->getPageCount() > 0);
     m_actionManager->setEnabled(PDFActionManager::ManageOCRLanguages, !isBusy);
     m_actionManager->setEnabled(PDFActionManager::BatchRecognizeText, !isBusy);
+    m_actionManager->setEnabled(PDFActionManager::MakeSearchable, hasValidDocument && m_pdfDocument->getCatalog()->getPageCount() > 0 && !(m_makeSearchable && m_makeSearchable->isRunning()));
 
     // Preparation of the scanned pages changes the pages (crop, split, deskew)
     m_actionManager->setEnabled(PDFActionManager::PrepareScannedPages, hasValidDocument && canModify && m_pdfDocument->getCatalog()->getPageCount() > 0);
     m_actionManager->setEnabled(PDFActionManager::Encryption, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Save, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::SaveAs, hasValidDocument);
+    m_actionManager->setEnabled(PDFActionManager::SaveFlattenedCopy, hasValidDocument && m_formManager && m_formManager->hasAcroForm());
     m_actionManager->setEnabled(PDFActionManager::Properties, hasDocument);
     m_actionManager->setEnabled(PDFActionManager::SendByMail, hasDocument);
     m_actionManager->setEnabled(PDFActionManager::FullscreenMode, hasValidDocument);
@@ -2301,6 +2667,8 @@ void PDFProgramController::onDocumentReadingFinished()
                 m_formManager->performPaging();
             }
 
+            offerRecoveryOfOpenedDocument();
+
             pdf::PDFDocumentRequirements requirements = pdf::PDFDocumentRequirements::parse(&m_pdfDocument->getStorage(), m_pdfDocument->getCatalog()->getRequirements());
             constexpr pdf::PDFDocumentRequirements::Requirements requirementFlags = pdf::PDFDocumentRequirements::Requirements(pdf::PDFDocumentRequirements::OCInteract |
                                                                                                                                pdf::PDFDocumentRequirements::OCAutoStates |
@@ -2370,12 +2738,14 @@ void PDFProgramController::onDocumentModified(pdf::PDFModifiedDocument document)
     Q_UNUSED(oldDocument);
 
     m_pdfDocument = document;
+    ++m_documentRevision;
     document.setOptionalContentActivity(m_optionalContentActivity);
     setDocument(document, {}, false);
 }
 
 void PDFProgramController::onDocumentUndoRedo(pdf::PDFModifiedDocument document)
 {
+    ++m_documentRevision;
     m_pdfDocument = document;
     document.setOptionalContentActivity(m_optionalContentActivity);
     setDocument(document, {}, false);
@@ -2502,6 +2872,16 @@ void PDFProgramController::closeDocument()
 
         savePageLayoutPerDocument();
     }
+
+    if (m_makeSearchable)
+    {
+        // The text of the closed document is not written into the next one
+        m_makeSearchable->cancel();
+    }
+
+    // Document is closed normally (user was asked to save the changes),
+    // so the recovery copy is not needed.
+    removeRecoveryCopy(m_fileInfo.originalFileName);
 
     m_signatures.clear();
     setDocument(pdf::PDFModifiedDocument(), {}, true);
@@ -2707,6 +3087,16 @@ void PDFProgramController::loadPlugins()
             m_plugins.back().pluginFileWithPath = pluginFileName;
 
             QString pluginName = m_plugins.back().name;
+            if (!m_knownPlugins.contains(pluginName))
+            {
+                // A plugin seen for the first time is enabled, the user can disable it later in the settings
+                m_knownPlugins << pluginName;
+                if (!m_enabledPlugins.contains(pluginName))
+                {
+                    m_enabledPlugins << pluginName;
+                }
+            }
+
             if (!m_enabledPlugins.contains(pluginName) && !m_loadAllPlugins)
             {
                 loader.unload();
@@ -2747,6 +3137,15 @@ void PDFProgramController::loadPlugins()
         {
             QToolBar* toolBar = nullptr;
 
+            // The main window decides, where the menu of the plugin is placed, and it
+            // can place the toolbar actions into its own toolbar (simplified layout).
+            bool toolbarActionsPlaced = false;
+            QMenu* menu = m_mainWindowInterface->addPluginUserInterface(plugin.second, plugin.first.name, toolbarActions, toolbarActionsPlaced);
+            if (toolbarActionsPlaced)
+            {
+                toolbarActions.clear();
+            }
+
             // A plugin with many actions can keep its toolbar small, or have no
             // toolbar at all, and offer all the actions in its menu only.
             if (!toolbarActions.empty())
@@ -2767,7 +3166,6 @@ void PDFProgramController::loadPlugins()
                 m_mainWindowInterface->adjustToolbar(toolBar);
             }
 
-            QMenu* menu = m_mainWindowInterface->addToolMenu(plugin.second->getPluginMenuName(), plugin.second->getPluginMenuLocation());
             for (QAction* action : actions)
             {
                 if (!action)
@@ -2826,6 +3224,7 @@ void PDFProgramController::writeSettings()
     // Save allowed plugins
     settings.beginGroup("Plugins");
     settings.setValue("EnabledPlugins", m_enabledPlugins);
+    settings.setValue("KnownPlugins", m_knownPlugins);
     settings.endGroup();
 
     // Save trusted certificates

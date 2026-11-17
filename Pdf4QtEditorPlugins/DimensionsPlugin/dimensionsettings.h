@@ -30,6 +30,7 @@
 #include <QFont>
 #include <QString>
 
+#include <map>
 #include <vector>
 
 namespace pdf
@@ -83,8 +84,12 @@ struct DimensionsPluginSettings
     /// by the plugin, not by the settings.
     DimensionScale defaultScale;
 
-    StorageMode storageMode = StorageMode::Temporary;
+    StorageMode storageMode = StorageMode::Annotations;
     bool isScaleStoredPerDocument = true;
+
+    /// If true, then a scale selected from the presets applies to the current
+    /// sheet (page) only, otherwise to all sheets of the document
+    bool isScaleAppliedPerSheet = false;
     QFont font;
     QColor textColor = QColor(Qt::black);
 
@@ -131,11 +136,25 @@ public:
     /// \param identity Document identification
     DimensionScale getDocumentScale(const DocumentIdentity& identity) const;
 
-    /// Stores the scale for the document. The oldest records are discarded,
-    /// so the settings file does not grow indefinitely.
+    /// Stores the scale for the document. The scale applies to all sheets
+    /// (pages) of the document, so the scales of the single sheets are removed.
+    /// The oldest records are discarded, so the settings file does not grow
+    /// indefinitely.
     /// \param identity Document identification
     /// \param scale Scale of the document
     void setDocumentScale(const DocumentIdentity& identity, const DimensionScale& scale);
+
+    /// Returns the scales of the single sheets (pages) of the document, which
+    /// differ from the scale of the whole document. The key is the page index.
+    /// \param identity Document identification
+    std::map<pdf::PDFInteger, DimensionScale> getPageScales(const DocumentIdentity& identity) const;
+
+    /// Stores the scale of a single sheet (page) of the document. An invalid
+    /// scale removes the scale of the sheet, so the scale of the document applies.
+    /// \param identity Document identification
+    /// \param pageIndex Page index
+    /// \param scale Scale of the sheet
+    void setPageScale(const DocumentIdentity& identity, pdf::PDFInteger pageIndex, const DimensionScale& scale);
 
 private:
     /// Maximum count of the documents, for which the scale is remembered
@@ -144,9 +163,20 @@ private:
     struct DocumentScale
     {
         DocumentIdentity identity;
-        DimensionScale scale;
+        DimensionScale scale;   ///< Scale of the whole document, it can be invalid, if only sheets were calibrated
+        std::map<pdf::PDFInteger, DimensionScale> pageScales;   ///< Scales of the single sheets
         QDateTime lastUsed;
+
+        bool isValid() const { return identity.isValid() && (scale.isValid() || !pageScales.empty()); }
     };
+
+    /// Returns the record of the document, creates a new one, if it does
+    /// not exist yet, and marks it as used
+    /// \param identity Document identification
+    DocumentScale* getOrCreateDocumentScale(const DocumentIdentity& identity);
+
+    /// Discards the records, which were not used for the longest time
+    void discardOldDocumentScales();
 
     /// Returns the record of the document, or nullptr, if it does not exist
     /// \param identity Document identification

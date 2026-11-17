@@ -58,6 +58,7 @@ public:
     inline bool isWholeTextSelected() const { return !isEmpty() && getSelectionLength() == m_editText.length(); }
 
     inline int getTextLength() const { return m_editText.length(); }
+    inline int getMaxTextLength() const { return m_maxTextLength; }
     inline int getSelectionLength() const { return m_selectionEnd - m_selectionStart; }
 
     inline int getPositionCursor() const { return m_positionCursor; }

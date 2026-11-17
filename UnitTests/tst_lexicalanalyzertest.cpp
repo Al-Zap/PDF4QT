@@ -31,6 +31,7 @@
 #include "pdfdocument.h"
 #include "pdfexception.h"
 #include "pdfjbig2decoder.h"
+#include "pdfdocumentreader.h"
 
 #include <regex>
 
@@ -60,6 +61,8 @@ private slots:
     void test_parser_scratch_stacks();
     void test_dictionary_lookup();
     void test_invalid_input();
+    void test_stream_length_recovery();
+    void test_document_with_missing_stream_length();
     void test_header_regexp();
     void test_flat_map();
     void test_lzw_filter();
@@ -75,6 +78,9 @@ private:
     void testTokens(const char* stream, const std::vector<pdf::PDFLexicalAnalyzer::Token>& tokens);
 
     QString getStringFromTokens(const std::vector<pdf::PDFLexicalAnalyzer::Token>& tokens);
+
+    /// Parses a stream object and returns its data
+    static QByteArray parseStreamData(const QByteArray& data);
 };
 
 LexicalAnalyzerTest::LexicalAnalyzerTest()
@@ -480,6 +486,84 @@ void LexicalAnalyzerTest::test_invalid_input()
     QVERIFY_THROWS_EXCEPTION(pdf::PDFException, scanWholeStream("<1FA"));
     QVERIFY_THROWS_EXCEPTION(pdf::PDFException, scanWholeStream("> albatros"));
     QVERIFY_THROWS_EXCEPTION(pdf::PDFException, scanWholeStream(")"));
+}
+
+QByteArray LexicalAnalyzerTest::parseStreamData(const QByteArray& data)
+{
+    pdf::PDFParser parser(data, nullptr, pdf::PDFParser::AllowStreams);
+    pdf::PDFObject object = parser.getObject();
+    if (!object.isStream())
+    {
+        return QByteArray("<not a stream>");
+    }
+    return *object.getStream()->getContent();
+}
+
+void LexicalAnalyzerTest::test_stream_length_recovery()
+{
+    // Correct length
+    QCOMPARE(parseStreamData("<< /Length 5 >>\nstream\nHello\nendstream"), QByteArray("Hello"));
+    QCOMPARE(parseStreamData("<< /Length 5 >>\r\nstream\r\nHello\r\nendstream"), QByteArray("Hello"));
+    QCOMPARE(parseStreamData("<< /Length 5 >>\nstream\nHelloendstream"), QByteArray("Hello"));
+    QCOMPARE(parseStreamData("<< /Length 0 >>\nstream\n\nendstream"), QByteArray());
+
+    // Correct length of the data containing the keyword endstream
+    QCOMPARE(parseStreamData("<< /Length 14 >>\nstream\nab endstream x\nendstream"), QByteArray("ab endstream x"));
+
+    // Missing length (files edited by other tools, for example the metadata of AutoCAD plots)
+    QCOMPARE(parseStreamData("<< /Subtype /XML /Type /Metadata >>\nstream\n<x:xmpmeta/>\nendstream"), QByteArray("<x:xmpmeta/>"));
+    QCOMPARE(parseStreamData("<< >>\r\nstream\r\nHello\r\nendstream"), QByteArray("Hello"));
+    QCOMPARE(parseStreamData("<< >>\nstream\nHello\rendstream"), QByteArray("Hello"));
+
+    // Wrong or invalid length
+    QCOMPARE(parseStreamData("<< /Length 2 >>\nstream\nHello\nendstream"), QByteArray("Hello"));
+    QCOMPARE(parseStreamData("<< /Length 100 >>\nstream\nHello\nendstream"), QByteArray("Hello"));
+    QCOMPARE(parseStreamData("<< /Length -5 >>\nstream\nHello\nendstream"), QByteArray("Hello"));
+    QCOMPARE(parseStreamData("<< /Length /Wrong >>\nstream\nHello\nendstream"), QByteArray("Hello"));
+    QCOMPARE(parseStreamData("<< /Length 9 >>\nstream\nHello\nendstream"), QByteArray("Hello"));
+
+    // Missing keyword endstream is still an error
+    QVERIFY_THROWS_EXCEPTION(pdf::PDFException, parseStreamData("<< /Length 5 >>\nstream\nHello"));
+    QVERIFY_THROWS_EXCEPTION(pdf::PDFException, parseStreamData("<< >>\nstream\nHello\nendobj"));
+}
+
+void LexicalAnalyzerTest::test_document_with_missing_stream_length()
+{
+    // Whole document, whose metadata stream has no length, must be readable
+    QByteArray data("%PDF-1.7\n");
+    std::vector<int> offsets;
+    auto addObject = [&](const QByteArray& object)
+    {
+        offsets.push_back(data.size());
+        data.append(QByteArray::number(int(offsets.size())) + " 0 obj\n" + object + "\nendobj\n");
+    };
+
+    addObject("<< /Type /Catalog /Pages 2 0 R /Metadata 4 0 R >>");
+    addObject("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    addObject("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R >>");
+    addObject("<< /Subtype /XML /Type /Metadata >>stream\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"></x:xmpmeta>\nendstream");
+    addObject("<< /Length 1000 >>\nstream\n0 0 m 100 100 l S\nendstream");
+
+    const int xrefOffset = data.size();
+    data.append("xref\n0 " + QByteArray::number(int(offsets.size()) + 1) + "\n0000000000 65535 f \n");
+    for (int offset : offsets)
+    {
+        data.append(QByteArray::number(offset).rightJustified(10, '0') + " 00000 n \n");
+    }
+    data.append("trailer\n<< /Size " + QByteArray::number(int(offsets.size()) + 1) + " /Root 1 0 R >>\nstartxref\n" + QByteArray::number(xrefOffset) + "\n%%EOF\n");
+
+    pdf::PDFDocumentReader reader(nullptr, nullptr, false, false);
+    pdf::PDFDocument document = reader.readFromBuffer(data);
+    QCOMPARE(reader.getReadingResult(), pdf::PDFDocumentReader::Result::OK);
+    QCOMPARE(document.getCatalog()->getPageCount(), size_t(1));
+
+    const pdf::PDFObject& metadata = document.getObject(pdf::PDFObject::createReference(pdf::PDFObjectReference(4, 0)));
+    QVERIFY(metadata.isStream());
+    QCOMPARE(*metadata.getStream()->getContent(), QByteArray("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"></x:xmpmeta>"));
+
+    const pdf::PDFObject& contents = document.getObject(pdf::PDFObject::createReference(pdf::PDFObjectReference(5, 0)));
+    QVERIFY(contents.isStream());
+    QCOMPARE(*contents.getStream()->getContent(), QByteArray("0 0 m 100 100 l S"));
 }
 
 void LexicalAnalyzerTest::test_header_regexp()

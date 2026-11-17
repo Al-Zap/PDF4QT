@@ -31,11 +31,15 @@
 #include "pdfwidgetannotation.h"
 #include "pdfwidgetformmanager.h"
 #include "pdfwidgettool.h"
+#include "pdfadvancedtools.h"
+#include "pdfrecoverymanager.h"
 
 #include <QtTest>
 #include <QAction>
 #include <QBuffer>
 #include <QPainter>
+#include <QPlainTextEdit>
+#include <QTemporaryDir>
 
 #include <algorithm>
 #include <array>
@@ -70,6 +74,19 @@ private slots:
     void choiceDefaultAppearance();
     void inheritedDefaultAppearance_data();
     void inheritedDefaultAppearance();
+    void tabOrder_data();
+    void tabOrder();
+    void tabSkipsReadOnlyFields();
+    void flattenText_data();
+    void flattenText();
+    void flattenCheckBox();
+    void flattenKeepsOtherAnnotations();
+    void autocomplete();
+    void typewriter();
+    void recoveryCopy();
+    void comboBoxKeyboard_data();
+    void comboBoxKeyboard();
+    void fillRealForm();
 };
 
 /// Creates the documents with the form fields
@@ -460,6 +477,58 @@ public:
         factory.endDictionaryItem();
         factory.endDictionary();
         builder.mergeTo(builder.createAcroForm({ field }), factory.takeObject());
+        return builder.build();
+    }
+
+    /// Creates a document with text fields for the tests of the tab order. The first page has
+    /// fields A (top right), B (top left) and C (bottom left), the annotation array of the page
+    /// is C, A, B. The second page has the field D. The fields of the form are in the reverse
+    /// order D, C, B, A.
+    /// \param tabs Tab order of the first page (entry Tabs), nothing if empty
+    /// \param readOnlyField Name of the read only field, nothing if empty
+    static PDFDocument createTabOrderDocument(const QByteArray& tabs, const QString& readOnlyField = QString())
+    {
+        PDFDocumentBuilder builder;
+        const PDFObjectReference page1 = builder.appendPage(QRectF(QPointF(0, 0), PAGE_SIZE));
+        const PDFObjectReference page2 = builder.appendPage(QRectF(QPointF(0, 0), PAGE_SIZE));
+
+        auto createField = [&](PDFObjectReference page, const QString& name, QRectF rectangle)
+        {
+            PDFObjectFactory factory;
+            beginWidget(factory, page, rectangle);
+            factory.beginDictionaryItem("FT");
+            factory << WrapName("Tx");
+            factory.endDictionaryItem();
+            factory.beginDictionaryItem("T");
+            factory << name;
+            factory.endDictionaryItem();
+            factory.beginDictionaryItem("Ff");
+            factory << PDFInteger(name == readOnlyField ? PDFFormField::ReadOnly : PDFFormField::None);
+            factory.endDictionaryItem();
+            factory.beginDictionaryItem("DA");
+            factory << WrapString("0 g /Helv 12 Tf");
+            factory.endDictionaryItem();
+            factory.endDictionary();
+            return builder.addObject(factory.takeObject());
+        };
+
+        const PDFObjectReference a = createField(page1, "A", QRectF(120, 150, 60, 20));
+        const PDFObjectReference b = createField(page1, "B", QRectF(20, 152, 60, 20));
+        const PDFObjectReference c = createField(page1, "C", QRectF(20, 50, 60, 20));
+        const PDFObjectReference d = createField(page2, "D", QRectF(20, 150, 60, 20));
+        addToPage(builder, page1, { c, a, b });
+        addToPage(builder, page2, { d });
+
+        if (!tabs.isEmpty())
+        {
+            PDFObjectFactory factory;
+            factory.beginDictionary();
+            addName(factory, "Tabs", tabs);
+            factory.endDictionary();
+            builder.mergeTo(page1, factory.takeObject());
+        }
+
+        builder.createAcroForm({ d, c, b, a });
         return builder.build();
     }
 
@@ -1201,6 +1270,470 @@ void FormFieldsTest::inheritedDefaultAppearance()
     {
         QVERIFY2(height * 4 < referenceHeight * 3 && height * 20 > referenceHeight * 9, qPrintable(message));
     }
+}
+
+void FormFieldsTest::tabOrder_data()
+{
+    QTest::addColumn<QByteArray>("tabs");
+    QTest::addColumn<QStringList>("order");
+
+    QTest::newRow("annotation order") << QByteArray() << QStringList({ "C", "A", "B", "D" });
+    QTest::newRow("structure (annotation order)") << QByteArray("S") << QStringList({ "C", "A", "B", "D" });
+    QTest::newRow("rows") << QByteArray("R") << QStringList({ "B", "A", "C", "D" });
+    QTest::newRow("columns") << QByteArray("C") << QStringList({ "B", "C", "A", "D" });
+}
+
+void FormFieldsTest::tabOrder()
+{
+    QFETCH(QByteArray, tabs);
+    QFETCH(QStringList, order);
+
+    FormFixture fixture(FormFieldsTestHelper::createTabOrderDocument(tabs));
+
+    QStringList names;
+    for (const PDFFormWidget& formWidget : fixture.forms.getWidgetsInTabOrder())
+    {
+        names << formWidget.getParent()->getName(PDFFormField::FullyQualified);
+    }
+    QCOMPARE(names, order);
+
+    // Tab key moves the focus in the same order
+    QStringList focused;
+    for (int i = 0; i < order.size(); ++i)
+    {
+        QVERIFY(fixture.forms.focusNextPrevFormField(true));
+        for (const PDFFormWidget& formWidget : fixture.forms.getWidgets())
+        {
+            if (fixture.forms.isFocused(formWidget.getWidget()))
+            {
+                focused << formWidget.getParent()->getName(PDFFormField::FullyQualified);
+            }
+        }
+    }
+    QCOMPARE(focused, order);
+
+    // Focus leaves the form after the last field
+    QVERIFY(!fixture.forms.focusNextPrevFormField(true));
+}
+
+void FormFieldsTest::tabSkipsReadOnlyFields()
+{
+    FormFixture fixture(FormFieldsTestHelper::createTabOrderDocument(QByteArray(), "A"));
+
+    auto focusedName = [&fixture]() -> QString
+    {
+        for (const PDFFormWidget& formWidget : fixture.forms.getWidgets())
+        {
+            if (fixture.forms.isFocused(formWidget.getWidget()))
+            {
+                return formWidget.getParent()->getName(PDFFormField::FullyQualified);
+            }
+        }
+        return QString();
+    };
+
+    QVERIFY(fixture.forms.focusNextPrevFormField(true));
+    QCOMPARE(focusedName(), QString("C"));
+    QVERIFY(fixture.forms.focusNextPrevFormField(true));
+    QCOMPARE(focusedName(), QString("B"));
+    QVERIFY(fixture.forms.focusNextPrevFormField(false));
+    QCOMPARE(focusedName(), QString("C"));
+}
+
+void FormFieldsTest::flattenText_data()
+{
+    QTest::addColumn<QByteArray>("content");
+    QTest::addColumn<bool>("needAppearances");
+
+    QTest::newRow("own appearance") << QByteArray("/Tx BMC BT /Helv 20 Tf 0 g 4 12 Td (Hello) Tj ET EMC") << false;
+    QTest::newRow("need appearances") << QByteArray("/Tx BMC EMC") << true;
+}
+
+void FormFieldsTest::flattenText()
+{
+    QFETCH(QByteArray, content);
+    QFETCH(bool, needAppearances);
+
+    PDFDocument flattened;
+    {
+        FormFixture fixture(FormFieldsTestHelper::createTextFieldDocument(FormFieldsTestHelper::TextField::TextBox, content, needAppearances));
+        QVERIFY(fixture.hasDarkPixels(FormFieldsTestHelper::TEXT_FIELD));
+        flattened = fixture.forms.createFlattenedDocument();
+    }
+
+    bool ok = false;
+    PDFDocument reopened = FormFieldsTestHelper::reopenDocument(&flattened, ok);
+    QVERIFY(ok);
+
+    // Form and widgets are removed, text is a part of the page content
+    QVERIFY(reopened.getCatalog()->getFormObject().isNull());
+    QVERIFY(reopened.getCatalog()->getPage(0)->getAnnotations().empty());
+
+    // Page content is compiled asynchronously (unlike the annotations), so we wait for it
+    FormFixture fixture(std::move(reopened));
+    QVERIFY(!fixture.forms.hasAcroForm());
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.hasDarkPixels(FormFieldsTestHelper::TEXT_FIELD), 10000);
+    QVERIFY(!fixture.hasDarkPixels(QRectF(0, 0, 30, 30)));
+}
+
+void FormFieldsTest::flattenCheckBox()
+{
+    for (const QByteArray& state : { QByteArray("Yes"), QByteArray("Off") })
+    {
+        FormFixture fixture(FormFieldsTestHelper::createCheckBoxDocument(FormFieldsTestHelper::Appearance::Complete, "Yes", state, QByteArray(), state));
+        QCOMPARE(fixture.isGreen(FormFieldsTestHelper::CHECK_BOX.center()), state == "Yes");
+
+        PDFDocument flattened = fixture.forms.createFlattenedDocument();
+        QVERIFY(flattened.getCatalog()->getPage(0)->getAnnotations().empty());
+
+        // Page content is compiled asynchronously (unlike the annotations), so we wait for it
+        FormFixture flattenedFixture(std::move(flattened));
+        if (state == "Yes")
+        {
+            QTRY_VERIFY_WITH_TIMEOUT(flattenedFixture.isGreen(FormFieldsTestHelper::CHECK_BOX.center()), 10000);
+        }
+        else
+        {
+            QTest::qWait(200);
+            QVERIFY(!flattenedFixture.isGreen(FormFieldsTestHelper::CHECK_BOX.center()));
+        }
+
+        // Clicking on the flattened check box does nothing
+        flattenedFixture.click(FormFieldsTestHelper::CHECK_BOX.center());
+        QCOMPARE(flattenedFixture.modificationCount, 0);
+    }
+}
+
+void FormFieldsTest::flattenKeepsOtherAnnotations()
+{
+    PDFDocument document = FormFieldsTestHelper::createCheckBoxDocument(FormFieldsTestHelper::Appearance::Complete, "Yes", "Yes", QByteArray(), "Yes");
+
+    PDFDocumentBuilder builder(&document);
+    const PDFObjectReference page = builder.getPages().front();
+    const PDFObjectReference note = builder.createAnnotationText(page, QRectF(10, 10, 20, 20), TextAnnotationIcon::Note, "Author", "Subject", "Comment", false);
+    document = builder.build();
+
+    FormFixture fixture(std::move(document));
+    const PDFObjectReference widget = fixture.widgetReference();
+    QCOMPARE(fixture.document->getCatalog()->getPage(0)->getAnnotations().size(), size_t(3)); // widget, note, popup of the note
+
+    PDFDocument flattened = fixture.forms.createFlattenedDocument();
+    const std::vector<PDFObjectReference>& annotations = flattened.getCatalog()->getPage(0)->getAnnotations();
+    QCOMPARE(annotations.size(), size_t(2));
+    QVERIFY(std::find(annotations.cbegin(), annotations.cend(), note) != annotations.cend());
+    QVERIFY(std::find(annotations.cbegin(), annotations.cend(), widget) == annotations.cend());
+}
+
+void FormFieldsTest::autocomplete()
+{
+    PDFFormFieldValueHistory::clear();
+    PDFFormFieldValueHistory::addValue("Other", "Hurst Lighting");
+    PDFFormFieldValueHistory::addValue("Text", "Hello World");
+    PDFFormFieldValueHistory::addValue("Text", "Help Desk");
+
+    // Values of the same field are preferred, the most recent first
+    QCOMPARE(PDFFormFieldValueHistory::complete("Text", "he"), QString("Help Desk"));
+    QCOMPARE(PDFFormFieldValueHistory::complete("Text", "Hell"), QString("Hello World"));
+    QCOMPARE(PDFFormFieldValueHistory::complete("Text", "Hu"), QString("Hurst Lighting"));
+    QCOMPARE(PDFFormFieldValueHistory::complete("Text", "X"), QString());
+    QCOMPARE(PDFFormFieldValueHistory::complete("Text", "Help Desk"), QString());
+
+    FormFixture fixture(FormFieldsTestHelper::createTextFieldDocument(FormFieldsTestHelper::TextField::TextBox, "/Tx BMC EMC", true));
+    QWidget* target = fixture.widget.getDrawWidget()->getWidget();
+    const PDFObjectReference widget = fixture.widgetReference();
+    const PDFFormField* formField = fixture.forms.getFormFieldForWidget(widget);
+    QVERIFY(formField);
+
+    auto fieldValue = [&fixture, widget]()
+    {
+        PDFDocumentDataLoaderDecorator loader(fixture.document.data());
+        return loader.readTextString(fixture.forms.getFormFieldForWidget(widget)->getValue(), QString());
+    };
+
+    // Typed letters are completed by the remembered value, Enter accepts it
+    fixture.click(FormFieldsTestHelper::TEXT_FIELD.center());
+    QTest::keyClick(target, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(target, Qt::Key_Backspace);
+    QTest::keyClicks(target, "hu");
+    QTest::keyClick(target, Qt::Key_Return);
+    QCOMPARE(fieldValue(), QString("hurst Lighting"));
+
+    // Backspace removes the suggestion
+    fixture.click(FormFieldsTestHelper::TEXT_FIELD.center());
+    QTest::keyClick(target, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(target, Qt::Key_Backspace);
+    QTest::keyClicks(target, "Hel");
+    QTest::keyClick(target, Qt::Key_Backspace);
+    QTest::keyClick(target, Qt::Key_Return);
+    QCOMPARE(fieldValue(), QString("Hel"));
+
+    // Typing over the suggestion continues normally
+    fixture.click(FormFieldsTestHelper::TEXT_FIELD.center());
+    QTest::keyClick(target, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(target, Qt::Key_Backspace);
+    QTest::keyClicks(target, "Hex");
+    QTest::keyClick(target, Qt::Key_Return);
+    QCOMPARE(fieldValue(), QString("Hex"));
+
+    // Committed values are remembered
+    QCOMPARE(PDFFormFieldValueHistory::complete("Text", "He"), QString("Hex"));
+
+    // Disabled autocomplete doesn't suggest anything
+    fixture.forms.setAutocompleteEnabled(false);
+    fixture.click(FormFieldsTestHelper::TEXT_FIELD.center());
+    QTest::keyClick(target, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(target, Qt::Key_Backspace);
+    QTest::keyClicks(target, "Hu");
+    QTest::keyClick(target, Qt::Key_Return);
+    QCOMPARE(fieldValue(), QString("Hu"));
+
+    PDFFormFieldValueHistory::clear();
+    QCOMPARE(PDFFormFieldValueHistory::complete("Text", "He"), QString());
+}
+
+void FormFieldsTest::typewriter()
+{
+    // Action must outlive the fixture, which deactivates the tools in its destructor
+    QAction action;
+    action.setCheckable(true);
+
+    PDFDocumentBuilder builder;
+    builder.appendPage(QRectF(QPointF(0, 0), FormFieldsTestHelper::PAGE_SIZE));
+    FormFixture fixture(builder.build());
+    PDFCreateTypewriterTool* tool = new PDFCreateTypewriterTool(fixture.widget.getDrawWidgetProxy(), &fixture.tools, &action, &fixture.widget);
+    fixture.tools.addTool(tool);
+    QObject::connect(&fixture.tools, &PDFToolManager::documentModified, &fixture.tools, [&fixture](PDFModifiedDocument modified)
+    {
+        fixture.document = modified;
+        fixture.apply(PDFModifiedDocument(fixture.document, nullptr, modified.getFlags()));
+    });
+    fixture.apply(PDFModifiedDocument(fixture.document, nullptr));
+    tool->setActive(true);
+
+    // Empty text creates nothing
+    const QPointF pagePoint(40, 150);
+    QVERIFY(tool->beginText(fixture.device(pagePoint)));
+    QVERIFY(tool->getEditor());
+    tool->commitText();
+    QVERIFY(!tool->getEditor());
+    QVERIFY(fixture.document->getCatalog()->getPage(0)->getAnnotations().empty());
+
+    // Typed text is a typewriter free text annotation, its top left corner is at the clicked point
+    QVERIFY(tool->beginText(fixture.device(pagePoint)));
+    tool->getEditor()->setPlainText("Hello\nWorld\n");
+    tool->commitText();
+
+    const std::vector<PDFObjectReference>& annotations = fixture.document->getCatalog()->getPage(0)->getAnnotations();
+    QCOMPARE(annotations.size(), size_t(1));
+    const PDFObjectReference annotation = annotations.front();
+    QVERIFY(fixture.hasName(annotation, "Subtype", "FreeText"));
+    QVERIFY(fixture.hasName(annotation, "IT", "FreeTextTypeWriter"));
+
+    PDFDocumentDataLoaderDecorator loader(fixture.document.data());
+    QCOMPARE(loader.readTextString(fixture.dictionary(annotation)->get("Contents"), QString()), QString("Hello\nWorld"));
+
+    const QRectF rectangle = fixture.rectangle(annotation).normalized();
+    QVERIFY(qAbs(rectangle.left() - pagePoint.x()) < 2.0);
+    QVERIFY(qAbs(rectangle.bottom() - pagePoint.y()) < 2.0);
+    QVERIFY(rectangle.height() > 20.0);
+    QVERIFY(fixture.hasDarkPixels(rectangle));
+
+    // No border is drawn around the text
+    QVERIFY(!fixture.hasDarkPixels(QRectF(rectangle.left(), rectangle.top(), rectangle.width(), 1.0).adjusted(0, -0.5, 0, 0.5)));
+
+    // Escape without text finishes the tool
+    QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    tool->keyPressEvent(fixture.widget.getDrawWidget()->getWidget(), &escape);
+    QVERIFY(!tool->isActive());
+}
+
+void FormFieldsTest::recoveryCopy()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    pdfviewer::PDFRecoveryManager manager(directory.filePath("Recovery"));
+    const QString fileName = directory.filePath("Spec sheet.pdf");
+    PDFDocument document = FormFieldsTestHelper::createCheckBoxDocument(FormFieldsTestHelper::Appearance::Complete, "Yes", "Yes", QByteArray(), "Yes");
+
+    QVERIFY(!manager.findRecoveryItem(fileName));
+    QVERIFY(manager.getRecoveryItems().empty());
+
+    QVERIFY(manager.writeRecoveryCopy(fileName, &document));
+    std::optional<pdfviewer::PDFRecoveryManager::RecoveryItem> item = manager.findRecoveryItem(fileName);
+    QVERIFY(item);
+    QCOMPARE(QFileInfo(item->originalFileName), QFileInfo(fileName));
+    QVERIFY(item->time.isValid());
+    QCOMPARE(manager.getRecoveryItems().size(), size_t(1));
+
+    // Recovery copy is a valid document with the same content
+    PDFDocumentReader reader(nullptr, nullptr, false, false);
+    PDFDocument recovered = reader.readFromFile(item->recoveryFileName);
+    QCOMPARE(reader.getReadingResult(), PDFDocumentReader::Result::OK);
+    QCOMPARE(recovered.getCatalog()->getPageCount(), size_t(1));
+    QVERIFY(!recovered.getCatalog()->getFormObject().isNull());
+
+    // Other document has its own recovery copy
+    const QString otherFileName = directory.filePath("Other.pdf");
+    QVERIFY(manager.writeRecoveryCopy(otherFileName, &document));
+    QCOMPARE(manager.getRecoveryItems().size(), size_t(2));
+
+    manager.removeRecoveryCopy(fileName);
+    QVERIFY(!manager.findRecoveryItem(fileName));
+    QVERIFY(manager.findRecoveryItem(otherFileName));
+    QCOMPARE(manager.getRecoveryItems().size(), size_t(1));
+}
+
+void FormFieldsTest::comboBoxKeyboard_data()
+{
+    QTest::addColumn<bool>("optionsInParent");
+
+    QTest::newRow("options in the field") << false;
+    QTest::newRow("options in the parent field") << true;
+}
+
+void FormFieldsTest::comboBoxKeyboard()
+{
+    QFETCH(bool, optionsInParent);
+
+    PDFDocument document = FormFieldsTestHelper::createTextFieldDocument(FormFieldsTestHelper::TextField::ComboBox, "/Tx BMC EMC", true, "0 g /Helv 20 Tf", optionsInParent ? 1 : 0);
+    if (optionsInParent)
+    {
+        // Widget annotation is a kid of the field, which defines the options
+        PDFDocumentBuilder builder(&document);
+        const PDFObjectReference widget = document.getCatalog()->getPage(0)->getAnnotations().front();
+        const PDFDictionary* widgetDictionary = document.getDictionaryFromObject(document.getObjectByReference(widget));
+        PDFDocumentDataLoaderDecorator loader(&document);
+        const PDFObjectReference parent = loader.readReferenceFromDictionary(widgetDictionary, "Parent");
+
+        PDFObjectFactory factory;
+        factory.beginDictionary();
+        factory.beginDictionaryItem("Opt");
+        factory << widgetDictionary->get("Opt");
+        factory.endDictionaryItem();
+        factory.beginDictionaryItem("V");
+        factory << QString("Hello");
+        factory.endDictionaryItem();
+        factory.endDictionary();
+        builder.mergeTo(parent, factory.takeObject());
+
+        PDFDictionaryBuilder newWidget(*widgetDictionary);
+        newWidget.removeEntry("Opt");
+        newWidget.removeEntry("V");
+        newWidget.removeEntry("T");
+        builder.setObject(widget, PDFObject::createDictionary(std::move(newWidget)));
+        document = builder.build();
+    }
+
+    FormFixture fixture(std::move(document));
+    QWidget* target = fixture.widget.getDrawWidget()->getWidget();
+    const PDFObjectReference widget = fixture.widgetReference();
+
+    auto fieldValue = [&fixture, widget]()
+    {
+        PDFDocumentDataLoaderDecorator loader(fixture.document.data());
+        const PDFFormField* field = fixture.forms.getFormFieldForWidget(widget);
+        while (field && field->getValue().isNull() && field->getParentField())
+        {
+            field = field->getParentField();
+        }
+        return loader.readTextString(field->getValue(), QString());
+    };
+
+    QCOMPARE(fieldValue(), QString("Hello"));
+
+    // Down selects the next option
+    QVERIFY(fixture.forms.focusNextPrevFormField(true));
+    QTest::keyClick(target, Qt::Key_Down);
+    QTest::keyClick(target, Qt::Key_Return);
+    QCOMPARE(fieldValue(), QString("World"));
+
+    // Up selects the previous option, the first option stays selected
+    QVERIFY(fixture.forms.focusNextPrevFormField(true));
+    QTest::keyClick(target, Qt::Key_Up);
+    QTest::keyClick(target, Qt::Key_Up);
+    QTest::keyClick(target, Qt::Key_Return);
+    QCOMPARE(fieldValue(), QString("Hello"));
+
+    // Typed letter selects the option starting with it
+    QVERIFY(fixture.forms.focusNextPrevFormField(true));
+    QTest::keyClicks(target, "w");
+    QTest::keyClick(target, Qt::Key_Return);
+    QCOMPARE(fieldValue(), QString("World"));
+}
+
+void FormFieldsTest::fillRealForm()
+{
+    // Fills a real form by the keyboard only: each text field gets the text
+    // '<field name> value', Tab moves through the fields, Space checks the check boxes
+    // and the arrow key changes the combo box. The filled document is saved as
+    // '<output>-filled.pdf' and its flattened copy as '<output>-flattened.pdf', so
+    // they can be checked in other applications.
+    const QString inputFileName = qEnvironmentVariable("PDF4QT_FORM_TEST_FILE");
+    const QString outputFileName = qEnvironmentVariable("PDF4QT_FORM_TEST_OUTPUT");
+    if (inputFileName.isEmpty() || outputFileName.isEmpty())
+    {
+        QSKIP("Set PDF4QT_FORM_TEST_FILE (form to fill) and PDF4QT_FORM_TEST_OUTPUT (output file name prefix)");
+    }
+
+    PDFDocumentReader reader(nullptr, nullptr, false, false);
+    PDFDocument document = reader.readFromFile(inputFileName);
+    QCOMPARE(reader.getReadingResult(), PDFDocumentReader::Result::OK);
+
+    PDFFormFieldValueHistory::clear();
+    FormFixture fixture(std::move(document));
+    QWidget* target = fixture.widget.getDrawWidget()->getWidget();
+    QVERIFY(fixture.forms.hasAcroForm());
+
+    auto focusedWidget = [&fixture]() -> std::optional<PDFFormWidget>
+    {
+        for (const PDFFormWidget& formWidget : fixture.forms.getWidgets())
+        {
+            if (fixture.forms.isFocused(formWidget.getWidget()))
+            {
+                return formWidget;
+            }
+        }
+        return std::nullopt;
+    };
+
+    QStringList order;
+    QVERIFY(fixture.forms.focusNextPrevFormField(true));
+    for (std::optional<PDFFormWidget> formWidget = focusedWidget(); formWidget; formWidget = focusedWidget())
+    {
+        const PDFFormField* formField = formWidget->getParent();
+        const QString name = formField->getName(PDFFormField::FullyQualified);
+        order << name;
+
+        switch (formField->getFieldType())
+        {
+            case PDFFormField::FieldType::Text:
+                QTest::keyClick(target, Qt::Key_A, Qt::ControlModifier);
+                QTest::keyClicks(target, name + " value");
+                break;
+
+            case PDFFormField::FieldType::Button:
+                QTest::keyClick(target, Qt::Key_Space);
+                break;
+
+            case PDFFormField::FieldType::Choice:
+                QTest::keyClick(target, Qt::Key_Down);
+                break;
+
+            default:
+                break;
+        }
+
+        QTest::keyClick(target, Qt::Key_Tab);
+    }
+    qInfo("Tab order: %s", qPrintable(order.join(", ")));
+
+    PDFDocumentWriter writer(nullptr);
+    QVERIFY(writer.write(outputFileName + "-filled.pdf", fixture.document.data(), false));
+
+    PDFDocument flattened = fixture.forms.createFlattenedDocument();
+    QVERIFY(writer.write(outputFileName + "-flattened.pdf", &flattened, false));
+    PDFFormFieldValueHistory::clear();
 }
 
 QTEST_MAIN(FormFieldsTest)

@@ -254,6 +254,16 @@ public:
     /// \param color Redaction color (if invalid, nothing is being drawn)
     void redact(QPainterPath redactPath, const QTransform& matrix, QColor color);
 
+    /// Calls the callback for each path of the vector graphics drawn by the page,
+    /// i.e. for each drawn path, which is not a text glyph. The matrix passed to
+    /// the callback maps the path to the page coordinates. It is used to collect
+    /// the geometry of a drawing, to which the measuring tools snap.
+    /// \param callback Callback called with the path and its page matrix
+    void enumerateVectorPaths(const std::function<void(const QPainterPath& path, const QTransform& matrix)>& callback) const;
+
+    /// Returns count of the drawn paths (including the text glyphs)
+    size_t getPathCount() const { return m_paths.size(); }
+
     void addPath(QPen pen, QBrush brush, QPainterPath path, bool isText);
     void addClip(QPainterPath path);
     void addImage(QImage image);

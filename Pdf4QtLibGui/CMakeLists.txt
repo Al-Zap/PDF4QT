@@ -39,10 +39,14 @@ add_library(Pdf4QtLibGui SHARED
     pdfprogramcontroller.h
     pdfrecentfilemanager.cpp
     pdfrecentfilemanager.h
+    pdfrecoverymanager.cpp
+    pdfrecoverymanager.h
     pdfrendertoimagesdialog.cpp
     pdfrendertoimagesdialog.h
     pdfsendmail.cpp
     pdfsendmail.h
+    pdftoolbarslots.cpp
+    pdftoolbarslots.h
     pdfsidebarwidget.cpp
     pdfsidebarwidget.h
     pdftexttospeech.cpp
@@ -88,6 +92,10 @@ add_library(Pdf4QtLibGui SHARED
     pdfocrcompressionpreviewdialog.h
     pdfocrbatchdialog.cpp
     pdfocrbatchdialog.h
+    pdfocrbackgroundtask.cpp
+    pdfocrbackgroundtask.h
+    pdfocrmakesearchable.cpp
+    pdfocrmakesearchable.h
     pdfscanpreparationdialog.cpp
     pdfscanpreparationdialog.h
     pdf4qtlibgui.qrc

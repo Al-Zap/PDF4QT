@@ -1036,6 +1036,48 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
     painter->restore();
 }
 
+void PDFPrecompiledPage::enumerateVectorPaths(const std::function<void(const QPainterPath&, const QTransform&)>& callback) const
+{
+    // The world matrix is a part of the graphic state, so it is restored together
+    // with it, exactly as in the function draw
+    std::stack<QTransform> worldMatrixStack;
+    worldMatrixStack.push(QTransform());
+
+    for (const Instruction& instruction : m_instructions)
+    {
+        switch (instruction.type)
+        {
+            case InstructionType::DrawPath:
+            {
+                const PathPaintData& data = m_paths[instruction.dataIndex];
+                if (!data.isText && !data.path.isEmpty())
+                {
+                    callback(data.path, worldMatrixStack.top());
+                }
+                break;
+            }
+
+            case InstructionType::SaveGraphicState:
+                worldMatrixStack.push(worldMatrixStack.top());
+                break;
+
+            case InstructionType::RestoreGraphicState:
+                if (worldMatrixStack.size() > 1)
+                {
+                    worldMatrixStack.pop();
+                }
+                break;
+
+            case InstructionType::SetWorldMatrix:
+                worldMatrixStack.top() = m_matrices[instruction.dataIndex];
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
 void PDFPrecompiledPage::redact(QPainterPath redactPath, const QTransform& matrix, QColor color)
 {
     if (redactPath.isEmpty())

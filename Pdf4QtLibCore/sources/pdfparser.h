@@ -143,6 +143,16 @@ public:
     /// \param length Length of the buffer
     QByteArray fetchByteArray(PDFInteger length);
 
+    /// Returns the length of the data of a stream object starting at the position.
+    /// The declared length (/Length entry of the stream dictionary) is used, if the data
+    /// are followed by the keyword endstream. Otherwise (the length is missing or wrong,
+    /// typically in files edited by other tools), the data end at the next keyword
+    /// endstream, the end of line before the keyword is not a part of the data.
+    /// \param position Position of the first byte of the data
+    /// \param declaredLength Declared length of the data, negative value, if not declared
+    /// \returns Length of the data, or -1, if the keyword endstream was not found
+    PDFInteger getStreamDataLength(PDFInteger position, PDFInteger declaredLength) const;
+
     /// Returns, if whole stream was scanned
     inline bool isAtEnd() const { return m_current == m_end; }
 
