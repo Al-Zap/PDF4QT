@@ -128,6 +128,7 @@ public:
 
         // Form settings
         pdf::PDFFormManager::FormAppearanceFlags m_formAppearanceFlags;
+        bool m_formAutocompleteEnabled;
 
         // Signature settings
         bool m_signatureVerificationEnabled;

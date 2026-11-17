@@ -81,6 +81,8 @@
 #include <QStatusBar>
 #include <QLocale>
 #include <QDir>
+#include <QPushButton>
+#include <QStandardPaths>
 #include <QComboBox>
 #include <QProgressDialog>
 #include <QEventLoop>
@@ -474,6 +476,7 @@ void PDFProgramController::initializeFormManager()
     m_formManager = new pdf::PDFWidgetFormManager(m_pdfWidget->getDrawWidgetProxy(), this);
     m_formManager->setAnnotationManager(m_annotationManager);
     m_formManager->setAppearanceFlags(m_settings->getSettings().m_formAppearanceFlags);
+    m_formManager->setAutocompleteEnabled(m_settings->getSettings().m_formAutocompleteEnabled);
     m_annotationManager->setFormManager(m_formManager);
     m_pdfWidget->setFormManager(m_formManager);
     connect(m_formManager, &pdf::PDFFormManager::actionTriggered, this, &PDFProgramController::onActionTriggered);
@@ -841,6 +844,8 @@ void PDFProgramController::finishInitialization()
 
 void PDFProgramController::performPrint()
 {
+    commitPendingFormChanges();
+
     // Are we allowed to print in high resolution? If yes, then print in high resolution,
     // otherwise print in low resolution. If this action is triggered, then print operation
     // should be allowed (at least print in low resolution).
@@ -1229,6 +1234,21 @@ void PDFProgramController::initializeToolManager()
         pdf::PDFCreateLineTypeTool* createPolygonTool = new pdf::PDFCreateLineTypeTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, pdf::PDFCreateLineTypeTool::Type::Polygon, action, this);
         m_toolManager->addTool(createPolygonTool);
     }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateArrow))
+    {
+        pdf::PDFCreateLineTypeTool* tool = new pdf::PDFCreateLineTypeTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, pdf::PDFCreateLineTypeTool::Type::Arrow, action, this);
+        m_toolManager->addTool(tool);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateCloudRectangle))
+    {
+        pdf::PDFCreateLineTypeTool* tool = new pdf::PDFCreateLineTypeTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, pdf::PDFCreateLineTypeTool::Type::CloudRectangle, action, this);
+        m_toolManager->addTool(tool);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateCloudPolygon))
+    {
+        pdf::PDFCreateLineTypeTool* tool = new pdf::PDFCreateLineTypeTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, pdf::PDFCreateLineTypeTool::Type::CloudPolygon, action, this);
+        m_toolManager->addTool(tool);
+    }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateEllipse))
     {
         pdf::PDFCreateEllipseTool* createEllipseTool = new pdf::PDFCreateEllipseTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, action, this);
@@ -1388,6 +1408,8 @@ void PDFProgramController::performSave()
 
 bool PDFProgramController::askForWriteUnwrittenChanges()
 {
+    commitPendingFormChanges();
+
     // Changes, which are held by a plugin (for example the edited page content),
     // are not a part of the document - they would be lost in the saved file.
     for (const auto& plugin : m_loadedPlugins)
@@ -1459,32 +1481,105 @@ void PDFProgramController::saveDocument(const QString& fileName)
     updateFileWatcher();
 }
 
+void PDFProgramController::commitPendingFormChanges()
+{
+    // Value typed into the focused form field is written into the document,
+    // when the user leaves the field. Before the document is saved or copied,
+    // it must be written, otherwise the last typed value is lost.
+    if (m_formManager && m_pdfDocument)
+    {
+        m_formManager->commitPendingChanges();
+    }
+}
+
 void PDFProgramController::onRecoveryTimerTimeout()
 {
     if (!m_pdfDocument ||
         m_fileInfo.originalFileName.isEmpty() ||
         !m_undoRedoManager ||
-        m_undoRedoManager->isCurrentSaved() ||
-        m_recoveryRevision == m_documentRevision ||
         m_recoveryFuture.isRunning())
     {
+        return;
+    }
+
+    commitPendingFormChanges();
+
+    if (m_undoRedoManager->isCurrentSaved() ||
+        m_recoveryRevision == m_documentRevision)
+    {
+        return;
+    }
+
+    if (!m_recoveryManager.lockRecoveryCopy(m_fileInfo.originalFileName))
+    {
+        // Another window has the same document opened with unsaved changes
+        // and it writes the recovery copy, we must not overwrite it.
         return;
     }
 
     // Document is immutable and shared, so it can be written in a worker thread
     pdf::PDFDocumentPointer document = m_pdfDocument;
     QString fileName = m_fileInfo.originalFileName;
+    QDateTime originalLastModified = m_fileInfo.lastModifiedTime;
     PDFRecoveryManager recoveryManager = m_recoveryManager;
     m_recoveryRevision = m_documentRevision;
-    m_recoveryFuture = QtConcurrent::run([recoveryManager, document, fileName]() { return recoveryManager.writeRecoveryCopy(fileName, document.data()); });
+    m_recoveryFuture = QtConcurrent::run([recoveryManager, document, fileName, originalLastModified]() { return recoveryManager.writeRecoveryCopy(fileName, originalLastModified, document.data()); });
 }
 
 void PDFProgramController::removeRecoveryCopy(const QString& fileName)
 {
     // Recovery copy can be being written just now
     m_recoveryFuture.waitForFinished();
-    m_recoveryManager.removeRecoveryCopy(fileName);
+    m_recoveryManager.releaseRecoveryCopy(fileName);
     m_recoveryRevision = m_documentRevision;
+}
+
+QString PDFProgramController::getSaveRecoveredCopyFileName(const QString& originalFileName)
+{
+    // Recovered copy is saved next to the original document (if its folder still
+    // exists), never into the recovery folder, which is hidden in the application data.
+    QFileInfo originalFileInfo(originalFileName);
+    QDir directory = originalFileInfo.dir();
+    if (!directory.exists())
+    {
+        directory = QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation));
+    }
+
+    QString suggestedFileName = directory.absoluteFilePath(tr("%1 (recovered).pdf").arg(originalFileInfo.completeBaseName()));
+    return QFileDialog::getSaveFileName(m_mainWindow, tr("Save Recovered Copy"), suggestedFileName, tr("Portable Document (*.pdf);;All files (*.*)"));
+}
+
+bool PDFProgramController::saveRecoveredCopy(const PDFRecoveryManager::RecoveryItem& item, bool openCopy)
+{
+    QString copyFileName = getSaveRecoveredCopyFileName(item.originalFileName);
+    if (copyFileName.isEmpty())
+    {
+        return false;
+    }
+
+    if (QFileInfo(copyFileName) == QFileInfo(item.originalFileName))
+    {
+        QMessageBox::critical(m_mainWindow, tr("Error"), tr("Recovered copy can't replace the original document. Choose another file name."));
+        return false;
+    }
+
+    QFile::remove(copyFileName);
+    if (!QFile::copy(item.recoveryFileName, copyFileName))
+    {
+        QMessageBox::critical(m_mainWindow, tr("Error"), tr("Recovered copy can't be saved to '%1'.").arg(QDir::toNativeSeparators(copyFileName)));
+        return false;
+    }
+
+    m_recoveryManager.removeRecoveryCopy(item.originalFileName);
+    if (openCopy)
+    {
+        openDocument(copyFileName);
+    }
+    else
+    {
+        m_mainWindowInterface->setStatusBarMessage(tr("Recovered copy saved to %1").arg(QDir::toNativeSeparators(copyFileName)), 6000);
+    }
+    return true;
 }
 
 void PDFProgramController::offerRecoveryOfOpenedDocument()
@@ -1500,14 +1595,44 @@ void PDFProgramController::offerRecoveryOfOpenedDocument()
         return;
     }
 
-    if (!isAutoRecover)
+    // If the document was changed after the recovery copy was made (for example,
+    // it was saved by another application), restoring the copy would undo those
+    // changes. User must decide then, even if he already agreed with the recovery.
+    const bool isOriginalModified = item->isOriginalModified();
+    if (!isAutoRecover || isOriginalModified)
     {
         QString message = tr("The application closed unexpectedly while this document had unsaved changes. "
-                             "A recovered copy from %1 is available.\n\nDo you want to restore the unsaved changes?")
+                             "A recovered copy from %1 is available.")
                               .arg(QLocale::system().toString(item->time, QLocale::ShortFormat));
-        if (QMessageBox::question(m_mainWindow, tr("Recover Unsaved Changes"), message, QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+        if (isOriginalModified)
+        {
+            message += QString("\n\n") + tr("Warning: the document was changed after the recovered copy was made (%1). "
+                                            "Restoring the copy would replace those changes. You can save the recovered copy as a separate file instead.")
+                                             .arg(QLocale::system().toString(QFileInfo(fileName).lastModified(), QLocale::ShortFormat));
+        }
+
+        QMessageBox messageBox(QMessageBox::Question, tr("Recover Unsaved Changes"), message, QMessageBox::NoButton, m_mainWindow);
+        QPushButton* restoreButton = messageBox.addButton(tr("Restore Changes"), QMessageBox::AcceptRole);
+        QPushButton* saveCopyButton = messageBox.addButton(tr("Save Copy As..."), QMessageBox::ActionRole);
+        QPushButton* discardButton = messageBox.addButton(tr("Discard"), QMessageBox::DestructiveRole);
+        messageBox.setDefaultButton(isOriginalModified ? saveCopyButton : restoreButton);
+        messageBox.exec();
+
+        if (messageBox.clickedButton() == saveCopyButton)
+        {
+            saveRecoveredCopy(*item, false);
+            return;
+        }
+
+        if (messageBox.clickedButton() == discardButton)
         {
             m_recoveryManager.removeRecoveryCopy(fileName);
+            return;
+        }
+
+        if (messageBox.clickedButton() != restoreButton)
+        {
+            // Dialog was closed, the copy is kept and offered next time
             return;
         }
     }
@@ -1524,9 +1649,15 @@ void PDFProgramController::offerRecoveryOfOpenedDocument()
     pdf::PDFDocument recoveredDocument = reader.readFromFile(item->recoveryFileName);
     if (reader.getReadingResult() != pdf::PDFDocumentReader::Result::OK)
     {
+        // Unreadable copy would be offered again and again, it is removed
         QMessageBox::critical(m_mainWindow, tr("Recover Unsaved Changes"), tr("Recovered copy can't be read: %1").arg(reader.getErrorMessage()));
+        m_recoveryManager.removeRecoveryCopy(fileName);
         return;
     }
+
+    // Recovery copy belongs to this window now, it is replaced by the next
+    // recovery copy, and removed, when the document is saved or closed.
+    m_recoveryManager.lockRecoveryCopy(fileName);
 
     // Recovered document is a modification of the opened document, so the
     // changes can be undone, and the document is marked as unsaved.
@@ -1544,52 +1675,74 @@ void PDFProgramController::offerRecoveryOfPreviousSession()
         return;
     }
 
+    m_recoveryManager.removeInvalidRecoveryCopies();
+
+    // Copies, which the user postponed, are offered only when their document
+    // is opened, so the question doesn't return at every start.
     std::vector<PDFRecoveryManager::RecoveryItem> items = m_recoveryManager.getRecoveryItems();
+    items.erase(std::remove_if(items.begin(), items.end(), [](const PDFRecoveryManager::RecoveryItem& item) { return item.offered; }), items.end());
     if (items.empty())
     {
         return;
     }
 
-    const PDFRecoveryManager::RecoveryItem& item = items.front();
-    QString message = tr("The application closed unexpectedly while '%1' had unsaved changes. "
-                         "A recovered copy from %2 is available.\n\nDo you want to open the document and restore the unsaved changes?")
-                          .arg(QDir::toNativeSeparators(item.originalFileName), QLocale::system().toString(item.time, QLocale::ShortFormat));
+    const PDFRecoveryManager::RecoveryItem item = items.front();
+    const bool originalExists = QFileInfo::exists(item.originalFileName);
+
+    QString message;
+    if (originalExists)
+    {
+        message = tr("The application closed unexpectedly while '%1' had unsaved changes. "
+                     "A recovered copy from %2 is available.\n\nDo you want to open the document and restore the unsaved changes? "
+                     "If you choose Later, the recovered copy is offered when you open the document.")
+                      .arg(QDir::toNativeSeparators(item.originalFileName), QLocale::system().toString(item.time, QLocale::ShortFormat));
+    }
+    else
+    {
+        message = tr("The application closed unexpectedly while '%1' had unsaved changes. "
+                     "A recovered copy from %2 is available, but the document doesn't exist anymore (it was moved, renamed or deleted)."
+                     "\n\nDo you want to save the recovered copy as a new document?")
+                      .arg(QDir::toNativeSeparators(item.originalFileName), QLocale::system().toString(item.time, QLocale::ShortFormat));
+    }
 
     if (items.size() > 1)
     {
         message += QString("\n\n") + tr("Recovered copies of %1 other documents are offered, when you open them.").arg(items.size() - 1);
     }
 
-    switch (QMessageBox::question(m_mainWindow, tr("Recover Unsaved Changes"), message, QMessageBox::Yes | QMessageBox::No | QMessageBox::Discard, QMessageBox::Yes))
+    // Other copies are offered, when their documents are opened (as the message says)
+    for (size_t i = 1; i < items.size(); ++i)
     {
-        case QMessageBox::Yes:
+        m_recoveryManager.setOffered(items[i].originalFileName);
+    }
+
+    QMessageBox messageBox(QMessageBox::Question, tr("Recover Unsaved Changes"), message, QMessageBox::NoButton, m_mainWindow);
+    QPushButton* restoreButton = messageBox.addButton(originalExists ? tr("Open and Restore") : tr("Save As..."), QMessageBox::AcceptRole);
+    QPushButton* laterButton = messageBox.addButton(tr("Later"), QMessageBox::RejectRole);
+    QPushButton* discardButton = messageBox.addButton(tr("Discard"), QMessageBox::DestructiveRole);
+    messageBox.setDefaultButton(restoreButton);
+    messageBox.setEscapeButton(laterButton);
+    messageBox.exec();
+
+    if (messageBox.clickedButton() == restoreButton)
+    {
+        if (originalExists)
         {
-            if (QFileInfo::exists(item.originalFileName))
-            {
-                m_autoRecoverFileName = item.originalFileName;
-                openDocument(item.originalFileName);
-            }
-            else
-            {
-                // Original document doesn't exist anymore, open the recovered copy
-                // under a new name, so user can save it by Save As.
-                QString copyFileName = QFileInfo(item.recoveryFileName).dir().absoluteFilePath(QFileInfo(item.originalFileName).completeBaseName() + tr(" (recovered).pdf"));
-                QFile::remove(copyFileName);
-                if (QFile::copy(item.recoveryFileName, copyFileName))
-                {
-                    m_recoveryManager.removeRecoveryCopy(item.originalFileName);
-                    openDocument(copyFileName);
-                }
-            }
-            break;
+            m_autoRecoverFileName = item.originalFileName;
+            openDocument(item.originalFileName);
         }
-
-        case QMessageBox::Discard:
-            m_recoveryManager.removeRecoveryCopy(item.originalFileName);
-            break;
-
-        default:
-            break;
+        else
+        {
+            saveRecoveredCopy(item, true);
+        }
+    }
+    else if (messageBox.clickedButton() == discardButton)
+    {
+        m_recoveryManager.removeRecoveryCopy(item.originalFileName);
+    }
+    else if (originalExists)
+    {
+        m_recoveryManager.setOffered(item.originalFileName);
     }
 }
 
@@ -1632,6 +1785,8 @@ bool PDFProgramController::askForSaveDocumentBeforeClose()
         // Nothing to be done
         return true;
     }
+
+    commitPendingFormChanges();
 
     if (m_undoRedoManager && !m_undoRedoManager->isCurrentSaved())
     {
@@ -1729,6 +1884,7 @@ void PDFProgramController::onActionAboutTriggered()
 void PDFProgramController::onActionSendByEMailTriggered()
 {
     Q_ASSERT(m_pdfDocument);
+    commitPendingFormChanges();
 
     QString subject = m_pdfDocument->getInfo()->title;
     if (subject.isEmpty())
@@ -2049,7 +2205,7 @@ void PDFProgramController::onActionBatchRecognizeTextTriggered()
 {
     // The files are recognized into copies, the current document is not changed
     PDFOCRBatchDialog dialog(m_mainWindow);
-    if (dialog.exec() == QDialog::Accepted && !dialog.getDocumentToOpen().isEmpty() && askForSaveDocumentBeforeClose())
+    if (dialog.exec() == QDialog::Accepted && !dialog.getDocumentToOpen().isEmpty())
     {
         openDocument(dialog.getDocumentToOpen());
     }
@@ -2357,6 +2513,7 @@ void PDFProgramController::readSettings(Settings settingsFlags)
         if (m_formManager)
         {
             m_formManager->setAppearanceFlags(m_settings->getSettings().m_formAppearanceFlags);
+            m_formManager->setAutocompleteEnabled(m_settings->getSettings().m_formAutocompleteEnabled);
         }
 
         updateBookmarkSettings();
@@ -2589,6 +2746,13 @@ void PDFProgramController::updateFileWatcher(bool forceDisable)
 
 void PDFProgramController::openDocument(const QString& fileName)
 {
+    // Unsaved changes of the old document would be lost (and its recovery
+    // copy is removed, when it is closed), so user must decide first.
+    if (!askForSaveDocumentBeforeClose())
+    {
+        return;
+    }
+
     // First close old document
     closeDocument();
 
@@ -3240,6 +3404,11 @@ void PDFProgramController::resetSettings()
 
     if (QMessageBox::question(m_mainWindow, tr("Reset Settings"), tr("Do you wish to restore the default factory settings of the program? All settings changed by the user will be deleted. Application will be closed."), QMessageBox::Yes, QMessageBox::No) == QMessageBox::Yes)
     {
+        if (!askForSaveDocumentBeforeClose())
+        {
+            return;
+        }
+
         closeDocument();
 
         QSettings settings(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::organizationName(), QCoreApplication::applicationName());
@@ -3282,6 +3451,7 @@ void PDFProgramController::onActionOptionsTriggered()
         if (m_formManager)
         {
             m_formManager->setAppearanceFlags(m_settings->getSettings().m_formAppearanceFlags);
+            m_formManager->setAutocompleteEnabled(m_settings->getSettings().m_formAutocompleteEnabled);
         }
         m_certificateStore = dialog.getCertificateStore();
         m_enabledPlugins = dialog.getEnabledPlugins();

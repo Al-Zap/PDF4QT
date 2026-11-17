@@ -429,6 +429,11 @@ public:
     /// \param snapToPageGeometry Snap to the page geometry
     void setSnapToPageGeometry(bool snapToPageGeometry);
 
+    /// Temporarily suppresses snapping to the vector geometry of the page,
+    /// the snapped point is updated immediately
+    /// \param suppressed Suppress snapping to the page geometry
+    void setSnapToPageGeometrySuppressed(bool suppressed);
+
     /// Returns type of the currently snapped point
     SnapType getSnappedPointType() const { return m_snapper.getSnappedPointType(); }
 
@@ -468,6 +473,9 @@ protected:
 private:
     void buildSnapData();
 
+    /// Picks the point under the mouse cursor (in points or rectangles mode)
+    void pickSnappedPoint();
+
     /// Returns color adjusted color of the selection rectangle. See setSelectionRectangleColor.
     /// \param convertor Color convertor of the page content
     QColor getAdjustedSelectionRectangleColor(const PDFColorConvertor& convertor) const;
@@ -475,6 +483,8 @@ private:
     Mode m_mode;
     PDFSnapper m_snapper;
     QPoint m_mousePosition;
+    QPoint m_dragPickStartPosition;
+    bool m_isDragPickPossible = false;
     PDFInteger m_pageIndex;
     std::vector<QPointF> m_pickedPoints;
     Qt::KeyboardModifiers m_lastPickModifiers;

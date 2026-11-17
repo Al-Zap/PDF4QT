@@ -38,6 +38,7 @@ FixtureCountTool::FixtureCountTool(pdf::PDFDrawWidgetProxy* proxy, QAction* acti
     m_leftButtonPressed(false),
     m_dragging(false),
     m_selectingSample(false),
+    m_rightButtonHandled(false),
     m_samplePageIndex(-1)
 {
     setCursor(QCursor(Qt::CrossCursor));
@@ -151,12 +152,17 @@ void FixtureCountTool::mousePressEvent(QWidget* widget, QMouseEvent* event)
 
         case Qt::RightButton:
         {
-            event->accept();
             QPointF pagePoint;
             const pdf::PDFInteger pageIndex = getProxy()->getPageUnderPoint(event->pos(), &pagePoint);
-            if (pageIndex != -1)
+            m_rightButtonHandled = pageIndex != -1 && (!m_markerHitTest || m_markerHitTest(pageIndex, pagePoint));
+            if (m_rightButtonHandled)
             {
+                event->accept();
                 Q_EMIT markerRemoveRequested(pageIndex, pagePoint);
+            }
+            else
+            {
+                event->ignore();
             }
             break;
         }
@@ -174,7 +180,8 @@ void FixtureCountTool::mouseReleaseEvent(QWidget* widget, QMouseEvent* event)
 
     if (event->button() == Qt::RightButton)
     {
-        event->accept();
+        event->setAccepted(m_rightButtonHandled);
+        m_rightButtonHandled = false;
         return;
     }
 
@@ -271,6 +278,11 @@ void FixtureCountTool::setCurrentType(const FixtureType& type)
 {
     m_currentType = type;
     Q_EMIT getProxy()->repaintNeeded();
+}
+
+void FixtureCountTool::setMarkerHitTest(std::function<bool(pdf::PDFInteger, const QPointF&)> hitTest)
+{
+    m_markerHitTest = std::move(hitTest);
 }
 
 void FixtureCountTool::setMarkerSize(pdf::PDFReal markerSize)

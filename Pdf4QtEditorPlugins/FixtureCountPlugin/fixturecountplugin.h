@@ -128,6 +128,12 @@ private:
 
     FixtureTypes m_types;
     int m_currentTypeIndex;
+    /// Initial width of the panel
+    static constexpr int PANEL_WIDTH_IN_CHARACTERS = 44;
+
+    /// Maximal number of the symbols found by a single search of similar symbols
+    static constexpr size_t MAXIMAL_FOUND_SYMBOLS = 400;
+
     pdf::PDFReal m_markerSize;
 
     FixtureCountData m_data;

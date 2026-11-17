@@ -1536,6 +1536,73 @@ void PDFPageContentStreamBuilder::replaceResources(PDFObjectReference contentStr
     }
 }
 
+void PDFDocumentBuilder::setAnnotationCloudyBorder(PDFObjectReference annotation, PDFReal intensity)
+{
+    const PDFDictionary* dictionary = m_storage.getDictionaryFromObject(m_storage.getObject(annotation));
+    if (!dictionary)
+    {
+        return;
+    }
+
+    PDFDocumentDataLoaderDecorator loader(&m_storage);
+    const QByteArray subtype = loader.readNameFromDictionary(dictionary, "Subtype");
+    intensity = qBound(0.0, intensity, 2.0);
+
+    PDFObjectFactory factory;
+    factory.beginDictionary();
+
+    factory.beginDictionaryItem("BE");
+    factory.beginDictionary();
+    factory.beginDictionaryItem("S");
+    factory << WrapName("C");
+    factory.endDictionaryItem();
+    factory.beginDictionaryItem("I");
+    factory << intensity;
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    factory.endDictionaryItem();
+
+    if (subtype == "Square" || subtype == "Circle")
+    {
+        PDFAnnotationBorder border;
+        if (dictionary->hasKey("BS"))
+        {
+            border = PDFAnnotationBorder::parseBS(&m_storage, dictionary->get("BS"));
+        }
+        else if (dictionary->hasKey("Border"))
+        {
+            border = PDFAnnotationBorder::parseBorder(&m_storage, dictionary->get("Border"));
+        }
+
+        // The cloud surrounds the current rectangle, so the rectangle is enlarged
+        // by the margin of the cloud and the margin is written as rectangle differences.
+        const PDFReal margin = PDFAnnotationBorderEffect::getCloudyBorderMargin(intensity, border.getWidth());
+        const QRectF rectangle = loader.readRectangle(dictionary->get("Rect"), QRectF());
+
+        factory.beginDictionaryItem("Rect");
+        factory << rectangle.adjusted(-margin, -margin, margin, margin);
+        factory.endDictionaryItem();
+
+        factory.beginDictionaryItem("RD");
+        factory.beginArray();
+        for (int i = 0; i < 4; ++i)
+        {
+            factory << margin;
+        }
+        factory.endArray();
+        factory.endDictionaryItem();
+    }
+    else if (subtype == "Polygon")
+    {
+        factory.beginDictionaryItem("IT");
+        factory << WrapName("PolygonCloud");
+        factory.endDictionaryItem();
+    }
+
+    factory.endDictionary();
+    mergeTo(annotation, factory.takeObject());
+}
+
 void PDFDocumentBuilder::updateAnnotationAppearanceStreams(PDFObjectReference annotationReference, bool missingOnly)
 {
     PDFAnnotationPtr annotation = PDFAnnotation::parse(&m_storage, annotationReference);
@@ -1824,6 +1891,9 @@ bool PDFDocumentBuilder::updateHighlightAnnotationAppearanceStream(PDFObjectRefe
     formDictionaryFactory.beginDictionaryItem("Resources");
     formDictionaryFactory << resourcesObject;
     formDictionaryFactory.endDictionaryItem();
+    formDictionaryFactory.beginDictionaryItem("Length");
+    formDictionaryFactory << PDFInteger(content.size());
+    formDictionaryFactory.endDictionaryItem();
     formDictionaryFactory.endDictionary();
 
     PDFObject formDictionaryObject = formDictionaryFactory.takeObject();
@@ -1989,7 +2059,7 @@ void PDFDocumentBuilder::mergeNames(PDFObjectReference a, PDFObjectReference b)
 
         for (const auto& item : aMap)
         {
-            factory << WrapName(item.first);
+            factory << WrapString(item.first);
             factory << item.second;
         }
 
@@ -1999,8 +2069,8 @@ void PDFDocumentBuilder::mergeNames(PDFObjectReference a, PDFObjectReference b)
         factory.beginDictionaryItem("Limits");
         factory.beginArray();
 
-        factory << WrapName((*aMap.begin()).first);
-        factory << WrapName((*aMap.rbegin()).first);
+        factory << WrapString((*aMap.begin()).first);
+        factory << WrapString((*aMap.rbegin()).first);
 
         factory.endArray();
         factory.endDictionaryItem();
@@ -4460,7 +4530,7 @@ PDFObjectReference PDFDocumentBuilder::createAnnotationPolyline(PDFObjectReferen
     objectBuilder.beginDictionaryItem("Subj");
     objectBuilder << subject;
     objectBuilder.endDictionaryItem();
-    objectBuilder.beginDictionaryItem("");
+    objectBuilder.beginDictionaryItem("LE");
     objectBuilder.beginArray();
     objectBuilder << startLineType;
     objectBuilder << endLineType;

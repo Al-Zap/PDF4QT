@@ -37,6 +37,7 @@
 #include <QClipboard>
 #include <QStyleOption>
 #include <QSettings>
+#include <QRegularExpression>
 
 namespace pdf
 {
@@ -242,6 +243,7 @@ public:
     virtual void reloadValue() override;
     virtual bool isEditorDrawEnabled() const override { return m_hasFocus; }
     virtual void draw(AnnotationDrawParameters& parameters, bool edit) const override;
+    virtual void commitPendingChanges() override;
 
     /// Initializes text edit using actual form field value,
     /// font, color for text edit appearance.
@@ -255,6 +257,12 @@ private:
     /// Returns text value of the form field
     QString getFieldText() const;
 
+    /// Writes the text into the form field value, if it has been changed.
+    /// Returns false, if the text is rejected by the keystroke function.
+    /// \param text Text
+    /// \param rememberValue Remember the value for autocomplete
+    bool commitText(QString text, bool rememberValue);
+
     /// Suggests a previously typed value, which starts with the text in the editor
     /// \param event Key press event, which was processed by the editor
     /// \param textBefore Text before the key press
@@ -267,6 +275,9 @@ private:
 
     /// Keystroke function of the keystroke (K) action
     PDFFormFieldFormat m_keystroke;
+
+    /// Suggested (not typed) part of the text is selected at the end of the text
+    bool m_isSuggestionShown = false;
 };
 
 /// Editor for signatures
@@ -473,6 +484,7 @@ public:
     virtual bool isEditorDrawEnabled() const override { return m_hasFocus; }
     virtual void draw(AnnotationDrawParameters& parameters, bool edit) const override;
     virtual QRectF getActiveEditorRectangle() const override;
+    virtual void commitPendingChanges() override;
 
     /// Initializes text edit using actual form field value,
     /// font, color for text edit appearance.
@@ -489,6 +501,9 @@ protected:
 
 private:
     static PDFFormField::FieldFlags getTextEditFlags(PDFFormField::FieldFlags flags);
+
+    /// Writes the text into the form field value, if it has been changed
+    void commitText();
 
     /// Performs keyboard action, when the popup list is closed (select next/previous
     /// option, open the list, type-ahead). Returns true, if key was handled.
@@ -526,6 +541,7 @@ public:
     virtual void reloadValue() override;
     virtual bool isEditorDrawEnabled() const override { return m_hasFocus; }
     virtual void draw(AnnotationDrawParameters& parameters, bool edit) const override;
+    virtual void commitPendingChanges() override { commit(); }
 
     /// Initializes list box using actual form field value,
     /// font, color for text edit appearance.
@@ -858,10 +874,11 @@ bool PDFWidgetFormManager::focusNextPrevFormField(bool next)
     }
 
     // Editors are ordered in the tab order (see updateFormWidgetEditors).
-    // Read only fields can't be edited, so they are skipped.
+    // Read only fields can't be edited, and hidden widgets can't be
+    // seen, so they are skipped.
     auto isFocusable = [this](const PDFFormFieldWidgetEditor* editor)
     {
-        return !isReadOnly(editor->getFormField());
+        return !isReadOnly(editor->getFormField()) && !isWidgetHidden(editor->getWidgetAnnotation());
     };
 
     const std::ptrdiff_t count = static_cast<std::ptrdiff_t>(m_widgetEditors.size());
@@ -889,6 +906,20 @@ bool PDFWidgetFormManager::focusNextPrevFormField(bool next)
     // focus is leaving the form (end of the focus chain).
     setFocusToEditor(nullptr);
     return false;
+}
+
+bool PDFWidgetFormManager::isWidgetHidden(PDFObjectReference widget) const
+{
+    const PDFDocument* document = getDocument();
+    if (!document)
+    {
+        return false;
+    }
+
+    PDFDocumentDataLoaderDecorator loader(document);
+    const PDFDictionary* dictionary = document->getDictionaryFromObject(document->getObjectByReference(widget));
+    const PDFAnnotation::Flags flags(static_cast<PDFAnnotation::Flag>(loader.readIntegerFromDictionary(dictionary, "F", 0)));
+    return flags.testFlag(PDFAnnotation::Hidden) || flags.testFlag(PDFAnnotation::NoView);
 }
 
 void PDFWidgetFormManager::ensureEditorVisible(PDFFormFieldWidgetEditor* editor)
@@ -921,6 +952,14 @@ void PDFWidgetFormManager::ensureEditorVisible(PDFFormFieldWidgetEditor* editor)
     if (pageIndex != PDFCatalog::INVALID_PAGE_INDEX)
     {
         m_proxy->goToPageAndEnsureVisible(PDFInteger(pageIndex), getWidgetRectangle(*formWidget));
+    }
+}
+
+void PDFWidgetFormManager::commitPendingChanges()
+{
+    if (m_focusedEditor && !isCommitDisabled())
+    {
+        m_focusedEditor->commitPendingChanges();
     }
 }
 
@@ -1709,19 +1748,38 @@ void PDFFormFieldComboBoxEditor::setFocusImpl(bool focused)
     }
     else if (!m_formManager->isCommitDisabled())
     {
-        // If text has been changed, then commit it
-        PDFObject object = PDFObjectFactory::createTextString(m_textEdit.getText());
+        commitText();
+    }
+}
 
-        if (object != m_formWidget.getParent()->getValue())
-        {
-            PDFFormField::SetValueParameters parameters;
-            parameters.formManager = m_formManager;
-            parameters.invokingWidget = m_formWidget.getWidget();
-            parameters.invokingFormField = m_formWidget.getParent();
-            parameters.scope = PDFFormField::SetValueParameters::Scope::User;
-            parameters.value = qMove(object);
-            m_formManager->setFormFieldValue(parameters);
-        }
+void PDFFormFieldComboBoxEditor::commitText()
+{
+    // If text has been changed, then commit it
+    PDFObject object = PDFObjectFactory::createTextString(m_textEdit.getText());
+
+    if (object != m_formWidget.getParent()->getValue())
+    {
+        PDFFormField::SetValueParameters parameters;
+        parameters.formManager = m_formManager;
+        parameters.invokingWidget = m_formWidget.getWidget();
+        parameters.invokingFormField = m_formWidget.getParent();
+        parameters.scope = PDFFormField::SetValueParameters::Scope::User;
+        parameters.value = qMove(object);
+        m_formManager->setFormFieldValue(parameters);
+    }
+}
+
+void PDFFormFieldComboBoxEditor::commitPendingChanges()
+{
+    // Committing reloads the value into the editor, keep the cursor
+    const QString text = m_textEdit.getText();
+    const int cursor = m_textEdit.getPositionCursor();
+
+    commitText();
+
+    if (m_textEdit.getText() == text)
+    {
+        m_textEdit.setCursorPosition(cursor, false);
     }
 }
 
@@ -1773,55 +1831,109 @@ void PDFFormFieldTextBoxEditor::setFocusImpl(bool focused)
     }
     else if (!m_textEdit.isPassword() && !m_formManager->isCommitDisabled()) // Passwords are not saved in the document
     {
-        QString text = m_textEdit.getText();
-
-        if (m_keystroke.isKeystroke())
+        m_isSuggestionShown = false;
+        if (!commitText(m_textEdit.getText(), true))
         {
-            std::optional<QString> committedText = m_keystroke.commit(text);
-            if (!committedText)
-            {
-                // Text is rejected by the keystroke function, restore the field value
-                reloadValue();
-                return;
-            }
-
-            text = *committedText;
-        }
-
-        // If text has been changed, then commit it
-        PDFObject object = PDFObjectFactory::createTextString(text);
-
-        if (object != m_formWidget.getParent()->getValue())
-        {
-            PDFFormField::SetValueParameters parameters;
-            parameters.formManager = m_formManager;
-            parameters.invokingWidget = m_formWidget.getWidget();
-            parameters.invokingFormField = m_formWidget.getParent();
-            parameters.scope = PDFFormField::SetValueParameters::Scope::User;
-            parameters.value = qMove(object);
-            m_formManager->setFormFieldValue(parameters);
-
-            if (m_formManager->isAutocompleteEnabled())
-            {
-                PDFFormFieldValueHistory::addValue(m_formWidget.getParent()->getName(PDFFormField::FullyQualified), text);
-            }
+            // Text is rejected by the keystroke function, restore the field value
+            reloadValue();
         }
     }
 }
 
-namespace
+bool PDFFormFieldTextBoxEditor::commitText(QString text, bool rememberValue)
 {
-constexpr const char* FORM_FIELD_HISTORY_GROUP = "FormFieldValueHistory";
-constexpr const char* FORM_FIELD_HISTORY_ALL = "All";
+    if (m_keystroke.isKeystroke())
+    {
+        std::optional<QString> committedText = m_keystroke.commit(text);
+        if (!committedText)
+        {
+            return false;
+        }
 
-QString getFormFieldHistoryKey(const QString& fieldName)
+        text = *committedText;
+    }
+
+    // If text has been changed, then commit it
+    PDFObject object = PDFObjectFactory::createTextString(text);
+
+    if (object != m_formWidget.getParent()->getValue())
+    {
+        PDFFormField::SetValueParameters parameters;
+        parameters.formManager = m_formManager;
+        parameters.invokingWidget = m_formWidget.getWidget();
+        parameters.invokingFormField = m_formWidget.getParent();
+        parameters.scope = PDFFormField::SetValueParameters::Scope::User;
+        parameters.value = qMove(object);
+        m_formManager->setFormFieldValue(parameters);
+
+        if (rememberValue && m_formManager->isAutocompleteEnabled())
+        {
+            PDFFormFieldValueHistory::addValue(m_formWidget.getParent()->getName(PDFFormField::FullyQualified), text);
+        }
+    }
+
+    return true;
+}
+
+void PDFFormFieldTextBoxEditor::commitPendingChanges()
+{
+    if (m_textEdit.isPassword())
+    {
+        // Passwords are not saved in the document
+        return;
+    }
+
+    // Commit is not caused by the user leaving the field, so the
+    // suggested part of the text, which the user didn't accept yet,
+    // is not written, and the value is not remembered (user can
+    // be still typing it). Editor keeps the text, cursor and selection.
+    const QString text = m_textEdit.getText();
+    const int cursor = m_textEdit.getPositionCursor();
+    const int selectionStart = m_textEdit.getSelectionStart();
+    const int selectionLength = m_textEdit.getSelectionLength();
+    const bool isSuggestionShown = m_isSuggestionShown && selectionLength > 0;
+
+    QString committedText = text;
+    if (isSuggestionShown)
+    {
+        committedText = text.left(selectionStart);
+    }
+
+    if (!commitText(committedText, false))
+    {
+        // Incomplete text is rejected by the keystroke function (for example,
+        // a half typed date), the value is committed, when the user leaves the field.
+        return;
+    }
+
+    if (m_textEdit.getText() != text)
+    {
+        // Value was changed by the keystroke function or the suggestion was
+        // not committed, restore the text being edited.
+        m_textEdit.setText(text);
+    }
+
+    if (selectionLength > 0)
+    {
+        const bool isCursorAtStart = cursor == selectionStart;
+        m_textEdit.setSelection(isCursorAtStart ? selectionStart + selectionLength : selectionStart, isCursorAtStart ? -selectionLength : selectionLength);
+    }
+    else
+    {
+        m_textEdit.setCursorPosition(cursor, false);
+    }
+
+    m_isSuggestionShown = isSuggestionShown;
+}
+
+QString PDFFormFieldValueHistory::getFieldKey(const QString& fieldName)
 {
     // Field names can contain characters, which have special meaning
     // in the settings keys (for example, slash), so they are encoded.
     return QString("Field_") + QString::fromLatin1(fieldName.toUtf8().toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
 }
 
-QString findCompletion(const QStringList& values, const QString& prefix)
+QString PDFFormFieldValueHistory::findCompletion(const QStringList& values, const QString& prefix)
 {
     for (const QString& value : values)
     {
@@ -1834,7 +1946,7 @@ QString findCompletion(const QStringList& values, const QString& prefix)
     return QString();
 }
 
-void addToHistoryList(QStringList& values, const QString& value, int maxCount)
+void PDFFormFieldValueHistory::addToHistoryList(QStringList& values, const QString& value, int maxCount)
 {
     values.removeAll(value);
     values.prepend(value);
@@ -1845,29 +1957,35 @@ void addToHistoryList(QStringList& values, const QString& value, int maxCount)
     }
 }
 
-}   // namespace
+bool PDFFormFieldValueHistory::isSensitiveField(const QString& fieldName)
+{
+    static const QStringList sensitiveWords = { "password", "passwd", "pwd", "pin", "ssn", "social", "tax", "account", "acct", "routing", "iban", "card", "cvv", "cvc", "secret" };
+
+    // Field name parts are split by non letters, and also by camel case (CardNumber)
+    QString name = fieldName;
+    name.replace(QRegularExpression("([a-z])([A-Z])"), "\\1 \\2");
+    const QStringList words = name.toLower().split(QRegularExpression("[^a-z]+"), Qt::SkipEmptyParts);
+    for (const QString& word : words)
+    {
+        if (sensitiveWords.contains(word))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 QString PDFFormFieldValueHistory::complete(const QString& fieldName, const QString& prefix)
 {
-    if (prefix.isEmpty())
+    if (prefix.isEmpty() || fieldName.isEmpty())
     {
         return QString();
     }
 
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::organizationName(), QCoreApplication::applicationName());
-    settings.beginGroup(FORM_FIELD_HISTORY_GROUP);
-
-    QString completion;
-    if (!fieldName.isEmpty())
-    {
-        completion = findCompletion(settings.value(getFormFieldHistoryKey(fieldName)).toStringList(), prefix);
-    }
-
-    if (completion.isEmpty())
-    {
-        completion = findCompletion(settings.value(FORM_FIELD_HISTORY_ALL).toStringList(), prefix);
-    }
-
+    settings.beginGroup(HISTORY_SETTINGS_GROUP);
+    QString completion = findCompletion(settings.value(getFieldKey(fieldName)).toStringList(), prefix);
     settings.endGroup();
     return completion;
 }
@@ -1876,25 +1994,25 @@ void PDFFormFieldValueHistory::addValue(const QString& fieldName, const QString&
 {
     // Multiline values (notes) are not good candidates for suggestions
     QString simplifiedValue = value.trimmed();
-    if (simplifiedValue.isEmpty() || simplifiedValue.contains(QChar('\n')) || simplifiedValue.contains(QChar('\r')))
+    if (fieldName.isEmpty() ||
+        isSensitiveField(fieldName) ||
+        simplifiedValue.isEmpty() ||
+        simplifiedValue.contains(QChar('\n')) ||
+        simplifiedValue.contains(QChar('\r')))
     {
         return;
     }
 
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::organizationName(), QCoreApplication::applicationName());
-    settings.beginGroup(FORM_FIELD_HISTORY_GROUP);
+    settings.beginGroup(HISTORY_SETTINGS_GROUP);
 
-    if (!fieldName.isEmpty())
-    {
-        const QString key = getFormFieldHistoryKey(fieldName);
-        QStringList fieldValues = settings.value(key).toStringList();
-        addToHistoryList(fieldValues, simplifiedValue, MAX_FIELD_VALUES);
-        settings.setValue(key, fieldValues);
-    }
+    const QString key = getFieldKey(fieldName);
+    QStringList fieldValues = settings.value(key).toStringList();
+    addToHistoryList(fieldValues, simplifiedValue, MAX_FIELD_VALUES);
+    settings.setValue(key, fieldValues);
 
-    QStringList allValues = settings.value(FORM_FIELD_HISTORY_ALL).toStringList();
-    addToHistoryList(allValues, simplifiedValue, MAX_ALL_VALUES);
-    settings.setValue(FORM_FIELD_HISTORY_ALL, allValues);
+    // Older versions remembered also values of all fields together
+    settings.remove("All");
 
     settings.endGroup();
 }
@@ -1902,7 +2020,7 @@ void PDFFormFieldValueHistory::addValue(const QString& fieldName, const QString&
 void PDFFormFieldValueHistory::clear()
 {
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::organizationName(), QCoreApplication::applicationName());
-    settings.remove(FORM_FIELD_HISTORY_GROUP);
+    settings.remove(HISTORY_SETTINGS_GROUP);
 }
 
 PDFFormFieldTextBoxEditor::PDFFormFieldTextBoxEditor(PDFWidgetFormManager* formManager, PDFFormWidget formWidget) :
@@ -1949,6 +2067,7 @@ void PDFFormFieldTextBoxEditor::keyPressEvent(QWidget* widget, QKeyEvent* event)
     }
 
     const QString textBefore = m_textEdit.getText();
+    m_isSuggestionShown = false;
     m_textEdit.keyPressEvent(widget, event);
 
     if (event->isAccepted())
@@ -1974,6 +2093,7 @@ void PDFFormFieldTextBoxEditor::performAutocomplete(QKeyEvent* event, const QStr
         m_textEdit.isMultiline() ||
         m_textEdit.isComb() ||
         m_keystroke.isKeystroke() ||
+        PDFFormFieldValueHistory::isSensitiveField(m_formWidget.getParent()->getName(PDFFormField::FullyQualified)) ||
         m_textEdit.getText() == textBefore ||
         m_textEdit.isTextSelected() ||
         m_textEdit.getPositionCursor() != m_textEdit.getPositionEnd())
@@ -1997,6 +2117,7 @@ void PDFFormFieldTextBoxEditor::performAutocomplete(QKeyEvent* event, const QStr
     // Keep the letters typed by the user, append the rest of the suggestion
     m_textEdit.setText(text + completion.mid(text.length()));
     m_textEdit.setCursorPosition(text.length(), true);
+    m_isSuggestionShown = true;
 }
 
 void PDFFormFieldTextBoxEditor::mousePressEvent(QWidget* widget, QMouseEvent* event, const QPointF& mousePagePosition)

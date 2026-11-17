@@ -23,6 +23,12 @@
 #include "pdfdocumentmanipulator.h"
 #include "pdfdocumentbuilder.h"
 #include "pdfoptimizer.h"
+#include "pdfnametreeloader.h"
+#include "pdfnumbertreeloader.h"
+
+#include <algorithm>
+#include <optional>
+
 #include "pdfdbgheap.h"
 
 namespace pdf
@@ -48,6 +54,149 @@ static QMarginsF mapCropMarginsToUnrotatedPage(QMarginsF cropMargins, PageRotati
     return cropMargins;
 }
 
+/// Helper functions of the document manipulator
+class PDFDocumentManipulatorHelper
+{
+public:
+    PDFDocumentManipulatorHelper() = delete;
+
+    /// Removes the widgets, which are on the removed pages, from the form field (and from
+    /// its descendants). Returns true, if no widget of the field remains, so the field
+    /// itself must be removed from its parent.
+    static bool pruneFormField(PDFDocumentBuilder& documentBuilder,
+                               PDFObjectReference fieldReference,
+                               const std::set<PDFObjectReference>& removedPages,
+                               const std::set<PDFObjectReference>& removedAnnotations,
+                               std::set<PDFObjectReference>& visitedFields,
+                               std::set<PDFObjectReference>& removedFields)
+    {
+        if (!visitedFields.insert(fieldReference).second)
+        {
+            // Cycle in the field tree, or a field used twice
+            return false;
+        }
+
+        const PDFObject fieldObject = documentBuilder.getObjectByReference(fieldReference);
+        const PDFDictionary* fieldDictionary = documentBuilder.getDictionaryFromObject(fieldObject);
+        if (!fieldDictionary)
+        {
+            return false;
+        }
+
+        bool isRemoved = false;
+        const PDFObject kidsObject = documentBuilder.getObject(fieldDictionary->get("Kids"));
+        if (kidsObject.isArray() && kidsObject.getArray()->getCount() > 0)
+        {
+            std::vector<PDFObject> kids;
+            bool isChanged = false;
+
+            for (const PDFObject& kid : *kidsObject.getArray())
+            {
+                if (kid.isReference() && pruneFormField(documentBuilder, kid.getReference(), removedPages, removedAnnotations, visitedFields, removedFields))
+                {
+                    isChanged = true;
+                    continue;
+                }
+
+                kids.push_back(kid);
+            }
+
+            if (kids.empty())
+            {
+                isRemoved = true;
+            }
+            else if (isChanged)
+            {
+                PDFObjectFactory factory;
+                factory.beginDictionary();
+                factory.beginDictionaryItem("Kids");
+                factory << kids;
+                factory.endDictionaryItem();
+                factory.endDictionary();
+                documentBuilder.mergeTo(fieldReference, factory.takeObject());
+            }
+        }
+        else
+        {
+            // Widget (or a field merged with its only widget)
+            const PDFObject& pageObject = fieldDictionary->get("P");
+            isRemoved = removedAnnotations.count(fieldReference) || (pageObject.isReference() && removedPages.count(pageObject.getReference()));
+        }
+
+        if (isRemoved)
+        {
+            removedFields.insert(fieldReference);
+        }
+
+        return isRemoved;
+    }
+
+    /// Removes the items of the outline, which point to the removed pages. An item with
+    /// remaining children is kept without its action.
+    static void filterOutlineItems(PDFOutlineItem* item,
+                                   const std::set<PDFObjectReference>& removedPages,
+                                   const std::set<QByteArray>& removedNamedDestinations)
+    {
+        for (size_t i = 0; i < item->getChildCount();)
+        {
+            QSharedPointer<PDFOutlineItem> child = item->getChildPtr(i);
+            filterOutlineItems(child.data(), removedPages, removedNamedDestinations);
+
+            bool pointsToRemovedPage = false;
+            if (const PDFActionGoTo* actionGoTo = dynamic_cast<const PDFActionGoTo*>(child->getAction()))
+            {
+                const PDFDestination& destination = actionGoTo->getDestination();
+                if (destination.getDestinationType() == DestinationType::Named)
+                {
+                    pointsToRemovedPage = removedNamedDestinations.count(destination.getName()) > 0;
+                }
+                else
+                {
+                    pointsToRemovedPage = destination.getPageReference().isValid() && removedPages.count(destination.getPageReference()) > 0;
+                }
+            }
+
+            if (pointsToRemovedPage)
+            {
+                if (child->getChildCount() == 0)
+                {
+                    item->removeChild(i);
+                    continue;
+                }
+
+                child->setAction(PDFActionPtr());
+            }
+
+            ++i;
+        }
+    }
+
+    /// Returns true, if the destination (array, or dictionary with entry D) points to a removed page
+    static bool isDestinationOfRemovedPage(const PDFObjectStorage* storage, const PDFObject& object, const std::set<PDFObjectReference>& removedPages)
+    {
+        PDFObject destinationObject = storage->getObject(object);
+        if (destinationObject.isDictionary())
+        {
+            destinationObject = storage->getObject(destinationObject.getDictionary()->get("D"));
+        }
+
+        const PDFDestination destination = PDFDestination::parse(storage, destinationObject);
+        return destination.getPageReference().isValid() && removedPages.count(destination.getPageReference()) > 0;
+    }
+
+    /// Returns the page labels of the document sorted by the page index
+    static std::vector<PDFPageLabel> getPageLabels(const PDFDocument* document)
+    {
+        std::vector<PDFPageLabel> pageLabels;
+        if (const PDFDictionary* catalogDictionary = document->getDictionaryFromObject(document->getTrailerDictionary()->get("Root")))
+        {
+            pageLabels = PDFNumberTreeLoader<PDFPageLabel>::parse(&document->getStorage(), catalogDictionary->get("PageLabels"));
+            std::stable_sort(pageLabels.begin(), pageLabels.end());
+        }
+        return pageLabels;
+    }
+};
+
 PDFOperationResult PDFDocumentManipulator::assemble(const AssembledPages& pages)
 {
     if (pages.empty())
@@ -58,6 +207,9 @@ PDFOperationResult PDFDocumentManipulator::assemble(const AssembledPages& pages)
     m_flags = None;
     m_mergedObjects = { };
     m_assembledDocument = PDFDocument();
+    m_outlines.clear();
+    m_removedPages.clear();
+    m_removedNamedDestinations.clear();
 
     try
     {
@@ -85,6 +237,12 @@ PDFOperationResult PDFDocumentManipulator::assemble(const AssembledPages& pages)
             singleDocument = m_documents.at(documentIndex);
             documentBuilder.setDocument(singleDocument);
         }
+        else if (m_flags.testFlag(PrimaryDocument))
+        {
+            // Pages of the other documents are added to the primary document,
+            // which keeps everything, what is not related to the pages.
+            documentBuilder.setDocument(m_documents.at(m_primaryDocumentIndex));
+        }
         else
         {
             documentBuilder.createDocument();
@@ -99,28 +257,43 @@ PDFOperationResult PDFDocumentManipulator::assemble(const AssembledPages& pages)
 
         // Correct page tree (invalid parents are present)
         documentBuilder.flattenPageTree();
-        if (!m_flags.testFlag(SingleDocument))
+
+        const bool isNewDocument = !m_flags.testFlag(SingleDocument) && !m_flags.testFlag(PrimaryDocument);
+        if (isNewDocument)
         {
             documentBuilder.removeOutline();
         }
 
-        if (!m_flags.testFlag(SingleDocument) || m_flags.testFlag(RemovedPages))
+        if (isNewDocument || m_flags.testFlag(RemovedPages))
         {
             documentBuilder.removeThreads();
             documentBuilder.removeDocumentActions();
             documentBuilder.removeStructureTree();
         }
 
+        // Form fields, layers and named destinations of the merged documents
+        finalizeMergedObjects(documentBuilder);
+
+        // Removed pages must not stay in the document, because a form field,
+        // a named destination or an outline item points to them.
+        removeReferencesToRemovedPages(documentBuilder);
+
         // Jakub Melka: we also create document parts for each document part (if we aren't
         // manipulating a single document).
-        if (!m_flags.testFlag(SingleDocument))
+        if (isNewDocument)
         {
             addOutlineAndDocumentParts(documentBuilder, pages, adjustedPages);
         }
+        else if (m_flags.testFlag(PrimaryDocument))
+        {
+            mergeOutlines(documentBuilder, pages);
+        }
         else if (m_flags.testFlag(RemovedPages) && singleDocument)
         {
-            filterOutline(documentBuilder, singleDocument, adjustedPages);
+            filterOutline(documentBuilder, singleDocument);
         }
+
+        updatePageLabels(documentBuilder, processedPages);
 
         pdf::PDFDocument mergedDocument = documentBuilder.build();
 
@@ -209,6 +382,14 @@ PDFDocumentManipulator::ProcessedPages PDFDocumentManipulator::processPages(PDFD
             }
 
             processedPages.push_back(processedPage);
+        }
+
+        for (const PDFObjectReference& pageReference : pageReferences)
+        {
+            if (!usedPages.count(pageReference))
+            {
+                m_removedPages.insert(pageReference);
+            }
         }
     }
     else
@@ -346,6 +527,7 @@ PDFDocumentManipulator::ProcessedPages PDFDocumentManipulator::collectObjectsAnd
                 throw PDFException(tr("Invalid document."));
             }
             const PDFDocument* document = m_documents.at(documentIndex);
+            const bool isPrimaryDocument = m_flags.testFlag(PrimaryDocument) && documentIndex == m_primaryDocumentIndex;
 
             // Copy the pages into the target document builder
             std::vector<PDFInteger> pageIndices;
@@ -354,7 +536,13 @@ PDFDocumentManipulator::ProcessedPages PDFDocumentManipulator::collectObjectsAnd
                 pageIndices.push_back(currentIt->first.second);
             }
 
-            pdf::PDFDocumentBuilder temporaryBuilder(document);
+            // Objects of the primary document are already in the target document builder
+            std::optional<pdf::PDFDocumentBuilder> temporaryBuilderStorage;
+            if (!isPrimaryDocument)
+            {
+                temporaryBuilderStorage.emplace(document);
+            }
+            pdf::PDFDocumentBuilder& temporaryBuilder = isPrimaryDocument ? documentBuilder : *temporaryBuilderStorage;
             temporaryBuilder.flattenPageTree();
 
             std::vector<pdf::PDFObjectReference> currentPages = temporaryBuilder.getPages();
@@ -424,8 +612,40 @@ PDFDocumentManipulator::ProcessedPages PDFDocumentManipulator::collectObjectsAnd
 
             objectsToMerge.insert(objectsToMerge.end(), { acroFormReference, namesReference, ocPropertiesReference, outlineReference });
 
+            // Pages, which are not used, are copied too (they are referenced from the page tree
+            // and from other objects), so we know them and can remove them.
+            std::set<PDFInteger> usedPageIndices(pageIndices.cbegin(), pageIndices.cend());
+            size_t unusedPageCount = 0;
+            for (size_t pageIndex = 0; pageIndex < currentPages.size(); ++pageIndex)
+            {
+                if (!usedPageIndices.count(PDFInteger(pageIndex)))
+                {
+                    objectsToMerge.push_back(currentPages[pageIndex]);
+                    ++unusedPageCount;
+                }
+            }
+
             // Now, we are ready to merge objects into target document builder
-            std::vector<pdf::PDFObjectReference> references = pdf::PDFDocumentBuilder::createReferencesFromObjects(documentBuilder.copyFrom(pdf::PDFDocumentBuilder::createObjectsFromReferences(objectsToMerge), *temporaryBuilder.getStorage(), true));
+            std::vector<pdf::PDFObjectReference> references;
+            if (isPrimaryDocument)
+            {
+                references = objectsToMerge;
+            }
+            else
+            {
+                references = pdf::PDFDocumentBuilder::createReferencesFromObjects(documentBuilder.copyFrom(pdf::PDFDocumentBuilder::createObjectsFromReferences(objectsToMerge), *temporaryBuilder.getStorage(), true));
+            }
+
+            for (size_t i = 0; i < unusedPageCount; ++i)
+            {
+                m_removedPages.insert(references.back());
+                references.pop_back();
+            }
+
+            if (isPrimaryDocument && unusedPageCount > 0)
+            {
+                m_flags.setFlag(RemovedPages, true);
+            }
 
             outlineReference = references.back();
             references.pop_back();
@@ -498,6 +718,7 @@ void PDFDocumentManipulator::classify(const AssembledPages& pages)
     pageIndices.erase(-1);
 
     m_flags.setFlag(SingleDocument, documentIndices.size() == 1);
+    m_flags.setFlag(PrimaryDocument, documentIndices.size() > 1 && documentIndices.count(m_primaryDocumentIndex) && m_documents.count(m_primaryDocumentIndex));
 
     if (m_flags.testFlag(SingleDocument) && m_documents.count(*documentIndices.begin()))
     {
@@ -566,43 +787,457 @@ void PDFDocumentManipulator::finalizeDocument(PDFDocument* document)
 }
 
 void PDFDocumentManipulator::filterOutline(PDFDocumentBuilder& documentBuilder,
-                                           const PDFDocument* singleDocument,
-                                           const std::vector<PDFObjectReference>& adjustedPages)
+                                           const PDFDocument* singleDocument)
 {
     QSharedPointer<PDFOutlineItem> outline = singleDocument->getCatalog()->getOutlineRootPtr();
     if (outline)
     {
         outline = outline->clone();
-        std::set<PDFObjectReference> adjustedPagesSet(adjustedPages.cbegin(), adjustedPages.cend());
+        PDFDocumentManipulatorHelper::filterOutlineItems(outline.data(), m_removedPages, m_removedNamedDestinations);
 
-        std::function<void(QSharedPointer<PDFOutlineItem>&)> filter = [&adjustedPagesSet](QSharedPointer<PDFOutlineItem>& item)
+        if (outline->getChildCount() > 0)
         {
-            for (size_t i = 0; i < item->getChildCount();)
+            documentBuilder.setOutline(outline.data());
+        }
+        else
+        {
+            documentBuilder.removeOutline();
+        }
+    }
+}
+
+void PDFDocumentManipulator::mergeOutlines(PDFDocumentBuilder& documentBuilder, const AssembledPages& pages)
+{
+    // Outlines of the documents follow each other in the order,
+    // in which the documents appear in the assembled document.
+    std::vector<PDFInteger> documentIndices;
+    for (const AssembledPage& page : pages)
+    {
+        if (page.isDocumentPage() && std::find(documentIndices.cbegin(), documentIndices.cend(), page.documentIndex) == documentIndices.cend())
+        {
+            documentIndices.push_back(page.documentIndex);
+        }
+    }
+
+    QSharedPointer<PDFOutlineItem> rootItem(new PDFOutlineItem());
+    bool hasOutline = false;
+    bool hasOutlineOfOtherDocument = false;
+
+    for (const PDFInteger documentIndex : documentIndices)
+    {
+        auto it = m_outlines.find(documentIndex);
+        if (it == m_outlines.cend())
+        {
+            continue;
+        }
+
+        QSharedPointer<PDFOutlineItem> outline = PDFOutlineItem::parse(documentBuilder.getStorage(), PDFObject::createReference(it->second));
+        if (!outline || outline->getChildCount() == 0)
+        {
+            continue;
+        }
+
+        hasOutline = true;
+        PDFDocumentManipulatorHelper::filterOutlineItems(outline.data(), m_removedPages, m_removedNamedDestinations);
+
+        for (size_t i = 0; i < outline->getChildCount(); ++i)
+        {
+            rootItem->addChild(outline->getChildPtr(i));
+            hasOutlineOfOtherDocument = hasOutlineOfOtherDocument || documentIndex != m_primaryDocumentIndex;
+        }
+    }
+
+    const bool isPrimaryOutlineUnchanged = m_flags.testFlag(PrimaryDocument) && !hasOutlineOfOtherDocument && m_removedPages.empty();
+    if (!hasOutline || isPrimaryOutlineUnchanged)
+    {
+        // Outline of the primary document is kept as it is
+        return;
+    }
+
+    if (rootItem->getChildCount() > 0)
+    {
+        documentBuilder.setOutline(rootItem.data());
+    }
+    else
+    {
+        documentBuilder.removeOutline();
+    }
+}
+
+void PDFDocumentManipulator::removeReferencesToRemovedPages(PDFDocumentBuilder& documentBuilder)
+{
+    if (m_removedPages.empty())
+    {
+        return;
+    }
+
+    const PDFObjectStorage* storage = documentBuilder.getStorage();
+    const PDFObjectReference catalogReference = documentBuilder.getCatalogReference();
+
+    // Objects are held by value, because the storage is modified
+    const PDFObject catalogObject = documentBuilder.getObjectByReference(catalogReference);
+    const PDFDictionary* catalogDictionary = documentBuilder.getDictionaryFromObject(catalogObject);
+    if (!catalogDictionary)
+    {
+        return;
+    }
+
+    // 1) Form fields, whose widgets are on the removed pages
+    std::set<PDFObjectReference> removedAnnotations;
+    for (const PDFObjectReference& pageReference : m_removedPages)
+    {
+        const PDFObject pageObject = documentBuilder.getObjectByReference(pageReference);
+        if (const PDFDictionary* pageDictionary = documentBuilder.getDictionaryFromObject(pageObject))
+        {
+            const PDFObject annotationsObject = documentBuilder.getObject(pageDictionary->get("Annots"));
+            if (annotationsObject.isArray())
             {
-                bool shouldRemove = false;
-                const PDFOutlineItem* childItem = item->getChild(i);
-                const PDFAction* action = childItem->getAction();
-                const PDFActionGoTo* actionGoTo = dynamic_cast<const PDFActionGoTo*>(action);
-                if (actionGoTo)
+                for (const PDFObject& annotation : *annotationsObject.getArray())
                 {
-                    const PDFObjectReference pageReference = actionGoTo->getDestination().getPageReference();
-                    shouldRemove = !adjustedPagesSet.count(pageReference);
+                    if (annotation.isReference())
+                    {
+                        removedAnnotations.insert(annotation.getReference());
+                    }
+                }
+            }
+        }
+    }
+
+    const PDFObject formObject = catalogDictionary->get("AcroForm");
+    const PDFObject formDictionaryObject = documentBuilder.getObject(formObject);
+    if (const PDFDictionary* formDictionary = documentBuilder.getDictionaryFromObject(formDictionaryObject))
+    {
+        const PDFObject fieldsObject = documentBuilder.getObject(formDictionary->get("Fields"));
+        if (fieldsObject.isArray())
+        {
+            std::set<PDFObjectReference> visitedFields;
+            std::set<PDFObjectReference> removedFields;
+            std::vector<PDFObject> fields;
+
+            for (const PDFObject& field : *fieldsObject.getArray())
+            {
+                if (field.isReference() && PDFDocumentManipulatorHelper::pruneFormField(documentBuilder, field.getReference(), m_removedPages, removedAnnotations, visitedFields, removedFields))
+                {
+                    continue;
                 }
 
-                if (shouldRemove)
+                fields.push_back(field);
+            }
+
+            if (!removedFields.empty())
+            {
+                PDFObjectFactory factory;
+                factory.beginDictionary();
+                factory.beginDictionaryItem("Fields");
+                factory << fields;
+                factory.endDictionaryItem();
+
+                // Calculation order
+                const PDFObject calculationOrderObject = documentBuilder.getObject(formDictionary->get("CO"));
+                if (calculationOrderObject.isArray())
                 {
-                    item->removeChild(i);
+                    std::vector<PDFObject> calculationOrder;
+                    for (const PDFObject& field : *calculationOrderObject.getArray())
+                    {
+                        if (!field.isReference() || !removedFields.count(field.getReference()))
+                        {
+                            calculationOrder.push_back(field);
+                        }
+                    }
+
+                    factory.beginDictionaryItem("CO");
+                    if (calculationOrder.empty())
+                    {
+                        factory << PDFObject();
+                    }
+                    else
+                    {
+                        factory << calculationOrder;
+                    }
+                    factory.endDictionaryItem();
+                }
+
+                factory.endDictionary();
+
+                PDFObjectReference formReference;
+                if (formObject.isReference())
+                {
+                    formReference = formObject.getReference();
                 }
                 else
                 {
-                    ++i;
+                    formReference = documentBuilder.addObject(formDictionaryObject);
+                    documentBuilder.setCatalogAcroForm(formReference);
                 }
+                documentBuilder.mergeTo(formReference, factory.takeObject());
             }
-        };
-
-        filter(outline);
-        documentBuilder.setOutline(outline.data());
+        }
     }
+
+    // 2) Named destinations in the name tree
+    const PDFObject namesObject = catalogDictionary->get("Names");
+    const PDFObject namesDictionaryObject = documentBuilder.getObject(namesObject);
+    if (const PDFDictionary* namesDictionary = documentBuilder.getDictionaryFromObject(namesDictionaryObject))
+    {
+        auto getObject = [](const PDFObjectStorage*, const PDFObject& object) { return object; };
+        std::map<QByteArray, PDFObject> destinations = PDFNameTreeLoader<PDFObject>::parse(storage, namesDictionary->get("Dests"), getObject);
+
+        bool isChanged = false;
+        for (auto it = destinations.begin(); it != destinations.end();)
+        {
+            if (PDFDocumentManipulatorHelper::isDestinationOfRemovedPage(storage, it->second, m_removedPages))
+            {
+                m_removedNamedDestinations.insert(it->first);
+                it = destinations.erase(it);
+                isChanged = true;
+            }
+            else
+            {
+                ++it;
+            }
+        }
+
+        if (isChanged)
+        {
+            PDFObjectFactory factory;
+            factory.beginDictionary();
+            factory.beginDictionaryItem("Dests");
+
+            if (destinations.empty())
+            {
+                factory << PDFObject();
+            }
+            else
+            {
+                PDFObjectFactory treeFactory;
+                treeFactory.beginDictionary();
+                treeFactory.beginDictionaryItem("Names");
+                treeFactory.beginArray();
+                for (const auto& item : destinations)
+                {
+                    treeFactory << WrapString(item.first);
+                    treeFactory << item.second;
+                }
+                treeFactory.endArray();
+                treeFactory.endDictionaryItem();
+                treeFactory.beginDictionaryItem("Limits");
+                treeFactory.beginArray();
+                treeFactory << WrapString(destinations.begin()->first);
+                treeFactory << WrapString(destinations.rbegin()->first);
+                treeFactory.endArray();
+                treeFactory.endDictionaryItem();
+                treeFactory.endDictionary();
+
+                // New object - the old tree is replaced, not merged with the new one
+                factory << documentBuilder.addObject(treeFactory.takeObject());
+            }
+
+            factory.endDictionaryItem();
+            factory.endDictionary();
+
+            PDFObjectReference namesReference;
+            if (namesObject.isReference())
+            {
+                namesReference = namesObject.getReference();
+            }
+            else
+            {
+                namesReference = documentBuilder.addObject(namesDictionaryObject);
+                documentBuilder.setCatalogNames(namesReference);
+            }
+            documentBuilder.mergeTo(namesReference, factory.takeObject());
+        }
+    }
+
+    // 3) Named destinations in the dictionary of the catalog (PDF 1.1)
+    const PDFObject destinationsObject = documentBuilder.getObject(catalogDictionary->get("Dests"));
+    if (const PDFDictionary* destinationsDictionary = documentBuilder.getDictionaryFromObject(destinationsObject))
+    {
+        PDFObjectFactory factory;
+        factory.beginDictionary();
+
+        bool isChanged = false;
+        for (size_t i = 0; i < destinationsDictionary->getCount(); ++i)
+        {
+            if (PDFDocumentManipulatorHelper::isDestinationOfRemovedPage(storage, destinationsDictionary->getValue(i), m_removedPages))
+            {
+                const QByteArray name = destinationsDictionary->getKey(i).getString();
+                m_removedNamedDestinations.insert(name);
+                factory.beginDictionaryItem(name);
+                factory << PDFObject();
+                factory.endDictionaryItem();
+                isChanged = true;
+            }
+        }
+
+        factory.endDictionary();
+
+        if (isChanged)
+        {
+            PDFObject removedDestinations = factory.takeObject();
+            if (catalogDictionary->get("Dests").isReference())
+            {
+                documentBuilder.mergeTo(catalogDictionary->get("Dests").getReference(), qMove(removedDestinations));
+            }
+            else
+            {
+                factory.beginDictionary();
+                factory.beginDictionaryItem("Dests");
+                factory << removedDestinations;
+                factory.endDictionaryItem();
+                factory.endDictionary();
+                documentBuilder.mergeTo(catalogReference, factory.takeObject());
+            }
+        }
+    }
+
+    // 4) Nothing else can keep the content of the removed pages in the document.
+    // A reference to a removed page (for example a destination of a link) is
+    // a reference to the null object.
+    for (const PDFObjectReference& pageReference : m_removedPages)
+    {
+        documentBuilder.setObject(pageReference, PDFObject());
+    }
+}
+
+void PDFDocumentManipulator::updatePageLabels(PDFDocumentBuilder& documentBuilder, const ProcessedPages& processedPages)
+{
+    // Page labels of the source documents
+    std::map<PDFInteger, std::vector<PDFPageLabel>> pageLabelsOfDocuments;
+    bool hasPageLabels = false;
+
+    for (const ProcessedPage& processedPage : processedPages)
+    {
+        const PDFInteger documentIndex = processedPage.assembledPage.documentIndex;
+        if (processedPage.assembledPage.isDocumentPage() && !pageLabelsOfDocuments.count(documentIndex) && m_documents.count(documentIndex))
+        {
+            std::vector<PDFPageLabel> pageLabels = PDFDocumentManipulatorHelper::getPageLabels(m_documents.at(documentIndex));
+            hasPageLabels = hasPageLabels || !pageLabels.empty();
+            pageLabelsOfDocuments[documentIndex] = std::move(pageLabels);
+        }
+    }
+
+    if (!hasPageLabels)
+    {
+        return;
+    }
+
+    // Each page keeps the label it had in its document, pages without
+    // a label (blank pages, documents without page labels) are numbered
+    // by their position in the assembled document.
+    struct Label
+    {
+        PDFPageLabel::NumberingStyle style = PDFPageLabel::NumberingStyle::DecimalArabic;
+        QString prefix;
+        PDFInteger number = 1;
+    };
+
+    PDFObjectFactory factory;
+    factory.beginDictionary();
+    factory.beginDictionaryItem("Nums");
+    factory.beginArray();
+
+    Label previousLabel;
+    for (size_t i = 0; i < processedPages.size(); ++i)
+    {
+        const AssembledPage& assembledPage = processedPages[i].assembledPage;
+
+        Label label;
+        label.number = PDFInteger(i) + 1;
+
+        auto it = pageLabelsOfDocuments.find(assembledPage.documentIndex);
+        if (assembledPage.isDocumentPage() && it != pageLabelsOfDocuments.cend() && !it->second.empty())
+        {
+            const std::vector<PDFPageLabel>& pageLabels = it->second;
+            auto labelIt = std::upper_bound(pageLabels.cbegin(), pageLabels.cend(), assembledPage.pageIndex, [](PDFInteger pageIndex, const PDFPageLabel& pageLabel) { return pageIndex < pageLabel.getPageIndex(); });
+            if (labelIt != pageLabels.cbegin())
+            {
+                const PDFPageLabel& pageLabel = *std::prev(labelIt);
+                label.style = pageLabel.getNumberingStyle();
+                label.prefix = pageLabel.getPrefix();
+                label.number = pageLabel.getPageStartNumber() + assembledPage.pageIndex - pageLabel.getPageIndex();
+            }
+            else
+            {
+                label.number = assembledPage.pageIndex + 1;
+            }
+        }
+
+        const bool isContinuation = i > 0 && label.style == previousLabel.style && label.prefix == previousLabel.prefix && label.number == previousLabel.number + 1;
+        previousLabel = label;
+
+        if (isContinuation)
+        {
+            continue;
+        }
+
+        factory << PDFInteger(i);
+        factory.beginDictionary();
+
+        const char* styleName = nullptr;
+        switch (label.style)
+        {
+            case PDFPageLabel::NumberingStyle::None:
+                break;
+
+            case PDFPageLabel::NumberingStyle::DecimalArabic:
+                styleName = "D";
+                break;
+
+            case PDFPageLabel::NumberingStyle::UppercaseRoman:
+                styleName = "R";
+                break;
+
+            case PDFPageLabel::NumberingStyle::LowercaseRoman:
+                styleName = "r";
+                break;
+
+            case PDFPageLabel::NumberingStyle::UppercaseLetters:
+                styleName = "A";
+                break;
+
+            case PDFPageLabel::NumberingStyle::LowercaseLetters:
+                styleName = "a";
+                break;
+        }
+
+        if (styleName)
+        {
+            factory.beginDictionaryItem("S");
+            factory << WrapName(styleName);
+            factory.endDictionaryItem();
+        }
+
+        if (!label.prefix.isEmpty())
+        {
+            factory.beginDictionaryItem("P");
+            factory << label.prefix;
+            factory.endDictionaryItem();
+        }
+
+        if (label.number != 1)
+        {
+            factory.beginDictionaryItem("St");
+            factory << label.number;
+            factory.endDictionaryItem();
+        }
+
+        factory.endDictionary();
+    }
+
+    factory.endArray();
+    factory.endDictionaryItem();
+    factory.endDictionary();
+
+    // New object - the old number tree is replaced, not merged with the new one
+    const PDFObjectReference pageLabelsReference = documentBuilder.addObject(factory.takeObject());
+
+    factory.beginDictionary();
+    factory.beginDictionaryItem("PageLabels");
+    factory << pageLabelsReference;
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    documentBuilder.mergeTo(documentBuilder.getCatalogReference(), factory.takeObject());
 }
 
 void PDFDocumentManipulator::addOutlineAndDocumentParts(PDFDocumentBuilder& documentBuilder,
@@ -703,7 +1338,13 @@ void PDFDocumentManipulator::addOutlineAndDocumentParts(PDFDocumentBuilder& docu
     std::transform(documentParts.cbegin(), documentParts.cend(), std::back_inserter(documentPartPageCounts), [](const auto& part) { return part.pageCount; });
     documentBuilder.createDocumentParts(documentPartPageCounts);
 
-    if (m_outlineMode != OutlineMode::NoOutline)
+    if (m_outlineMode == OutlineMode::Merge)
+    {
+        // Top level items of the outlines of the documents follow each other,
+        // items pointing to the pages, which are not used, are omitted.
+        mergeOutlines(documentBuilder, pages);
+    }
+    else if (m_outlineMode != OutlineMode::NoOutline)
     {
         QSharedPointer<PDFOutlineItem> rootItem(new PDFOutlineItem());
 

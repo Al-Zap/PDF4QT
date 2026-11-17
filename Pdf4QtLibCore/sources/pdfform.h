@@ -591,6 +591,8 @@ public:
     /// (or all appearance streams of text and choice fields, when the form
     /// requires appearance update - NeedAppearances) are generated before
     /// flattening, so the values are always visible in the flattened document.
+    /// Values of hidden fields and scripts (document, page and form scripts)
+    /// are not kept in the flattened document.
     /// If document has no AcroForm, then unmodified copy is returned.
     PDFDocument createFlattenedDocument() const;
 
@@ -670,6 +672,9 @@ signals:
     void documentModified(pdf::PDFModifiedDocument document);
 
 private:
+    /// Creates content stream (with Length entry) for the flattened document
+    static PDFObject createFlattenedContentStream(PDFDictionaryBuilder dictionary, QByteArray content);
+
     const PDFDocument* m_document;
     FormAppearanceFlags m_flags;
     PDFForm m_form;

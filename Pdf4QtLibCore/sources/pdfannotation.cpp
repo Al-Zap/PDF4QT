@@ -108,6 +108,82 @@ PDFAnnotationBorderEffect PDFAnnotationBorderEffect::parse(const PDFObjectStorag
     return result;
 }
 
+PDFReal PDFAnnotationBorderEffect::getCloudyArcRadius(PDFReal intensity)
+{
+    return 4.0 + 3.0 * qBound(0.0, intensity, 2.0);
+}
+
+PDFReal PDFAnnotationBorderEffect::getCloudyBorderMargin(PDFReal intensity, PDFReal penWidth)
+{
+    return getCloudyArcRadius(intensity) + 0.5 * qMax(penWidth, 0.0);
+}
+
+QPainterPath PDFAnnotationBorderEffect::createCloudyPath(const QPolygonF& polygon, PDFReal intensity)
+{
+    QPainterPath path;
+
+    QPolygonF points = polygon;
+    if (points.size() > 1 && points.isClosed())
+    {
+        points.removeLast();
+    }
+
+    const qsizetype count = points.size();
+    if (count < 3)
+    {
+        path.addPolygon(polygon);
+        return path;
+    }
+
+    // Orientation of the polygon decides, on which side of the edge is the outside.
+    // Interior lies on the left side of the edge of the polygon with positive area.
+    PDFReal doubleArea = 0.0;
+    for (qsizetype i = 0; i < count; ++i)
+    {
+        const QPointF& p1 = points[i];
+        const QPointF& p2 = points[(i + 1) % count];
+        doubleArea += p1.x() * p2.y() - p2.x() * p1.y();
+    }
+    const PDFReal outwardSign = (doubleArea >= 0.0) ? 1.0 : -1.0;
+
+    // Constant for the approximation of the quarter of the circle by the cubic Bézier curve
+    constexpr PDFReal KAPPA = 0.5522847498307936;
+    const PDFReal targetRadius = getCloudyArcRadius(intensity);
+
+    path.moveTo(points.front());
+    for (qsizetype i = 0; i < count; ++i)
+    {
+        const QPointF p1 = points[i];
+        const QPointF p2 = points[(i + 1) % count];
+        const QPointF edge = p2 - p1;
+        const PDFReal length = std::hypot(edge.x(), edge.y());
+
+        if (qFuzzyIsNull(length))
+        {
+            continue;
+        }
+
+        const QPointF direction = edge / length;
+        const QPointF normal = QPointF(direction.y(), -direction.x()) * outwardSign;
+        const int arcCount = qMax(1, int(std::ceil(length / (2.0 * targetRadius))));
+        const PDFReal step = length / arcCount;
+        const PDFReal radius = 0.5 * step;
+
+        for (int j = 0; j < arcCount; ++j)
+        {
+            const QPointF a = p1 + direction * (step * j);
+            const QPointF b = (j + 1 == arcCount) ? p2 : (a + direction * step);
+            const QPointF top = (a + b) * 0.5 + normal * radius;
+
+            path.cubicTo(a + normal * (KAPPA * radius), top - direction * (KAPPA * radius), top);
+            path.cubicTo(top + direction * (KAPPA * radius), b + normal * (KAPPA * radius), b);
+        }
+    }
+    path.closeSubpath();
+
+    return path;
+}
+
 PDFAppeareanceStreams PDFAppeareanceStreams::parse(const PDFObjectStorage* storage, PDFObject object)
 {
     PDFAppeareanceStreams result;
@@ -654,6 +730,7 @@ PDFAnnotationPtr PDFAnnotation::parse(const PDFObjectStorage* storage, PDFObject
         annotation->m_intent = loader.readEnumByName(dictionary->get("IT"), intents.begin(), intents.end(), PDFPolygonalGeometryAnnotation::Intent::None);
         annotation->m_measure = storage->getObject(dictionary->get("Measure"));
         annotation->m_path = parsePath(storage, dictionary, subtype == "Polygon");
+        annotation->m_isLengthMeasurement = loader.readNameFromDictionary(dictionary, PDFPolygonalGeometryAnnotation::MEASURED_QUANTITY_KEY) == PDFPolygonalGeometryAnnotation::MEASURED_LENGTH;
     }
     else if (subtype == "Highlight" ||
              subtype == "Underline" ||
@@ -1974,6 +2051,15 @@ void PDFSimpleGeometryAnnotation::draw(AnnotationDrawParameters& parameters) con
     {
         case AnnotationType::Square:
         {
+            if (m_effect.isCloudy())
+            {
+                const PDFReal margin = PDFAnnotationBorderEffect::getCloudyBorderMargin(m_effect.getIntensity(), painter.pen().widthF());
+                const QRectF cloudRectangle = getCloudyGeometryRectangle(margin);
+                painter.drawPath(PDFAnnotationBorderEffect::createCloudyPath(QPolygonF(cloudRectangle), m_effect.getIntensity()));
+                parameters.boundingRectangle = cloudRectangle.adjusted(-margin, -margin, margin, margin);
+                break;
+            }
+
             const PDFAnnotationBorder& border = getBorder();
 
             const PDFReal hCornerRadius = border.getHorizontalCornerRadius();
@@ -1993,6 +2079,32 @@ void PDFSimpleGeometryAnnotation::draw(AnnotationDrawParameters& parameters) con
 
         case AnnotationType::Circle:
         {
+            if (m_effect.isCloudy())
+            {
+                const PDFReal margin = PDFAnnotationBorderEffect::getCloudyBorderMargin(m_effect.getIntensity(), painter.pen().widthF());
+                const QRectF cloudRectangle = getCloudyGeometryRectangle(margin);
+
+                // Ellipse is approximated by a polygon, whose edges have approximately the size
+                // of a single arc of the cloud, so the arcs of the cloud follow the ellipse.
+                const PDFReal a = 0.5 * cloudRectangle.width();
+                const PDFReal b = 0.5 * cloudRectangle.height();
+                const PDFReal perimeter = M_PI * (3.0 * (a + b) - std::sqrt((3.0 * a + b) * (a + 3.0 * b)));
+                const int vertexCount = qMax(8, int(std::ceil(perimeter / (2.0 * PDFAnnotationBorderEffect::getCloudyArcRadius(m_effect.getIntensity())))));
+                const QPointF center = cloudRectangle.center();
+
+                QPolygonF ellipse;
+                ellipse.reserve(vertexCount);
+                for (int i = 0; i < vertexCount; ++i)
+                {
+                    const PDFReal angle = 2.0 * M_PI * i / vertexCount;
+                    ellipse << QPointF(center.x() + a * std::cos(angle), center.y() + b * std::sin(angle));
+                }
+
+                painter.drawPath(PDFAnnotationBorderEffect::createCloudyPath(ellipse, m_effect.getIntensity()));
+                parameters.boundingRectangle = cloudRectangle.adjusted(-margin, -margin, margin, margin);
+                break;
+            }
+
             const PDFAnnotationBorder& border = getBorder();
             const PDFReal width = border.getWidth();
             QRectF rectangle = getRectangle();
@@ -2007,6 +2119,20 @@ void PDFSimpleGeometryAnnotation::draw(AnnotationDrawParameters& parameters) con
             break;
         }
     }
+}
+
+QRectF PDFSimpleGeometryAnnotation::getCloudyGeometryRectangle(PDFReal margin) const
+{
+    if (m_geometryRectangle.isValid())
+    {
+        return m_geometryRectangle;
+    }
+
+    // Rectangle differences are missing, so the cloud is placed inside
+    // of the annotation rectangle, so the arcs do not exceed it.
+    const QRectF rectangle = getRectangle();
+    const QRectF innerRectangle = rectangle.adjusted(margin, margin, -margin, -margin);
+    return innerRectangle.isValid() ? innerRectangle : rectangle;
 }
 
 QColor PDFSimpleGeometryAnnotation::getFillColor() const
@@ -2314,6 +2440,15 @@ void PDFPolygonalGeometryAnnotation::draw(AnnotationDrawParameters& parameters) 
                     polygon << m_vertices.front();
                 }
 
+                if (m_effect.isCloudy() && m_vertices.size() >= 3)
+                {
+                    const PDFReal margin = PDFAnnotationBorderEffect::getCloudyBorderMargin(m_effect.getIntensity(), penWidth);
+                    painter.drawPath(PDFAnnotationBorderEffect::createCloudyPath(polygon, m_effect.getIntensity()));
+                    parameters.boundingRectangle = polygon.boundingRect();
+                    parameters.boundingRectangle.adjust(-margin, -margin, margin, margin);
+                    break;
+                }
+
                 painter.drawPolygon(polygon, Qt::OddEvenFill);
                 parameters.boundingRectangle = polygon.boundingRect();
                 parameters.boundingRectangle.adjust(-penWidth, -penWidth, penWidth, penWidth);
@@ -2391,7 +2526,7 @@ void PDFPolygonalGeometryAnnotation::draw(AnnotationDrawParameters& parameters) 
         QPainterPath captionPath;
         QPointF captionPosition;
 
-        if (m_type == AnnotationType::Polyline && m_vertices.size() == 3)
+        if (m_type == AnnotationType::Polyline && m_vertices.size() == 3 && !m_isLengthMeasurement)
         {
             // Angular measurement - the arc between both arms is drawn
             // and the value is displayed inside of it
@@ -2418,6 +2553,34 @@ void PDFPolygonalGeometryAnnotation::draw(AnnotationDrawParameters& parameters) 
                 bisector.setAngle(startAngle + spanAngle * 0.5);
                 bisector.setLength(radius * 0.6);
                 captionPosition = bisector.p2();
+            }
+        }
+        else if (m_type == AnnotationType::Polyline)
+        {
+            // Length of a polyline - the value is displayed at the middle of its
+            // length, so it lies on the polyline (the center of the vertices can
+            // be far away from it)
+            PDFReal length = 0.0;
+            for (size_t i = 1; i < m_vertices.size(); ++i)
+            {
+                length += QLineF(m_vertices[i - 1], m_vertices[i]).length();
+            }
+
+            captionPosition = m_vertices.front();
+            PDFReal remainingLength = length * 0.5;
+            for (size_t i = 1; i < m_vertices.size(); ++i)
+            {
+                const QLineF segment(m_vertices[i - 1], m_vertices[i]);
+                const PDFReal segmentLength = segment.length();
+
+                if (remainingLength <= segmentLength && segmentLength > 0.0)
+                {
+                    captionPosition = segment.pointAt(remainingLength / segmentLength);
+                    break;
+                }
+
+                remainingLength -= segmentLength;
+                captionPosition = segment.p2();
             }
         }
         else

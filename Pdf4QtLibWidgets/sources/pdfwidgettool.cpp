@@ -1488,44 +1488,12 @@ void PDFPickTool::mousePressEvent(QWidget* widget, QMouseEvent* event)
             case Mode::Points:
             case Mode::Rectangles:
             {
-                // Try to perform pick point. A snapped point is taken exactly,
-                // so a measurement between two snapped points is exact.
-                QPointF pagePoint;
-                PDFInteger pageIndex = -1;
-                if (!m_snapper.getSnappedPagePoint(pageIndex, pagePoint))
-                {
-                    pageIndex = getProxy()->getPageUnderPoint(m_snapper.getSnappedPoint().toPoint(), &pagePoint);
-                }
-                if (pageIndex != -1 &&    // We have picked some point on page
-                    (m_pageIndex == -1 || m_pageIndex == pageIndex)) // We are under current page
-                {
-                    m_pageIndex = pageIndex;
-                    m_pickedPoints.push_back(pagePoint);
-                    m_snapper.setReferencePoint(pageIndex, pagePoint);
+                pickSnappedPoint();
 
-                    // Emit signal about picked point
-                    Q_EMIT pointPicked(pageIndex, pagePoint);
-
-                    if (m_mode == Mode::Rectangles && m_pickedPoints.size() == 2)
-                    {
-                        QPointF first = m_pickedPoints.front();
-                        QPointF second = m_pickedPoints.back();
-
-                        const qreal xMin = qMin(first.x(), second.x());
-                        const qreal xMax = qMax(first.x(), second.x());
-                        const qreal yMin = qMin(first.y(), second.y());
-                        const qreal yMax = qMax(first.y(), second.y());
-
-                        QRectF pageRectangle(xMin, yMin, xMax - xMin, yMax - yMin);
-                        Q_EMIT rectanglePicked(pageIndex, pageRectangle);
-
-                        // We must reset tool, to pick next rectangle
-                        resetTool();
-                    }
-
-                    buildSnapData();
-                    Q_EMIT getProxy()->repaintNeeded();
-                }
+                // If the first point is picked, then the user can drag the mouse
+                // to the second point and release the button, instead of the second click.
+                m_isDragPickPossible = m_pickedPoints.size() == 1;
+                m_dragPickStartPosition = event->pos();
                 break;
             }
 
@@ -1557,6 +1525,61 @@ void PDFPickTool::mouseReleaseEvent(QWidget* widget, QMouseEvent* event)
 {
     Q_UNUSED(widget);
     event->accept();
+
+    if (event->button() == Qt::LeftButton && m_isDragPickPossible)
+    {
+        m_isDragPickPossible = false;
+
+        // Press, drag and release picks the second point (rectangle, line, arrow)
+        const bool isDragged = (event->pos() - m_dragPickStartPosition).manhattanLength() >= QApplication::startDragDistance();
+        if (isDragged && m_pickedPoints.size() == 1 && (m_mode == Mode::Points || m_mode == Mode::Rectangles))
+        {
+            m_lastPickModifiers = event->modifiers();
+            pickSnappedPoint();
+        }
+    }
+}
+
+void PDFPickTool::pickSnappedPoint()
+{
+    // Try to perform pick point. A snapped point is taken exactly,
+    // so a measurement between two snapped points is exact.
+    QPointF pagePoint;
+    PDFInteger pageIndex = -1;
+    if (!m_snapper.getSnappedPagePoint(pageIndex, pagePoint))
+    {
+        pageIndex = getProxy()->getPageUnderPoint(m_snapper.getSnappedPoint().toPoint(), &pagePoint);
+    }
+    if (pageIndex != -1 &&    // We have picked some point on page
+        (m_pageIndex == -1 || m_pageIndex == pageIndex)) // We are under current page
+    {
+        m_pageIndex = pageIndex;
+        m_pickedPoints.push_back(pagePoint);
+        m_snapper.setReferencePoint(pageIndex, pagePoint);
+
+        // Emit signal about picked point
+        Q_EMIT pointPicked(pageIndex, pagePoint);
+
+        if (m_mode == Mode::Rectangles && m_pickedPoints.size() == 2)
+        {
+            QPointF first = m_pickedPoints.front();
+            QPointF second = m_pickedPoints.back();
+
+            const qreal xMin = qMin(first.x(), second.x());
+            const qreal xMax = qMax(first.x(), second.x());
+            const qreal yMin = qMin(first.y(), second.y());
+            const qreal yMax = qMax(first.y(), second.y());
+
+            QRectF pageRectangle(xMin, yMin, xMax - xMin, yMax - yMin);
+            Q_EMIT rectanglePicked(pageIndex, pageRectangle);
+
+            // We must reset tool, to pick next rectangle
+            resetTool();
+        }
+
+        buildSnapData();
+        Q_EMIT getProxy()->repaintNeeded();
+    }
 }
 
 void PDFPickTool::mouseMoveEvent(QWidget* widget, QMouseEvent* event)
@@ -1568,6 +1591,12 @@ void PDFPickTool::mouseMoveEvent(QWidget* widget, QMouseEvent* event)
     {
         m_mousePosition = mousePos;
         m_snapper.updateSnappedPoint(m_mousePosition);
+
+        if (m_snapper.isGeometrySnapIndexMissing(m_mousePosition))
+        {
+            // The mouse entered a page, whose geometry was not indexed yet
+            buildSnapData();
+        }
 
         // Update page index, if we are picking pages.
         if (m_mode == Mode::Pages)
@@ -1654,6 +1683,13 @@ void PDFPickTool::setSnapToPageGeometry(bool snapToPageGeometry)
         m_snapper.setGeometrySnapping(snapToPageGeometry);
         buildSnapData();
     }
+}
+
+void PDFPickTool::setSnapToPageGeometrySuppressed(bool suppressed)
+{
+    m_snapper.setGeometrySnappingSuppressed(suppressed);
+    m_snapper.updateSnappedPoint(m_mousePosition);
+    Q_EMIT getProxy()->repaintNeeded();
 }
 
 void PDFPickTool::setActiveImpl(bool active)

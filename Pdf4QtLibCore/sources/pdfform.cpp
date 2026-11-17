@@ -24,6 +24,7 @@
 #include "pdfdocument.h"
 #include "pdfdocumentbuilder.h"
 #include "pdfpainterutils.h"
+#include "pdfoptimizer.h"
 #include "pdfdbgheap.h"
 
 #include <algorithm>
@@ -975,7 +976,7 @@ PDFFormWidgets PDFFormManager::getWidgetsInTabOrder() const
     return result;
 }
 
-static PDFObject createFlattenedContentStream(PDFDictionaryBuilder dictionary, QByteArray content)
+PDFObject PDFFormManager::createFlattenedContentStream(PDFDictionaryBuilder dictionary, QByteArray content)
 {
     dictionary.setEntry(PDFInplaceOrMemoryString("Length"), PDFObject::createInteger(content.size()));
     return PDFObject::createStream(PDFStream(std::move(dictionary), std::move(content)));
@@ -1171,12 +1172,15 @@ PDFDocument PDFFormManager::createFlattenedDocument() const
                                     .arg(QString::fromLatin1(xobjectName)).toLatin1();
         }
 
-        if (!isPageChanged)
+        if (!isPageChanged && !pageDictionary->hasKey("AA"))
         {
             continue;
         }
 
         PDFDictionaryBuilder newPageDictionary(*pageDictionary);
+
+        // Page scripts (open/close actions) are removed
+        newPageDictionary.removeEntry("AA");
 
         PDFArrayBuilder newAnnotations;
         for (const PDFObjectReference annotationReference : keptAnnotations)
@@ -1242,10 +1246,39 @@ PDFDocument PDFFormManager::createFlattenedDocument() const
     {
         PDFDictionaryBuilder newCatalog(*catalogDictionary);
         newCatalog.removeEntry("AcroForm");
+
+        // Flattened copy is meant to be sent out, document scripts are removed
+        // (they would also refer to the fields, which don't exist anymore).
+        newCatalog.removeEntry("AA");
+        if (const PDFDictionary* openActionDictionary = storage->getDictionaryFromObject(catalogDictionary->get("OpenAction")))
+        {
+            if (loader.readNameFromDictionary(openActionDictionary, "S") == "JavaScript")
+            {
+                newCatalog.removeEntry("OpenAction");
+            }
+        }
+        if (const PDFDictionary* namesDictionary = storage->getDictionaryFromObject(catalogDictionary->get("Names")))
+        {
+            if (namesDictionary->hasKey("JavaScript"))
+            {
+                PDFDictionaryBuilder newNames(*namesDictionary);
+                newNames.removeEntry("JavaScript");
+                newCatalog.setEntry(PDFInplaceOrMemoryString("Names"), PDFObject::createDictionary(std::move(newNames)));
+            }
+        }
+
         builder.setObject(catalogReference, PDFObject::createDictionary(std::move(newCatalog)));
     }
 
-    return builder.build();
+    PDFDocument flattenedDocument = builder.build();
+
+    // Field dictionaries (with values of hidden fields), widgets and scripts
+    // are not referenced anymore, they must be removed from the file.
+    PDFOptimizer optimizer(PDFOptimizer::RemoveUnusedObjects, nullptr);
+    optimizer.setDocument(&flattenedDocument);
+    optimizer.optimize();
+
+    return PDFDocument(optimizer.takeStorage(), flattenedDocument.getInfo()->version, QByteArray());
 }
 
 void PDFFormManager::apply(const std::function<void (const PDFFormField*)>& functor) const
