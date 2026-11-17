@@ -124,6 +124,11 @@ struct DimensionsPluginSettings
     /// If true, then the picked points snap to the geometry of the drawing
     /// (end points, intersections, midpoints and points on the lines)
     bool isSnapToDrawing = true;
+
+    /// True, if the units were selected by the user in the settings. Until then,
+    /// the units follow the drawing - a drawing with a scale in feet is measured
+    /// in feet, even if the locale of the system is metric, and vice versa.
+    bool areUnitsSelectedByUser = false;
     QFont font;
     QColor textColor = QColor(Qt::black);
 

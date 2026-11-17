@@ -39,6 +39,9 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QFile>
+#include <QRegularExpression>
+#include <QFileInfo>
+#include <QDir>
 #include <QFileDialog>
 #include <QFontMetricsF>
 #include <QLocale>
@@ -58,7 +61,7 @@ namespace dimensionsplugin
 /// Escapes the field so it can be written to a csv file
 QString escapeCsvField(const QString& text)
 {
-    if (text.contains(QChar(';')) || text.contains(QChar('"')) || text.contains(QChar('\n')) || text.contains(QChar('\r')))
+    if (text.contains(QChar(',')) || text.contains(QChar(';')) || text.contains(QChar('"')) || text.contains(QChar('\n')) || text.contains(QChar('\r')))
     {
         QString escapedText = text;
         escapedText.replace(QChar('"'), QString("\"\""));
@@ -66,6 +69,65 @@ QString escapeCsvField(const QString& text)
     }
 
     return text;
+}
+
+/// Splits the text of a measurement (for example "A = 10,837.38 sq. ft" or
+/// "L = 12'-6 1/2\"") to its numeric value and its unit, so the exported
+/// values can be summed in a spreadsheet. Feet and inches are converted
+/// to decimal feet. Returns false, if no number was recognized.
+bool splitMeasurementText(const QString& text, const QLocale& locale, double& value, QString& unit)
+{
+    // Feet and inches with an optional fraction of an inch
+    static const QRegularExpression feetAndInchesExpression(QStringLiteral("(-?)(\\d+)'-(\\d+)(?: (\\d+)/(\\d+))?\""));
+    const QRegularExpressionMatch feetAndInchesMatch = feetAndInchesExpression.match(text);
+
+    if (feetAndInchesMatch.hasMatch())
+    {
+        double inches = feetAndInchesMatch.captured(3).toDouble();
+        const double denominator = feetAndInchesMatch.captured(5).toDouble();
+
+        if (denominator > 0.0)
+        {
+            inches += feetAndInchesMatch.captured(4).toDouble() / denominator;
+        }
+
+        value = feetAndInchesMatch.captured(2).toDouble() + inches / 12.0;
+
+        if (!feetAndInchesMatch.captured(1).isEmpty())
+        {
+            value = -value;
+        }
+
+        unit = QStringLiteral("ft");
+        return true;
+    }
+
+    // The symbol of the quantity ("A = ") is skipped, the number is formatted
+    // by the locale, the rest is the unit
+    QString valueText = text;
+    const qsizetype equalSignIndex = valueText.indexOf(QChar('='));
+    if (equalSignIndex != -1)
+    {
+        valueText = valueText.mid(equalSignIndex + 1);
+    }
+    valueText = valueText.trimmed();
+
+    qsizetype numberLength = 0;
+    while (numberLength < valueText.size() && !valueText[numberLength].isSpace())
+    {
+        ++numberLength;
+    }
+
+    bool ok = false;
+    value = locale.toDouble(valueText.left(numberLength), &ok);
+
+    if (!ok)
+    {
+        return false;
+    }
+
+    unit = valueText.mid(numberLength).trimmed();
+    return true;
 }
 
 }   // namespace dimensionsplugin
@@ -900,6 +962,9 @@ void DimensionsPlugin::onSettingsTriggered()
 
     if (dialog.exec() == QDialog::Accepted)
     {
+        settings.areUnitsSelectedByUser = settings.areUnitsSelectedByUser ||
+                                          settings.lengthUnit.id != getSettings().lengthUnit.id ||
+                                          settings.areaUnit.id != getSettings().areaUnit.id;
         m_settingsStorage.setSettings(qMove(settings));
 
         // The dialog edits the default scale. Only a document, which has no scale
@@ -933,10 +998,10 @@ void DimensionsPlugin::onCustomScaleTriggered()
     const DimensionScale currentScale = drawingScale.isValid() ? applyDrawingCorrection(drawingScale, getDrawingCorrection(pageIndex)).getReadable() : getScaleForPage(pageIndex);
 
     ScaleDialog dialog(m_widget, currentScale, ScaleDialog::Mode::Edit);
-    execScaleDialog(dialog, pageIndex, drawingScale);
+    execScaleDialog(dialog, pageIndex, drawingScale, false);
 }
 
-void DimensionsPlugin::execScaleDialog(ScaleDialog& dialog, pdf::PDFInteger pageIndex, const DimensionScale& drawingScale)
+void DimensionsPlugin::execScaleDialog(ScaleDialog& dialog, pdf::PDFInteger pageIndex, const DimensionScale& drawingScale, bool isCalibration)
 {
     if (m_document && m_document->getCatalog()->getPageCount() > 1 && pageIndex >= 0)
     {
@@ -954,6 +1019,13 @@ void DimensionsPlugin::execScaleDialog(ScaleDialog& dialog, pdf::PDFInteger page
             if (!scale.getName().isEmpty())
             {
                 m_settingsStorage.addPreset(scale);
+            }
+
+            if (isCalibration && scale.getName().isEmpty())
+            {
+                // The calibrated scale is defined by the picked distance (216 pt = 45 ft),
+                // it is displayed as people read it (1 in = 15 ft)
+                scale = scale.getReadable();
             }
 
             setScale(scale, dialog.isAppliedToThisSheetOnly(), pageIndex, drawingScale);
@@ -1002,7 +1074,7 @@ void DimensionsPlugin::onCalibrationLinePicked(pdf::PDFInteger pageIndex, std::v
     }
 
     ScaleDialog dialog(m_widget, measuredLength, currentScale);
-    execScaleDialog(dialog, pageIndex, drawingScale);
+    execScaleDialog(dialog, pageIndex, drawingScale, true);
 }
 
 void DimensionsPlugin::onScaleMenuAboutToShow()
@@ -1102,7 +1174,16 @@ void DimensionsPlugin::onExportTriggered()
         return;
     }
 
-    QString fileName = QFileDialog::getSaveFileName(m_widget, tr("Export Measurements"), QString(), tr("Comma separated values (*.csv)"));
+    // The file is offered next to the document, named after it
+    QString defaultFileName;
+    const QString documentFileName = m_dataExchangeInterface ? m_dataExchangeInterface->getOriginalFileName() : QString();
+    if (!documentFileName.isEmpty())
+    {
+        const QFileInfo documentFileInfo(documentFileName);
+        defaultFileName = documentFileInfo.dir().filePath(tr("%1 - measurements.csv").arg(documentFileInfo.completeBaseName()));
+    }
+
+    QString fileName = QFileDialog::getSaveFileName(m_widget, tr("Export Measurements"), defaultFileName, tr("Comma separated values (*.csv)"));
 
     if (fileName.isEmpty())
     {
@@ -1111,7 +1192,7 @@ void DimensionsPlugin::onExportTriggered()
 
     QFile file(fileName);
 
-    if (!file.open(QFile::WriteOnly | QFile::Truncate | QFile::Text))
+    if (!file.open(QFile::WriteOnly | QFile::Truncate))
     {
         QMessageBox::critical(m_widget, tr("Export Measurements"), tr("File '%1' cannot be opened for writing.").arg(fileName));
         return;
@@ -1121,19 +1202,30 @@ void DimensionsPlugin::onExportTriggered()
     stream.setEncoding(QStringConverter::Utf8);
     stream.setGenerateByteOrderMark(true);
 
-    stream << escapeCsvField(tr("Page")) << ";"
-           << escapeCsvField(tr("Type")) << ";"
-           << escapeCsvField(tr("Measurement")) << ";"
-           << escapeCsvField(tr("Scale")) << "\n";
+    // Comma separated, with CRLF line endings and plain numbers, so the file
+    // opens in columns in a spreadsheet and the values can be summed
+    stream << escapeCsvField(tr("Page")) << ","
+           << escapeCsvField(tr("Type")) << ","
+           << escapeCsvField(tr("Value")) << ","
+           << escapeCsvField(tr("Unit")) << ","
+           << escapeCsvField(tr("Measurement")) << ","
+           << escapeCsvField(tr("Scale")) << "\r\n";
 
+    const QLocale locale;
     for (const QStringList& row : rows)
     {
+        double value = 0.0;
+        QString unit;
+        const bool hasValue = splitMeasurementText(row[2], locale, value, unit);
+
         QStringList escapedRow;
-        for (const QString& field : row)
-        {
-            escapedRow << escapeCsvField(field);
-        }
-        stream << escapedRow.join(QChar(';')) << "\n";
+        escapedRow << escapeCsvField(row[0]);
+        escapedRow << escapeCsvField(row[1]);
+        escapedRow << (hasValue ? QString::number(value, 'g', 12) : QString());
+        escapedRow << escapeCsvField(unit);
+        escapedRow << escapeCsvField(row[2]);
+        escapedRow << escapeCsvField(row[3]);
+        stream << escapedRow.join(QChar(',')) << "\r\n";
     }
 
     file.close();
@@ -1321,7 +1413,10 @@ bool DimensionsPlugin::createDimensionAnnotation(pdf::PDFDocumentBuilder* builde
     const pdf::PDFObjectReference pageReference = page->getPageReference();
     const std::vector<QPointF>& polygon = dimension.getPolygon();
 
-    constexpr pdf::PDFReal lineWidth = 1.0;
+    // The measurements must be visible on a dense plan. The width is also
+    // deliberately not 1.0 - the PDF engine of Qt, which creates the appearance
+    // streams, draws the lines of the width exactly 1.0 as hairlines (0.1 pt).
+    constexpr pdf::PDFReal lineWidth = 1.5;
 
     // The interior color of an annotation is a plain color array without an alpha
     // channel. The transparency of the background color is therefore expressed
@@ -1404,6 +1499,15 @@ bool DimensionsPlugin::createDimensionAnnotation(pdf::PDFDocumentBuilder* builde
     factory.beginDictionaryItem("Measure");
     factory << createMeasureDictionary(dimension);
     factory.endDictionaryItem();
+
+    if (dimension.getType() == Dimension::Polyline)
+    {
+        // A dimension polyline with three points is an angle by convention,
+        // so the measured length is marked explicitly
+        factory.beginDictionaryItem(pdf::PDFPolygonalGeometryAnnotation::MEASURED_QUANTITY_KEY);
+        factory << pdf::WrapName(pdf::PDFPolygonalGeometryAnnotation::MEASURED_LENGTH);
+        factory.endDictionaryItem();
+    }
 
     if (isAnnotationFilled)
     {
@@ -1804,10 +1908,46 @@ void DimensionsPlugin::storeDocumentScale(bool keepPageScales)
     }
 }
 
+void DimensionsPlugin::applyUnitsOfDrawing()
+{
+    DimensionsPluginSettings& settings = m_settingsStorage.getSettings();
+
+    if (settings.areUnitsSelectedByUser || !m_document)
+    {
+        return;
+    }
+
+    // The first scale defined by the drawings decides
+    const size_t pageCount = m_document->getCatalog()->getPageCount();
+    for (size_t pageIndex = 0; pageIndex < pageCount; ++pageIndex)
+    {
+        const std::vector<DimensionScale> scales = getViewportScales(pdf::PDFInteger(pageIndex));
+
+        if (scales.empty())
+        {
+            continue;
+        }
+
+        const bool isImperial = scales.front().isImperial();
+        const bool isCurrentImperial = settings.lengthUnit.id == "ft" || settings.lengthUnit.isFeetAndInches() || settings.lengthUnit.id == "in" ||
+                                       settings.lengthUnit.id == "yd" || settings.lengthUnit.id == "mi";
+
+        if (isImperial != isCurrentImperial)
+        {
+            settings.lengthUnit = DimensionUnit::getLengthUnit(isImperial ? "ft" : "m");
+            settings.areaUnit = DimensionUnit::getAreaUnit(isImperial ? "sqft" : "sqm");
+        }
+
+        return;
+    }
+}
+
 void DimensionsPlugin::applyDocumentScale()
 {
     m_pageScales.clear();
     m_drawingCorrection = 0.0;
+
+    applyUnitsOfDrawing();
 
     if (getSettings().isScaleStoredPerDocument)
     {

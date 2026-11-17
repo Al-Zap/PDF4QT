@@ -401,7 +401,15 @@ DimensionScale DimensionScale::createFromMeasure(const pdf::PDFMeasure& measure,
     // Measured lengths are multiplied by the UserUnit of the page before the scale
     // is applied, while the measure dictionary converts the default user space
     // units. The UserUnit factor is therefore removed here.
-    return DimensionScale(1.0, "pt", unitsPerPoint / userUnit, unit.id, measure.getScaleRatio());
+    // The scale is expressed for an inch or a millimeter of the paper, as people
+    // read it. The text of the scale stored in the measure is not used as the
+    // name - it is a free text, some applications store their number format in it.
+    return DimensionScale(1.0, "pt", unitsPerPoint / userUnit, unit.id).getReadable();
+}
+
+bool DimensionScale::isImperial() const
+{
+    return m_realUnitId == "in" || m_realUnitId == "ft" || m_realUnitId == "yd" || m_realUnitId == "mi";
 }
 
 DimensionScale DimensionScale::getReadable() const
@@ -411,9 +419,7 @@ DimensionScale DimensionScale::getReadable() const
         return *this;
     }
 
-    const QByteArray& realUnitId = m_realUnitId;
-    const bool isImperial = realUnitId == "in" || realUnitId == "ft" || realUnitId == "yd" || realUnitId == "mi";
-    const DimensionUnit paperUnit = DimensionUnit::getLengthUnit(isImperial ? "in" : "mm");
+    const DimensionUnit paperUnit = DimensionUnit::getLengthUnit(isImperial() ? "in" : "mm");
 
     // Real length of a single paper unit, in the real units
     const pdf::PDFReal realValue = getScaleFactor() / paperUnit.scale * getRealUnit().scale;

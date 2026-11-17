@@ -173,7 +173,8 @@ private:
     /// \param pageIndex Sheet, on which the scale was calibrated or entered
     /// \param drawingScale Scale defined by the drawing at the calibrated line
     ///        (without the correction), see \p setScale
-    void execScaleDialog(ScaleDialog& dialog, pdf::PDFInteger pageIndex, const DimensionScale& drawingScale);
+    /// \param isCalibration The scale was calibrated by a picked line
+    void execScaleDialog(ScaleDialog& dialog, pdf::PDFInteger pageIndex, const DimensionScale& drawingScale, bool isCalibration);
 
     const DimensionsPluginSettings& getSettings() const { return m_settingsStorage.getSettings(); }
 
@@ -198,6 +199,11 @@ private:
     /// measure dictionary of the document, and finally the default scale from
     /// the settings. The scale of the previously opened document is never reused.
     void applyDocumentScale();
+
+    /// Selects the units of the measurements by the scale defined by the
+    /// drawing (feet for a drawing in feet), unless the user has selected
+    /// the units in the settings
+    void applyUnitsOfDrawing();
 
     /// Returns the scale defined by the measure dictionaries of the document.
     /// If the document defines more than one different scale, then a single

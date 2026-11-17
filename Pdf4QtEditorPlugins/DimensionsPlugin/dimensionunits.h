@@ -176,6 +176,9 @@ public:
     /// and the description are not kept, because they may describe another ratio.
     DimensionScale getReadable() const;
 
+    /// Returns true, if the real distances are in the imperial units (inches, feet, ...)
+    bool isImperial() const;
+
     /// Returns the list of the predefined scales, which are offered to the user,
     /// if no scale presets were stored yet
     static std::vector<DimensionScale> getDefaultPresets();

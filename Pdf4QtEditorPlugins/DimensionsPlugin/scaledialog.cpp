@@ -115,6 +115,22 @@ void ScaleDialog::initialize(const DimensionScale& scale, Mode mode)
     updateResultLabel();
 
     pdf::PDFWidgetUtils::style(this);
+    updateDialogSize();
+}
+
+void ScaleDialog::updateDialogSize()
+{
+    // The dialog must open large enough to show all its rows. The minimal size
+    // of the layout is not applied automatically, because it depends on the
+    // word wrapped labels and it changes with the margins set by the style.
+    layout()->activate();
+    QSize size = layout()->totalSizeHint().expandedTo(layout()->totalMinimumSize()).expandedTo(pdf::PDFWidgetUtils::scaleDPI(this, QSize(480, 320)));
+    if (layout()->hasHeightForWidth())
+    {
+        size.setHeight(qMax(size.height(), layout()->totalHeightForWidth(size.width())));
+    }
+    setMinimumSize(size);
+    resize(size);
 }
 
 void ScaleDialog::initializeUnitComboBox(QComboBox* comboBox, const QByteArray& currentUnitId)
@@ -187,6 +203,10 @@ void ScaleDialog::setApplyToSheetChoice(bool isThisSheetDefault, int pageNumber)
     m_applyToComboBox->addItem(tr("All sheets"), false);
     m_applyToComboBox->addItem(tr("This sheet only (sheet %1)").arg(pageNumber), true);
     m_applyToComboBox->setCurrentIndex(isThisSheetDefault ? 1 : 0);
+
+    // A row was added
+    setMinimumSize(QSize(0, 0));
+    updateDialogSize();
 }
 
 bool ScaleDialog::isAppliedToThisSheetOnly() const
