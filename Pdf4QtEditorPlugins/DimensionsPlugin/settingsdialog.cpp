@@ -27,6 +27,8 @@
 
 #include "pdfwidgetutils.h"
 
+#include <QLayout>
+
 #include <QColorDialog>
 #include <QComboBox>
 #include <QFontDialog>
@@ -132,8 +134,19 @@ SettingsDialog::SettingsDialog(QWidget* parent, pdfplugin::DimensionsPluginSetti
         }
     });
 
-    setMinimumSize(pdf::PDFWidgetUtils::scaleDPI(this, QSize(640, 480)));
     pdf::PDFWidgetUtils::style(this);
+
+    // The dialog must open large enough to show all its rows. The minimal size
+    // of the layout is not applied automatically, because it depends on the
+    // word wrapped labels and it changes with the margins set by the style.
+    layout()->activate();
+    QSize size = layout()->totalSizeHint().expandedTo(layout()->totalMinimumSize()).expandedTo(pdf::PDFWidgetUtils::scaleDPI(this, QSize(640, 480)));
+    if (layout()->hasHeightForWidth())
+    {
+        size.setHeight(qMax(size.height(), layout()->totalHeightForWidth(size.width())));
+    }
+    setMinimumSize(size);
+    resize(size);
 }
 
 SettingsDialog::~SettingsDialog()

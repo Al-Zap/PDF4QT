@@ -1045,6 +1045,16 @@ public:
     const PDFObject& getMeasure() const { return m_measure; }
     const QPainterPath& getPath() const { return m_path; }
 
+    /// Name of the private entry of a dimension polyline, which says what is
+    /// measured. A dimension polyline with three points is an angle by convention,
+    /// the value \p MEASURED_LENGTH marks a polyline, which measures its length.
+    static constexpr const char* MEASURED_QUANTITY_KEY = "PDF4QT_Measured";
+    static constexpr const char* MEASURED_LENGTH = "Length";
+
+    /// Returns true, if the dimension polyline measures its length, even if
+    /// it has three points (which would be an angular measurement otherwise)
+    bool isLengthMeasurement() const { return m_isLengthMeasurement; }
+
 protected:
     virtual QColor getFillColor() const override;
 
@@ -1060,6 +1070,7 @@ private:
     Intent m_intent;
     PDFObject m_measure;
     QPainterPath m_path;
+    bool m_isLengthMeasurement = false;
 };
 
 /// Annotation for text highlighting. Can highlight, underline, strikeout,

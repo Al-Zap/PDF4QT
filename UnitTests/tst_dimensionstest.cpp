@@ -289,8 +289,18 @@ void DimensionsTest::test_scale_from_measure()
     const pdf::PDFReal expectedFactor = 0.5 / pdf::PDF_POINT_TO_MM;
     QVERIFY(qFuzzyCompare(scale.getScaleFactor(), expectedFactor));
 
-    // The scale ratio of the document is offered as the name of the scale
-    QCOMPARE(scale.getName(), QString("1 mm = 1 mm"));
+    // The scale is expressed for a millimeter of the paper. The scale ratio
+    // text of the document is a free text, it is not used as the name.
+    QVERIFY(scale.getName().isEmpty());
+    QCOMPARE(scale.getPaperUnitId(), QByteArray("mm"));
+    QVERIFY(qAbs(scale.getPaperValue() - 1.0) < 1e-9);
+
+    // Scale of a drawing in feet is expressed for an inch
+    const DimensionScale feetScale = DimensionScale::createFromMeasure(pdf::PDFMeasure::parse(&m_storage, createMeasure("ft", 30.0 / 72.0)), 1.0);
+    QVERIFY(feetScale.isValid());
+    QVERIFY(feetScale.isImperial());
+    QVERIFY(!scale.isImperial());
+    QCOMPARE(feetScale.getRatioText(), QString("1 in = 30 ft"));
 }
 
 void DimensionsTest::test_scale_from_measure_user_unit()

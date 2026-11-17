@@ -216,6 +216,7 @@ void DimensionsSettingsStorage::load()
     m_settings.isScaleStoredPerDocument = settings.value("scalePerDocument", m_settings.isScaleStoredPerDocument).toBool();
     m_settings.isScaleAppliedPerSheet = settings.value("scalePerSheet", m_settings.isScaleAppliedPerSheet).toBool();
     m_settings.isSnapToDrawing = settings.value("snapToDrawing", m_settings.isSnapToDrawing).toBool();
+    m_settings.areUnitsSelectedByUser = settings.value("unitsSelectedByUser", m_settings.areUnitsSelectedByUser).toBool();
 
     const QString fontDescriptor = settings.value("font").toString();
     if (!fontDescriptor.isEmpty())
@@ -318,6 +319,7 @@ void DimensionsSettingsStorage::save() const
     settings.setValue("scalePerDocument", m_settings.isScaleStoredPerDocument);
     settings.setValue("scalePerSheet", m_settings.isScaleAppliedPerSheet);
     settings.setValue("snapToDrawing", m_settings.isSnapToDrawing);
+    settings.setValue("unitsSelectedByUser", m_settings.areUnitsSelectedByUser);
     settings.setValue("font", m_settings.font.toString());
     settings.setValue("textColor", m_settings.textColor.name(QColor::HexArgb));
     settings.setValue("backgroundColor", m_settings.backgroundColor.name(QColor::HexArgb));

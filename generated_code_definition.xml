@@ -5759,7 +5759,7 @@ return annotationObject;</property>
                       <property name="value">startLineType;endLineType</property>
                     </QObject>
                   </property>
-                  <property name="dictionaryItemName"></property>
+                  <property name="dictionaryItemName">LE</property>
                   <property name="objectType">DictionaryItemComplex</property>
                   <property name="value"></property>
                 </QObject>

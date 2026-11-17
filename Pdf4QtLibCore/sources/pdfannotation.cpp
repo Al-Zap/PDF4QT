@@ -654,6 +654,7 @@ PDFAnnotationPtr PDFAnnotation::parse(const PDFObjectStorage* storage, PDFObject
         annotation->m_intent = loader.readEnumByName(dictionary->get("IT"), intents.begin(), intents.end(), PDFPolygonalGeometryAnnotation::Intent::None);
         annotation->m_measure = storage->getObject(dictionary->get("Measure"));
         annotation->m_path = parsePath(storage, dictionary, subtype == "Polygon");
+        annotation->m_isLengthMeasurement = loader.readNameFromDictionary(dictionary, PDFPolygonalGeometryAnnotation::MEASURED_QUANTITY_KEY) == PDFPolygonalGeometryAnnotation::MEASURED_LENGTH;
     }
     else if (subtype == "Highlight" ||
              subtype == "Underline" ||
@@ -2391,7 +2392,7 @@ void PDFPolygonalGeometryAnnotation::draw(AnnotationDrawParameters& parameters) 
         QPainterPath captionPath;
         QPointF captionPosition;
 
-        if (m_type == AnnotationType::Polyline && m_vertices.size() == 3)
+        if (m_type == AnnotationType::Polyline && m_vertices.size() == 3 && !m_isLengthMeasurement)
         {
             // Angular measurement - the arc between both arms is drawn
             // and the value is displayed inside of it
@@ -2418,6 +2419,34 @@ void PDFPolygonalGeometryAnnotation::draw(AnnotationDrawParameters& parameters) 
                 bisector.setAngle(startAngle + spanAngle * 0.5);
                 bisector.setLength(radius * 0.6);
                 captionPosition = bisector.p2();
+            }
+        }
+        else if (m_type == AnnotationType::Polyline)
+        {
+            // Length of a polyline - the value is displayed at the middle of its
+            // length, so it lies on the polyline (the center of the vertices can
+            // be far away from it)
+            PDFReal length = 0.0;
+            for (size_t i = 1; i < m_vertices.size(); ++i)
+            {
+                length += QLineF(m_vertices[i - 1], m_vertices[i]).length();
+            }
+
+            captionPosition = m_vertices.front();
+            PDFReal remainingLength = length * 0.5;
+            for (size_t i = 1; i < m_vertices.size(); ++i)
+            {
+                const QLineF segment(m_vertices[i - 1], m_vertices[i]);
+                const PDFReal segmentLength = segment.length();
+
+                if (remainingLength <= segmentLength && segmentLength > 0.0)
+                {
+                    captionPosition = segment.pointAt(remainingLength / segmentLength);
+                    break;
+                }
+
+                remainingLength -= segmentLength;
+                captionPosition = segment.p2();
             }
         }
         else
