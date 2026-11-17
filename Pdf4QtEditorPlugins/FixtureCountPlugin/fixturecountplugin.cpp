@@ -475,40 +475,73 @@ std::vector<QPointF> FixtureCountPlugin::findSimilarSymbols(pdf::PDFInteger page
     }
 
     const QSize imageSize(qMax(1, qCeil(pageSize.width() * scale)), qMax(1, qCeil(pageSize.height() * scale)));
-    QImage image(imageSize, QImage::Format_RGB32);
-    image.fill(Qt::white);
 
     pdf::PDFDrawWidgetProxy* proxy = m_widget->getDrawWidgetProxy();
-    pdf::PDFOptionalContentActivity optionalContentActivity(m_document, pdf::OCUsage::View, nullptr);
-    pdf::PDFCMSPointer cms = proxy->getCMSManager()->getCurrentCMS();
 
-    // Annotations (also the markers) are not drawn, only the drawing itself
+    // Annotations (also the markers) are not drawn, only the drawing itself,
+    // in its real colors (the colors of the symbols are used by the search)
     pdf::PDFRenderer::Features features = proxy->getFeatures();
     features.setFlag(pdf::PDFRenderer::DisplayAnnotations, false);
     features &= ~pdf::PDFRenderer::getColorFeatures();
     features.setFlag(pdf::PDFRenderer::Antialiasing, true);
 
-    const QTransform pagePointToImagePoint = pdf::PDFRenderer::createPagePointToDevicePointMatrix(page, QRectF(QPointF(0, 0), imageSize));
-
+    // The sheet is displayed, so it is usually already prepared (compiled)
+    // by the view. Otherwise it is compiled now. The page of the view has
+    // converted colors, when a color mode (inverted colors, dark mode...)
+    // is active, so then the page is compiled again in its real colors.
+    pdf::PDFPrecompiledPage ownCompiledPage;
+    const pdf::PDFPrecompiledPage* compiledPage = proxy->getCompiler()->getCompiledPage(pageIndex, pdf::PDFAsynchronousPageCompiler::CompileMode::None);
+    const bool hasConvertedColors = (proxy->getFeatures() & pdf::PDFRenderer::getColorFeatures()) != 0;
+    if (!compiledPage || !compiledPage->isValid() || hasConvertedColors)
     {
-        QPainter painter(&image);
+        pdf::PDFOptionalContentActivity optionalContentActivity(m_document, pdf::OCUsage::View, nullptr);
+        pdf::PDFCMSPointer cms = proxy->getCMSManager()->getCurrentCMS();
+        pdf::PDFRenderer renderer(m_document, proxy->getFontCache(), proxy->getIccProfileCache(), cms.data(), &optionalContentActivity, features, proxy->getMeshQualitySettings());
+        renderer.compile(&ownCompiledPage, size_t(pageIndex));
+        compiledPage = &ownCompiledPage;
+    }
 
-        // The sheet is displayed, so it is usually already prepared (compiled)
-        // by the view and it can be drawn quickly. Otherwise it is rendered.
-        const pdf::PDFPrecompiledPage* compiledPage = proxy->getCompiler()->getCompiledPage(pageIndex, pdf::PDFAsynchronousPageCompiler::CompileMode::None);
-        if (compiledPage && compiledPage->isValid())
+    const QTransform pagePointToImagePoint = pdf::PDFRenderer::createPagePointToDevicePointMatrix(page, QRectF(QPointF(0, 0), imageSize));
+    const QRect sampleImageRect = pagePointToImagePoint.mapRect(sampleRect).toAlignedRect();
+
+    auto drawPage = [&](const pdf::PDFPrecompiledPage& pageToDraw, const QRect& area)
+    {
+        QImage image(area.size(), QImage::Format_RGB32);
+        image.fill(Qt::white);
+        QPainter painter(&image);
+        const QTransform matrix = pagePointToImagePoint * QTransform::fromTranslate(-area.left(), -area.top());
+        pageToDraw.draw(&painter, page->getCropBox(), matrix, features, 1.0);
+        return image;
+    };
+
+    // Photos (aerial images of site plans), scans and text (light levels, labels,
+    // title block) are not drawn, so they do not disturb the search. The sample
+    // symbol itself can be a part of an image (scanned plan) or of the text
+    // (symbol font), so the content is removed only if the sample stays visible.
+    auto hasSample = [&](const pdf::PDFPrecompiledPage& candidatePage)
+    {
+        const QImage sampleImage = drawPage(candidatePage, sampleImageRect).convertToFormat(QImage::Format_Grayscale8);
+        return !FixtureSymbolFinder::getInkBoundingRect(sampleImage, sampleImage.rect()).isEmpty();
+    };
+
+    pdf::PDFPrecompiledPage reducedPage = *compiledPage;
+    reducedPage.removeImages();
+    reducedPage.removeText();
+
+    const pdf::PDFPrecompiledPage* pageToSearch = &reducedPage;
+    if (!hasSample(reducedPage))
+    {
+        reducedPage = *compiledPage;
+        reducedPage.removeImages();
+        if (!hasSample(reducedPage))
         {
-            compiledPage->draw(&painter, page->getCropBox(), pagePointToImagePoint, features, 1.0);
-        }
-        else
-        {
-            pdf::PDFRenderer renderer(m_document, proxy->getFontCache(), proxy->getIccProfileCache(), cms.data(), &optionalContentActivity, features, proxy->getMeshQualitySettings());
-            renderer.render(&painter, pagePointToImagePoint, size_t(pageIndex));
+            pageToSearch = compiledPage;
         }
     }
 
-    const QRect sampleImageRect = pagePointToImagePoint.mapRect(sampleRect).toAlignedRect();
-    const std::vector<FixtureSymbolFinder::Match> matches = FixtureSymbolFinder::find(image, sampleImageRect, FixtureSymbolFinder::Settings());
+    const QImage image = drawPage(*pageToSearch, QRect(QPoint(0, 0), imageSize));
+    const QImage inkImage = FixtureSymbolFinder::createInkImage(image, sampleImageRect);
+    const std::vector<FixtureSymbolFinder::Match> matches = FixtureSymbolFinder::find(inkImage, sampleImageRect, FixtureSymbolFinder::Settings());
 
     const QTransform imagePointToPagePoint = pagePointToImagePoint.inverted();
     for (const FixtureSymbolFinder::Match& match : matches)
