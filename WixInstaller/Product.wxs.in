@@ -333,6 +333,9 @@ ${PDF4QT_WIX_OCR_COMPONENTS}<?endif?>
       <Component Id="cmpDimensionsPlugin" Directory="dir_pdfplugins" Guid="{0D422903-CBDD-47CF-B7A9-6C829BD64717}">
         <File Id="filDimensionsPlugin" KeyPath="yes" Source="$(var.MyInstallDir)\pdfplugins\DimensionsPlugin.dll" />
       </Component>
+      <Component Id="cmpFixtureCountPlugin" Directory="dir_pdfplugins" Guid="{2D264622-BAD1-40DA-B04C-0CF78B4929D4}">
+        <File Id="filFixtureCountPlugin" KeyPath="yes" Source="$(var.MyInstallDir)\pdfplugins\FixtureCountPlugin.dll" />
+      </Component>
       <Component Id="cmpObjectInspectorPlugin" Directory="dir_pdfplugins" Guid="{9058F5AB-6248-406D-8634-5657552DA6D2}">
         <File Id="filObjectInspectorPlugin" KeyPath="yes" Source="$(var.MyInstallDir)\pdfplugins\ObjectInspectorPlugin.dll" />
       </Component>

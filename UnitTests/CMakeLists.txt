@@ -239,6 +239,24 @@ set_target_properties(UnitTestsDimensions PROPERTIES
 )
 add_test(UnitTestsDimensions  "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsDimensions")
 
+add_executable(UnitTestsFixtureCount
+	tst_fixturecounttest.cpp
+	../Pdf4QtEditorPlugins/FixtureCountPlugin/fixturecount.cpp
+	../Pdf4QtEditorPlugins/FixtureCountPlugin/fixturesymbolfinder.cpp
+)
+
+target_include_directories(UnitTestsFixtureCount PRIVATE ${CMAKE_SOURCE_DIR}/Pdf4QtEditorPlugins/FixtureCountPlugin)
+
+target_link_libraries(UnitTestsFixtureCount PRIVATE Pdf4QtLibCore Qt6::Core Qt6::Gui Qt6::Test)
+
+set_target_properties(UnitTestsFixtureCount PROPERTIES
+    WIN32_EXECUTABLE OFF
+    MACOSX_BUNDLE OFF
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_LIB_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+)
+add_test(UnitTestsFixtureCount  "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsFixtureCount")
+
 add_executable(UnitTestsFormFieldFormat
 	tst_formfieldformattest.cpp
 )
