@@ -115,6 +115,7 @@ void PDFViewerSettings::readSettings(QSettings& settings, const pdf::PDFCMSSetti
 
     settings.beginGroup("Forms");
     m_settings.m_formAppearanceFlags = static_cast<pdf::PDFFormManager::FormAppearanceFlags>(settings.value("formAppearance", int(pdf::PDFFormManager::getDefaultApperanceFlags())).toInt());
+    m_settings.m_formAutocompleteEnabled = settings.value("formAutocomplete", defaultSettings.m_formAutocompleteEnabled).toBool();
     settings.endGroup();
 
     settings.beginGroup("Signature");
@@ -226,6 +227,7 @@ void PDFViewerSettings::writeSettings(QSettings& settings)
 
     settings.beginGroup("Forms");
     settings.setValue("formAppearance", int(m_settings.m_formAppearanceFlags));
+    settings.setValue("formAutocomplete", m_settings.m_formAutocompleteEnabled);
     settings.endGroup();
 
     settings.beginGroup("Signature");
@@ -367,6 +369,7 @@ PDFViewerSettings::Settings::Settings() :
     m_maximumUndoSteps(5),
     m_maximumRedoSteps(5),
     m_formAppearanceFlags(pdf::PDFFormManager::getDefaultApperanceFlags()),
+    m_formAutocompleteEnabled(true),
     m_signatureVerificationEnabled(true),
     m_signatureTreatWarningsAsErrors(false),
     m_signatureIgnoreCertificateValidityTime(false),

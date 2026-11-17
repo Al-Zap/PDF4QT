@@ -31,6 +31,7 @@
 #include "pdfwidgetutils.h"
 #include "pdfrecentfilemanager.h"
 #include "pdfcolorconvertor.h"
+#include "pdfwidgetformmanager.h"
 
 #include <QDir>
 #include <QAction>
@@ -146,6 +147,13 @@ PDFViewerSettingsDialog::PDFViewerSettingsDialog(const PDFViewerSettings::Settin
         ocrInfo << tr("The recognition works locally. The network is used only for an explicitly requested download of language models; documents and recognized text are never sent anywhere.");
         ui->ocrInfoLabel->setText(ocrInfo.join(QStringLiteral("\n\n")));
     }
+    connect(ui->formClearHistoryButton, &QPushButton::clicked, this, [this]()
+    {
+        if (QMessageBox::question(this, tr("Clear Typed Values"), tr("Do you want to forget all values typed into form fields? They will not be suggested anymore."), QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
+        {
+            pdf::PDFFormFieldValueHistory::clear();
+        }
+    });
     connect(ui->manageOCRLanguagesButton, &QPushButton::clicked, this, [this]()
     {
         PDFOCRLanguagesDialog dialog(nullptr, this);
@@ -527,6 +535,7 @@ void PDFViewerSettingsDialog::loadData()
     ui->formHighlightFieldsCheckBox->setChecked(m_settings.m_formAppearanceFlags.testFlag(pdf::PDFFormManager::HighlightFields));
     ui->formHighlightRequiredFieldsCheckBox->setChecked(m_settings.m_formAppearanceFlags.testFlag(pdf::PDFFormManager::HighlightRequiredFields));
     ui->formEditReadOnlyFieldsCheckBox->setChecked(m_settings.m_formAppearanceFlags.testFlag(pdf::PDFFormManager::EditReadOnlyFields));
+    ui->formAutocompleteCheckBox->setChecked(m_settings.m_formAutocompleteEnabled);
 
     // Signature Settings
     ui->signatureVerificationEnableCheckBox->setChecked(m_settings.m_signatureVerificationEnabled);
@@ -778,6 +787,10 @@ void PDFViewerSettingsDialog::saveData()
     else if (sender == ui->formEditReadOnlyFieldsCheckBox)
     {
         m_settings.m_formAppearanceFlags.setFlag(pdf::PDFFormManager::EditReadOnlyFields, ui->formEditReadOnlyFieldsCheckBox->isChecked());
+    }
+    else if (sender == ui->formAutocompleteCheckBox)
+    {
+        m_settings.m_formAutocompleteEnabled = ui->formAutocompleteCheckBox->isChecked();
     }
     else if (sender == ui->maximumUndoStepsEdit)
     {

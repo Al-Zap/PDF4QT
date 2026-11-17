@@ -77,13 +77,19 @@ private slots:
     void tabOrder_data();
     void tabOrder();
     void tabSkipsReadOnlyFields();
+    void tabSkipsHiddenFields_data();
+    void tabSkipsHiddenFields();
     void flattenText_data();
     void flattenText();
     void flattenCheckBox();
     void flattenKeepsOtherAnnotations();
+    void flattenRemovesHiddenValuesAndScripts();
     void autocomplete();
+    void commitPendingChanges();
     void typewriter();
     void recoveryCopy();
+    void recoveryCopyLockedByOtherWindow();
+    void recoveryCopyOfferedAndCleanup();
     void comboBoxKeyboard_data();
     void comboBoxKeyboard();
     void fillRealForm();
@@ -486,7 +492,11 @@ public:
     /// order D, C, B, A.
     /// \param tabs Tab order of the first page (entry Tabs), nothing if empty
     /// \param readOnlyField Name of the read only field, nothing if empty
-    static PDFDocument createTabOrderDocument(const QByteArray& tabs, const QString& readOnlyField = QString())
+    static PDFDocument createTabOrderDocument(const QByteArray& tabs,
+                                              const QString& readOnlyField = QString(),
+                                              const QString& hiddenField = QString(),
+                                              PDFInteger hiddenFlags = 0,
+                                              const QString& hiddenValue = QString())
     {
         PDFDocumentBuilder builder;
         const PDFObjectReference page1 = builder.appendPage(QRectF(QPointF(0, 0), PAGE_SIZE));
@@ -508,6 +518,18 @@ public:
             factory.beginDictionaryItem("DA");
             factory << WrapString("0 g /Helv 12 Tf");
             factory.endDictionaryItem();
+            if (name == hiddenField)
+            {
+                factory.beginDictionaryItem("F");
+                factory << hiddenFlags;
+                factory.endDictionaryItem();
+                if (!hiddenValue.isEmpty())
+                {
+                    factory.beginDictionaryItem("V");
+                    factory << hiddenValue;
+                    factory.endDictionaryItem();
+                }
+            }
             factory.endDictionary();
             return builder.addObject(factory.takeObject());
         };
@@ -1340,6 +1362,45 @@ void FormFieldsTest::tabSkipsReadOnlyFields()
     QCOMPARE(focusedName(), QString("C"));
 }
 
+void FormFieldsTest::tabSkipsHiddenFields_data()
+{
+    QTest::addColumn<int>("flags");
+
+    QTest::newRow("hidden") << int(PDFAnnotation::Hidden);
+    QTest::newRow("no view") << int(PDFAnnotation::NoView);
+}
+
+void FormFieldsTest::tabSkipsHiddenFields()
+{
+    QFETCH(int, flags);
+
+    FormFixture fixture(FormFieldsTestHelper::createTabOrderDocument(QByteArray(), QString(), "A", flags));
+
+    auto focusedName = [&fixture]() -> QString
+    {
+        for (const PDFFormWidget& formWidget : fixture.forms.getWidgets())
+        {
+            if (fixture.forms.isFocused(formWidget.getWidget()))
+            {
+                return formWidget.getParent()->getName(PDFFormField::FullyQualified);
+            }
+        }
+        return QString();
+    };
+
+    // Annotation order of the first page is C, A, B; A is hidden
+    QVERIFY(fixture.forms.focusNextPrevFormField(true));
+    QCOMPARE(focusedName(), QString("C"));
+    QVERIFY(fixture.forms.focusNextPrevFormField(true));
+    QCOMPARE(focusedName(), QString("B"));
+    QVERIFY(fixture.forms.focusNextPrevFormField(true));
+    QCOMPARE(focusedName(), QString("D"));
+    QVERIFY(fixture.forms.focusNextPrevFormField(false));
+    QCOMPARE(focusedName(), QString("B"));
+    QVERIFY(fixture.forms.focusNextPrevFormField(false));
+    QCOMPARE(focusedName(), QString("C"));
+}
+
 void FormFieldsTest::flattenText_data()
 {
     QTest::addColumn<QByteArray>("content");
@@ -1424,19 +1485,102 @@ void FormFieldsTest::flattenKeepsOtherAnnotations()
     QVERIFY(std::find(annotations.cbegin(), annotations.cend(), widget) == annotations.cend());
 }
 
+void FormFieldsTest::flattenRemovesHiddenValuesAndScripts()
+{
+    PDFDocument document = FormFieldsTestHelper::createTabOrderDocument(QByteArray(), QString(), "B", PDFAnnotation::Hidden, "Hidden secret value");
+
+    // Document scripts: open action and named JavaScript
+    {
+        PDFDocumentBuilder builder(&document);
+        PDFObjectFactory factory;
+        factory.beginDictionary();
+        factory.beginDictionaryItem("OpenAction");
+        factory.beginDictionary();
+        FormFieldsTestHelper::addName(factory, "S", "JavaScript");
+        factory.beginDictionaryItem("JS");
+        factory << WrapString("app.alert('open script')");
+        factory.endDictionaryItem();
+        factory.endDictionary();
+        factory.endDictionaryItem();
+        factory.beginDictionaryItem("Names");
+        factory.beginDictionary();
+        factory.beginDictionaryItem("JavaScript");
+        factory.beginDictionary();
+        factory.beginDictionaryItem("Names");
+        factory.beginArray();
+        factory << WrapString("init");
+        factory.beginDictionary();
+        FormFieldsTestHelper::addName(factory, "S", "JavaScript");
+        factory.beginDictionaryItem("JS");
+        factory << WrapString("app.alert('named script')");
+        factory.endDictionaryItem();
+        factory.endDictionary();
+        factory.endArray();
+        factory.endDictionaryItem();
+        factory.endDictionary();
+        factory.endDictionaryItem();
+        factory.endDictionary();
+        factory.endDictionaryItem();
+        factory.endDictionary();
+        builder.mergeTo(builder.getCatalogReference(), factory.takeObject());
+        document = builder.build();
+    }
+
+    PDFDocument flattened;
+    {
+        FormFixture fixture(document);
+        flattened = fixture.forms.createFlattenedDocument();
+    }
+
+    QByteArray data;
+    QBuffer buffer(&data);
+    QVERIFY(buffer.open(QIODevice::WriteOnly));
+    PDFDocumentWriter writer(nullptr);
+    QVERIFY(bool(writer.write(&buffer, &flattened)));
+    buffer.close();
+
+    QVERIFY(!data.contains("Hidden secret value"));
+    QVERIFY(!data.contains("open script"));
+    QVERIFY(!data.contains("named script"));
+    QVERIFY(!data.contains("/AcroForm"));
+
+    // Flattened document is still valid
+    PDFDocumentReader reader(nullptr, nullptr, false, false);
+    PDFDocument reopened = reader.readFromBuffer(data);
+    QCOMPARE(reader.getReadingResult(), PDFDocumentReader::Result::OK);
+    QCOMPARE(reopened.getCatalog()->getPageCount(), size_t(2));
+}
+
 void FormFieldsTest::autocomplete()
 {
     PDFFormFieldValueHistory::clear();
-    PDFFormFieldValueHistory::addValue("Other", "Hurst Lighting");
+    PDFFormFieldValueHistory::addValue("Other", "2024-11-03 Rev B");
+    PDFFormFieldValueHistory::addValue("Text", "Hurst Lighting");
     PDFFormFieldValueHistory::addValue("Text", "Hello World");
     PDFFormFieldValueHistory::addValue("Text", "Help Desk");
 
-    // Values of the same field are preferred, the most recent first
+    // Values of the same field are suggested, the most recent first
     QCOMPARE(PDFFormFieldValueHistory::complete("Text", "he"), QString("Help Desk"));
     QCOMPARE(PDFFormFieldValueHistory::complete("Text", "Hell"), QString("Hello World"));
     QCOMPARE(PDFFormFieldValueHistory::complete("Text", "Hu"), QString("Hurst Lighting"));
     QCOMPARE(PDFFormFieldValueHistory::complete("Text", "X"), QString());
     QCOMPARE(PDFFormFieldValueHistory::complete("Text", "Help Desk"), QString());
+
+    // Values of other fields are never suggested
+    QCOMPARE(PDFFormFieldValueHistory::complete("Text", "2"), QString());
+    QCOMPARE(PDFFormFieldValueHistory::complete("Other", "2"), QString("2024-11-03 Rev B"));
+    QCOMPARE(PDFFormFieldValueHistory::complete(QString(), "2"), QString());
+
+    // Fields holding secrets are never remembered
+    QVERIFY(PDFFormFieldValueHistory::isSensitiveField("Account Number"));
+    QVERIFY(PDFFormFieldValueHistory::isSensitiveField("form.CardNumber"));
+    QVERIFY(PDFFormFieldValueHistory::isSensitiveField("Password"));
+    QVERIFY(PDFFormFieldValueHistory::isSensitiveField("SSN"));
+    QVERIFY(!PDFFormFieldValueHistory::isSensitiveField("Project"));
+    QVERIFY(!PDFFormFieldValueHistory::isSensitiveField("Catalog_Number"));
+    QVERIFY(!PDFFormFieldValueHistory::isSensitiveField("Spinner"));
+    PDFFormFieldValueHistory::addValue("Account Number", "123456789");
+    QCOMPARE(PDFFormFieldValueHistory::complete("Account Number", "1"), QString());
 
     FormFixture fixture(FormFieldsTestHelper::createTextFieldDocument(FormFieldsTestHelper::TextField::TextBox, "/Tx BMC EMC", true));
     QWidget* target = fixture.widget.getDrawWidget()->getWidget();
@@ -1489,6 +1633,57 @@ void FormFieldsTest::autocomplete()
 
     PDFFormFieldValueHistory::clear();
     QCOMPARE(PDFFormFieldValueHistory::complete("Text", "He"), QString());
+}
+
+void FormFieldsTest::commitPendingChanges()
+{
+    PDFFormFieldValueHistory::clear();
+    PDFFormFieldValueHistory::addValue("Text", "Hurst Lighting");
+
+    FormFixture fixture(FormFieldsTestHelper::createTextFieldDocument(FormFieldsTestHelper::TextField::TextBox, "/Tx BMC EMC", true));
+    QWidget* target = fixture.widget.getDrawWidget()->getWidget();
+    const PDFObjectReference widget = fixture.widgetReference();
+
+    auto fieldValue = [&fixture, widget]()
+    {
+        PDFDocumentDataLoaderDecorator loader(fixture.document.data());
+        return loader.readTextString(fixture.forms.getFormFieldForWidget(widget)->getValue(), QString());
+    };
+
+    // Text being typed is written into the document (before saving),
+    // the field stays focused and typing continues
+    fixture.click(FormFieldsTestHelper::TEXT_FIELD.center());
+    QTest::keyClick(target, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(target, Qt::Key_Backspace);
+    QTest::keyClicks(target, "Ab");
+    fixture.forms.commitPendingChanges();
+    QCOMPARE(fieldValue(), QString("Ab"));
+    QVERIFY(fixture.forms.isFocused(widget));
+    QTest::keyClicks(target, "c");
+    fixture.forms.commitPendingChanges();
+    QCOMPARE(fieldValue(), QString("Abc"));
+    QTest::keyClick(target, Qt::Key_Left);
+    QTest::keyClicks(target, "X");
+    QTest::keyClick(target, Qt::Key_Return);
+    QCOMPARE(fieldValue(), QString("AbXc"));
+
+    // Suggestion, which the user didn't accept, is not written
+    fixture.click(FormFieldsTestHelper::TEXT_FIELD.center());
+    QTest::keyClick(target, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(target, Qt::Key_Backspace);
+    QTest::keyClicks(target, "Hu");
+    fixture.forms.commitPendingChanges();
+    QCOMPARE(fieldValue(), QString("Hu"));
+
+    // ... and the user can still accept it
+    QTest::keyClick(target, Qt::Key_Return);
+    QCOMPARE(fieldValue(), QString("Hurst Lighting"));
+
+    // Without focused field, nothing happens
+    fixture.forms.commitPendingChanges();
+    QCOMPARE(fieldValue(), QString("Hurst Lighting"));
+
+    PDFFormFieldValueHistory::clear();
 }
 
 void FormFieldsTest::typewriter()
@@ -1556,14 +1751,24 @@ void FormFieldsTest::recoveryCopy()
     const QString fileName = directory.filePath("Spec sheet.pdf");
     PDFDocument document = FormFieldsTestHelper::createCheckBoxDocument(FormFieldsTestHelper::Appearance::Complete, "Yes", "Yes", QByteArray(), "Yes");
 
+    QFile original(fileName);
+    QVERIFY(original.open(QIODevice::WriteOnly));
+    original.write("%PDF-1.7");
+    original.close();
+    const QDateTime lastModified = QFileInfo(fileName).lastModified();
+
     QVERIFY(!manager.findRecoveryItem(fileName));
     QVERIFY(manager.getRecoveryItems().empty());
 
-    QVERIFY(manager.writeRecoveryCopy(fileName, &document));
+    QVERIFY(manager.lockRecoveryCopy(fileName));
+    QVERIFY(manager.writeRecoveryCopy(fileName, lastModified, &document));
     std::optional<pdfviewer::PDFRecoveryManager::RecoveryItem> item = manager.findRecoveryItem(fileName);
     QVERIFY(item);
     QCOMPARE(QFileInfo(item->originalFileName), QFileInfo(fileName));
     QVERIFY(item->time.isValid());
+    QCOMPARE(item->originalLastModified, lastModified);
+    QVERIFY(!item->offered);
+    QVERIFY(!item->isOriginalModified());
     QCOMPARE(manager.getRecoveryItems().size(), size_t(1));
 
     // Recovery copy is a valid document with the same content
@@ -1573,14 +1778,121 @@ void FormFieldsTest::recoveryCopy()
     QCOMPARE(recovered.getCatalog()->getPageCount(), size_t(1));
     QVERIFY(!recovered.getCatalog()->getFormObject().isNull());
 
+    // Original changed after the copy was made (saved by another application)
+    QVERIFY(original.open(QIODevice::WriteOnly));
+    original.write("%PDF-1.7 changed");
+    QVERIFY(original.setFileTime(lastModified.addSecs(60), QFileDevice::FileModificationTime));
+    original.close();
+    QVERIFY(manager.findRecoveryItem(fileName)->isOriginalModified());
+
     // Other document has its own recovery copy
     const QString otherFileName = directory.filePath("Other.pdf");
-    QVERIFY(manager.writeRecoveryCopy(otherFileName, &document));
+    QVERIFY(manager.lockRecoveryCopy(otherFileName));
+    QVERIFY(manager.writeRecoveryCopy(otherFileName, QDateTime(), &document));
     QCOMPARE(manager.getRecoveryItems().size(), size_t(2));
+    QVERIFY(!manager.findRecoveryItem(otherFileName)->isOriginalModified());
 
     manager.removeRecoveryCopy(fileName);
     QVERIFY(!manager.findRecoveryItem(fileName));
     QVERIFY(manager.findRecoveryItem(otherFileName));
+    QCOMPARE(manager.getRecoveryItems().size(), size_t(1));
+    QVERIFY(!QFileInfo::exists(item->recoveryFileName));
+    QVERIFY(!QFileInfo::exists(QString(item->recoveryFileName).replace(".pdf", ".lock")));
+}
+
+void FormFieldsTest::recoveryCopyLockedByOtherWindow()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    const QString recoveryDirectory = directory.filePath("Recovery");
+    const QString fileName = directory.filePath("Spec sheet.pdf");
+    PDFDocument document = FormFieldsTestHelper::createCheckBoxDocument(FormFieldsTestHelper::Appearance::Complete, "Yes", "Yes", QByteArray(), "Yes");
+
+    // First window writes the recovery copy and holds its lock
+    pdfviewer::PDFRecoveryManager firstWindow(recoveryDirectory);
+    QVERIFY(firstWindow.lockRecoveryCopy(fileName));
+    QVERIFY(firstWindow.writeRecoveryCopy(fileName, QDateTime(), &document));
+    const QString recoveryFileName = firstWindow.findRecoveryItem(fileName)->recoveryFileName;
+
+    // Second window doesn't offer it, can't remove it, can't overwrite it,
+    // and doesn't consider it invalid
+    pdfviewer::PDFRecoveryManager secondWindow(recoveryDirectory);
+    QVERIFY(!secondWindow.findRecoveryItem(fileName));
+    QVERIFY(secondWindow.getRecoveryItems().empty());
+    QVERIFY(!secondWindow.lockRecoveryCopy(fileName));
+    secondWindow.removeRecoveryCopy(fileName);
+    secondWindow.removeInvalidRecoveryCopies();
+    QVERIFY(QFileInfo::exists(recoveryFileName));
+    QVERIFY(firstWindow.findRecoveryItem(fileName));
+
+    // When the first window releases the lock (closes, or crashes and the system
+    // releases its lock), the second window can recover the copy
+    firstWindow = pdfviewer::PDFRecoveryManager(recoveryDirectory);
+    QVERIFY(secondWindow.findRecoveryItem(fileName));
+    QVERIFY(secondWindow.lockRecoveryCopy(fileName));
+    secondWindow.removeRecoveryCopy(fileName);
+    QVERIFY(!QFileInfo::exists(recoveryFileName));
+}
+
+void FormFieldsTest::recoveryCopyOfferedAndCleanup()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    const QString recoveryDirectory = directory.filePath("Recovery");
+    const QString fileName = directory.filePath("Spec sheet.pdf");
+    PDFDocument document = FormFieldsTestHelper::createCheckBoxDocument(FormFieldsTestHelper::Appearance::Complete, "Yes", "Yes", QByteArray(), "Yes");
+
+    {
+        pdfviewer::PDFRecoveryManager crashedWindow(recoveryDirectory);
+        QVERIFY(crashedWindow.lockRecoveryCopy(fileName));
+        QVERIFY(crashedWindow.writeRecoveryCopy(fileName, QDateTime(), &document));
+    }
+
+    // Copy of the crashed window is not released by another window
+    // (the document was opened and closed without a decision)
+    pdfviewer::PDFRecoveryManager manager(recoveryDirectory);
+    manager.releaseRecoveryCopy(fileName);
+    QVERIFY(manager.findRecoveryItem(fileName));
+
+    // User postponed the recovery, copy is kept, but marked as offered
+    manager.setOffered(fileName);
+    std::optional<pdfviewer::PDFRecoveryManager::RecoveryItem> item = manager.findRecoveryItem(fileName);
+    QVERIFY(item);
+    QVERIFY(item->offered);
+
+    // New recovery copy of the document is offered again
+    QVERIFY(manager.lockRecoveryCopy(fileName));
+    QVERIFY(manager.writeRecoveryCopy(fileName, QDateTime(), &document));
+    QVERIFY(!manager.findRecoveryItem(fileName)->offered);
+    manager = pdfviewer::PDFRecoveryManager(recoveryDirectory);
+
+    // Incomplete copies (copy without description, description without copy)
+    // and copies older than the limit are removed, valid copy is kept
+    QDir recovery(recoveryDirectory);
+    QFile orphanCopy(recovery.absoluteFilePath("0123456789abcdef.pdf"));
+    QVERIFY(orphanCopy.open(QIODevice::WriteOnly));
+    orphanCopy.close();
+    QSettings orphanDescription(recovery.absoluteFilePath("fedcba9876543210.ini"), QSettings::IniFormat);
+    orphanDescription.setValue("OriginalFileName", directory.filePath("Missing.pdf"));
+    orphanDescription.sync();
+
+    const QString oldFileName = directory.filePath("Old.pdf");
+    QVERIFY(manager.lockRecoveryCopy(oldFileName));
+    QVERIFY(manager.writeRecoveryCopy(oldFileName, QDateTime(), &document));
+    const QString oldRecoveryFileName = manager.findRecoveryItem(oldFileName)->recoveryFileName;
+    {
+        QSettings oldDescription(QString(oldRecoveryFileName).replace(".pdf", ".ini"), QSettings::IniFormat);
+        oldDescription.setValue("Time", QDateTime::currentDateTime().addDays(-pdfviewer::PDFRecoveryManager::MAX_AGE_DAYS - 1));
+    }
+    manager = pdfviewer::PDFRecoveryManager(recoveryDirectory);
+
+    manager.removeInvalidRecoveryCopies();
+    QVERIFY(!QFileInfo::exists(orphanCopy.fileName()));
+    QVERIFY(!QFileInfo::exists(recovery.absoluteFilePath("fedcba9876543210.ini")));
+    QVERIFY(!QFileInfo::exists(oldRecoveryFileName));
+    QVERIFY(manager.findRecoveryItem(fileName));
     QCOMPARE(manager.getRecoveryItems().size(), size_t(1));
 }
 
