@@ -2659,7 +2659,7 @@ void PDFProgramController::onDocumentReadingFinished()
 
             m_pdfDocument = qMove(result.document);
             m_signatures = qMove(result.signatures);
-            pdf::PDFModifiedDocument document(m_pdfDocument.data(), m_optionalContentActivity);
+            pdf::PDFModifiedDocument document(m_pdfDocument, m_optionalContentActivity);
             setDocument(document, m_signatures, true);
 
             if (m_formManager)

@@ -27,6 +27,7 @@
 #include "pdfwidgetsglobal.h"
 #include "pdfglobal.h"
 #include "pdfrenderer.h"
+#include "pdfdocument.h"
 #include "pdfcms.h"
 #include "pdfoperationcontrol.h"
 #include "pdfpattern.h"
@@ -78,6 +79,12 @@ public:
         QImage image;
         QTransform pageToImage;     ///< Maps page points to the pixels of the image
     };
+
+    /// Sets the shared pointer to the current document of the proxy. The worker thread
+    /// works with the document for minutes, so the previews are created only for a
+    /// document, which is kept alive by this pointer - the owner of a document passed
+    /// as a raw pointer can destroy or replace it at any time.
+    void setDocumentPointer(PDFDocumentPointer document);
 
     /// Starts creation of the previews of the current document of the proxy
     /// \param useDiskCache Previews can be stored on the disk (the document is
@@ -168,6 +175,7 @@ private:
     static QString getPageFileName(const PDFDocument* document, const PDFPage* page, PDFInteger pageIndex);
 
     PDFDrawWidgetProxy* m_proxy;
+    PDFDocumentPointer m_documentPointer;
     QThread* m_thread = nullptr;
     Context m_context;
     std::atomic_bool m_stopRequested{false};
