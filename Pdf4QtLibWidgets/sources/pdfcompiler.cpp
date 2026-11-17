@@ -87,43 +87,46 @@ void PDFAsynchronousPageCompilerWorkerThread::run()
             renderer.setOperationControl(&operationControl);
             renderer.compile(&task.precompiledPage, task.pageIndex);
             task.finished = !operationControl.isOperationCancelled();
+
+            if (!task.finished || task.isCancelled())
+            {
+                return compiledPage;
+            }
+
+            // The page is published immediately, it does not wait for the other pages
+            // of the batch - the visible page would wait for the prefetched pages, which
+            // can be compiled much longer. We must check, that the task is still present
+            // in the task map - it can be cancelled and erased while we were compiling
+            // it (for example, page scrolled out of the viewport).
+            bool isWritten = false;
+            {
+                QMutexLocker taskLocker(m_mutex);
+                auto it = m_compiler->m_tasks.find(task.pageIndex);
+                if (it != m_compiler->m_tasks.end() && !it->second.finished)
+                {
+                    isWritten = true;
+                    task.isCancellable = it->second.isCancellable;
+                    task.isPrefetch = it->second.isPrefetch;
+                    it->second = std::move(task);
+                }
+            }
+
+            if (isWritten)
+            {
+                // Signal is emitted without the mutex - if direct
+                // connection is applied, this can lead to deadlock.
+                Q_EMIT pageCompiled();
+            }
+
             return compiledPage;
         };
         PDFExecutionPolicy::execute(PDFExecutionPolicy::Scope::Page, tasks.begin(), tasks.end(), compilePage);
 
         proxy->getFontCache()->setCacheShrinkEnabled(this, true);
 
-        // Relock the mutex to write the tasks
+        // Compiled pages are already written by the tasks, relock
+        // the mutex to pick new tasks.
         locker.relock();
-
-        // Now, write compiled pages. We must check, that the task is still
-        // present in the task map - it can be cancelled and erased while we
-        // were compiling it (for example, page scrolled out of the viewport).
-        bool isSomethingWritten = false;
-        for (auto& task : tasks)
-        {
-            if (!task.finished || task.isCancelled())
-            {
-                continue;
-            }
-
-            auto it = m_compiler->m_tasks.find(task.pageIndex);
-            if (it != m_compiler->m_tasks.end() && !it->second.finished)
-            {
-                isSomethingWritten = true;
-                it->second = std::move(task);
-            }
-        }
-
-        if (isSomethingWritten)
-        {
-            // Why we are unlocking the mutex? Because
-            // we do not want to emit signals with locked mutexes.
-            // If direct connection is applied, this can lead to deadlock.
-            locker.unlock();
-            Q_EMIT pageCompiled();
-            locker.relock();
-        }
     }
 }
 
@@ -205,10 +208,13 @@ void PDFAsynchronousPageCompiler::stop(bool clearCache)
             // we have ended the work thread.
             m_tasks.clear();
             m_activePages.clear();
+            m_displayedPages.clear();
+            m_isWaitingForDisplayedPages = false;
 
             if (clearCache)
             {
                 m_cache->clear();
+                m_oversizedPages.clear();
             }
 
             m_state = State::Inactive;
@@ -248,21 +254,36 @@ const PDFPrecompiledPage* PDFAsynchronousPageCompiler::getCompiledPage(PDFIntege
 
     if (!page && mode != CompileMode::None)
     {
-        const bool isCancellable = mode == CompileMode::Viewport;
+        const bool isCancellable = mode != CompileMode::Persistent;
+        const bool isPrefetch = mode == CompileMode::Prefetch;
 
         QMutexLocker locker(&m_mutex);
         auto it = m_tasks.find(pageIndex);
         if (it == m_tasks.cend())
         {
-            m_tasks.insert(std::make_pair(pageIndex, CompileTask(pageIndex, isCancellable)));
-            m_waitCondition.wakeOne();
+            // Page larger than the whole cache is not prefetched, it would
+            // remove the displayed pages from the cache.
+            if (!isPrefetch || !m_oversizedPages.count(pageIndex))
+            {
+                m_tasks.insert(std::make_pair(pageIndex, CompileTask(pageIndex, isCancellable, isPrefetch)));
+                m_waitCondition.wakeOne();
+            }
         }
-        else if (!isCancellable && it->second.isCancellable)
+        else
         {
-            // Jakub Melka: page is already being compiled for the viewport, but now
-            // it is requested also by a consumer, which is independent on the viewport.
-            // Such task must not be cancelled by scrolling anymore.
-            it->second.isCancellable = false;
+            if (!isCancellable && it->second.isCancellable)
+            {
+                // Jakub Melka: page is already being compiled for the viewport, but now
+                // it is requested also by a consumer, which is independent on the viewport.
+                // Such task must not be cancelled by scrolling anymore.
+                it->second.isCancellable = false;
+            }
+
+            if (!isPrefetch)
+            {
+                // Somebody waits for the page now
+                it->second.isPrefetch = false;
+            }
         }
     }
 
@@ -294,6 +315,12 @@ std::vector<PDFAsynchronousPageCompiler::CompileTask> PDFAsynchronousPageCompile
     {
         if (!item.second.finished && !item.second.isCancelled())
         {
+            if (m_isWaitingForDisplayedPages && !std::binary_search(m_displayedPages.cbegin(), m_displayedPages.cend(), item.first))
+            {
+                // Page view waits for the displayed pages, this page is compiled later
+                continue;
+            }
+
             tasks.push_back(item.second);
         }
     }
@@ -336,6 +363,20 @@ std::vector<PDFAsynchronousPageCompiler::CompileTask> PDFAsynchronousPageCompile
     }
 
     return tasks;
+}
+
+void PDFAsynchronousPageCompiler::setDisplayedPages(const std::vector<PDFInteger>& displayedPages, bool isWaiting)
+{
+    Q_ASSERT(std::is_sorted(displayedPages.cbegin(), displayedPages.cend()));
+
+    QMutexLocker locker(&m_mutex);
+
+    if (m_isWaitingForDisplayedPages != isWaiting || m_displayedPages != displayedPages)
+    {
+        m_displayedPages = displayedPages;
+        m_isWaitingForDisplayedPages = isWaiting;
+        m_waitCondition.wakeAll();
+    }
 }
 
 void PDFAsynchronousPageCompiler::setActivePages(const std::vector<PDFInteger>& activePages)
@@ -418,8 +459,27 @@ void PDFAsynchronousPageCompiler::onPageCompiled()
                     auto compiledPage = std::make_shared<PDFPrecompiledPage>(std::move(task.precompiledPage));
                     compiledPage->markAccessed();
                     qint64 memoryConsumptionEstimate = compiledPage->getMemoryConsumptionEstimate();
+                    const bool isOversized = memoryConsumptionEstimate > m_cache->maxCost();
+
+                    if (isOversized)
+                    {
+                        m_oversizedPages.insert(it->first);
+                    }
+
+                    if (isOversized && task.isPrefetch)
+                    {
+                        // Nobody waits for this page and it is larger than the whole cache. It is
+                        // thrown away, it will be compiled again, when it is displayed.
+                        it = m_tasks.erase(it);
+                        continue;
+                    }
+
+                    // Page larger than the whole cache must be drawn too (a large plan sheet can
+                    // have hundreds of megabytes). It is held in the cache alone - its cost is
+                    // the size of the cache, so all other pages are removed.
+                    const qint64 cost = qMin<qint64>(memoryConsumptionEstimate, m_cache->maxCost());
                     PDFPrecompiledPagePointer* page = new PDFPrecompiledPagePointer(std::move(compiledPage));
-                    if (m_cache->insert(it->first, page, memoryConsumptionEstimate))
+                    if (m_cache->insert(it->first, page, cost))
                     {
                         compiledPages.push_back(it->first);
                     }

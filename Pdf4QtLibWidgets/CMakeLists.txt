@@ -80,6 +80,8 @@ add_library(Pdf4QtLibWidgets SHARED
     sources/pdfcompiler.h
     sources/pdfpagerastercache.cpp
     sources/pdfpagerastercache.h
+    sources/pdfpagepreviewstore.cpp
+    sources/pdfpagepreviewstore.h
     sources/pdfdocumentdrawinterface.h
     sources/pdfwidgetsglobal.h
     sources/pdfcertificatelisthelper.h

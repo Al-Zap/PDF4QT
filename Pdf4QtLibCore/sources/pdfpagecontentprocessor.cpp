@@ -32,6 +32,8 @@
 #include <QPainterPathStroker>
 #include <QtMath>
 
+#include <array>
+
 #include "pdfdbgheap.h"
 
 namespace pdf
@@ -163,6 +165,70 @@ static constexpr const std::pair<const char*, PDFPageContentProcessor::Operator>
     // Compatibility:              BX, EX
     { "BX", PDFPageContentProcessor::Operator::CompatibilityBegin },
     { "EX", PDFPageContentProcessor::Operator::CompatibilityEnd }
+};
+
+/// Fast search of the operators. Text of an operator (at most four characters)
+/// is packed into a single number, so the operators are compared as numbers.
+class PDFPageContentProcessorOperatorHelper
+{
+public:
+    PDFPageContentProcessorOperatorHelper() = delete;
+
+    static constexpr size_t OPERATOR_COUNT = std::size(operators);
+    static constexpr qsizetype MAXIMAL_OPERATOR_LENGTH = 4;
+
+    static constexpr uint32_t pack(const char* text, qsizetype length)
+    {
+        uint32_t key = 0;
+        for (qsizetype i = 0; i < length; ++i)
+        {
+            key = (key << 8) | static_cast<unsigned char>(text[i]);
+        }
+        return key;
+    }
+
+    static constexpr std::array<uint32_t, OPERATOR_COUNT> createKeys()
+    {
+        std::array<uint32_t, OPERATOR_COUNT> keys = { };
+        for (size_t i = 0; i < OPERATOR_COUNT; ++i)
+        {
+            qsizetype length = 0;
+            while (operators[i].first[length] != 0)
+            {
+                ++length;
+            }
+
+            if (length > MAXIMAL_OPERATOR_LENGTH)
+            {
+                throw "Operator is too long.";
+            }
+
+            keys[i] = pack(operators[i].first, length);
+        }
+        return keys;
+    }
+
+    static PDFPageContentProcessor::Operator find(const QByteArray& command)
+    {
+        static constexpr std::array<uint32_t, OPERATOR_COUNT> keys = createKeys();
+
+        const qsizetype length = command.size();
+        if (length == 0 || length > MAXIMAL_OPERATOR_LENGTH)
+        {
+            return PDFPageContentProcessor::Operator::Invalid;
+        }
+
+        const uint32_t key = pack(command.constData(), length);
+        for (size_t i = 0; i < OPERATOR_COUNT; ++i)
+        {
+            if (keys[i] == key)
+            {
+                return operators[i].second;
+            }
+        }
+
+        return PDFPageContentProcessor::Operator::Invalid;
+    }
 };
 
 void PDFPageContentProcessor::initDictionaries(const PDFObject& resourcesObject)
@@ -1231,17 +1297,8 @@ void PDFPageContentProcessor::processTillingPatternPainting(const PDFTilingPatte
 
 void PDFPageContentProcessor::processCommand(const QByteArray& command)
 {
-    Operator op = Operator::Invalid;
-
     // Find the command in the command array
-    for (const std::pair<const char*, PDFPageContentProcessor::Operator>& operatorDescriptor : operators)
-    {
-        if (command == operatorDescriptor.first)
-        {
-            op = operatorDescriptor.second;
-            break;
-        }
-    }
+    const Operator op = PDFPageContentProcessorOperatorHelper::find(command);
 
     performInterceptInstruction(op, ProcessOrder::BeforeOperation, command);
     auto callInterceptInstAtEnd = qScopeGuard([&, this](){ performInterceptInstruction(op, ProcessOrder::AfterOperation, command); });

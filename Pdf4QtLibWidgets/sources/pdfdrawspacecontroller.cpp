@@ -25,6 +25,7 @@
 #include "pdfpainter.h"
 #include "pdfcompiler.h"
 #include "pdfpagerastercache.h"
+#include "pdfpagepreviewstore.h"
 #include "pdfconstants.h"
 #include "pdfcms.h"
 #include "pdfannotation.h"
@@ -483,8 +484,10 @@ PDFDrawWidgetProxy::PDFDrawWidgetProxy(QObject* parent) :
     m_textLayoutCompiler(new PDFAsynchronousTextLayoutCompiler(this)),
     m_rasterizer(new PDFRasterizer(this)),
     m_pageRasterCache(new PDFAsynchronousPageRasterCache(this)),
+    m_pagePreviewStore(new PDFPagePreviewStore(this)),
     m_progress(nullptr),
     m_cacheClearTimer(new QTimer(this)),
+    m_backgroundWorkResumeTimer(new QTimer(this)),
     m_rendererEngine(RendererEngine::Blend2D_MultiThread)
 {
     m_controller = new PDFDrawSpaceController(this);
@@ -494,6 +497,12 @@ PDFDrawWidgetProxy::PDFDrawWidgetProxy(QObject* parent) :
     connect(m_compiler, &PDFAsynchronousPageCompiler::renderingError, this, &PDFDrawWidgetProxy::renderingError);
     connect(m_compiler, &PDFAsynchronousPageCompiler::pageImageChanged, this, &PDFDrawWidgetProxy::pageImageChanged);
     connect(m_pageRasterCache, &PDFAsynchronousPageRasterCache::imageReady, this, &PDFDrawWidgetProxy::repaintNeeded);
+    connect(m_pagePreviewStore, &PDFPagePreviewStore::previewReady, this, &PDFDrawWidgetProxy::onPagePreviewReady);
+
+    m_backgroundWorkResumeTimer->setSingleShot(true);
+    m_backgroundWorkResumeTimer->setInterval(BACKGROUND_WORK_RESUME_TIMEOUT);
+    connect(m_backgroundWorkResumeTimer, &QTimer::timeout, this, [this]() { setBackgroundWorkPaused(false); });
+    connect(m_pageRasterCache, &PDFAsynchronousPageRasterCache::pageRasterized, m_pagePreviewStore, &PDFPagePreviewStore::addPageImage);
     connect(m_textLayoutCompiler, &PDFAsynchronousTextLayoutCompiler::textLayoutChanged, this, &PDFDrawWidgetProxy::onTextLayoutChanged);
     connect(m_cacheClearTimer, &QTimer::timeout, this, &PDFDrawWidgetProxy::performPageCacheClear);
 }
@@ -514,7 +523,14 @@ void PDFDrawWidgetProxy::setDocument(const PDFModifiedDocument& document, std::v
         if (document.hasReset())
         {
             m_pageRasterCache->clear();
+            m_isPagePreviewDiskCacheUsable = true;
         }
+        else if (document.hasPageContentsChanged())
+        {
+            m_isPagePreviewDiskCacheUsable = false;
+        }
+
+        m_pagePreviewStore->stop(document.hasReset() || document.hasPageContentsChanged());
 
         m_textLayoutCompiler->stop(document.hasReset() || document.hasPageContentsChanged());
         m_controller->setDocument(document);
@@ -526,6 +542,7 @@ void PDFDrawWidgetProxy::setDocument(const PDFModifiedDocument& document, std::v
 
         m_compiler->start();
         m_textLayoutCompiler->start();
+        m_pagePreviewStore->start(m_isPagePreviewDiskCacheUsable);
 
         if (document)
         {
@@ -846,6 +863,12 @@ void PDFDrawWidgetProxy::drawPages(QPainter* painter, QRect rect, PDFRenderer::F
     // Pages drawn from the cache of the rasterized pages, other images are released
     std::vector<PDFInteger> rasterCachePages;
 
+    // Is it the painter of the page view? Then rough images of the pages are
+    // drawn, until the pages are compiled and rasterized.
+    const bool isPageViewPainter = PDFAsynchronousPageRasterCache::isPainterSupported(painter);
+    std::vector<PDFInteger> drawnPages;
+    bool isWaitingForPages = false;
+
     // Iterate trough pages and display them on the painter device
     for (const LayoutItem& item : m_layout.items)
     {
@@ -885,16 +908,28 @@ void PDFDrawWidgetProxy::drawPages(QPainter* painter, QRect rect, PDFRenderer::F
                     isPageContentDrawSuppressed = isPageContentDrawSuppressed || drawInterface->isPageContentDrawSuppressed();
                 }
 
+                bool isContentDrawn = false;
                 if (isCompiledPageValid && !isPageContentDrawSuppressed)
                 {
-                    if (drawPageFromRasterCache(painter, item.pageIndex, page, placedRect, rect, baseMatrix, features, groupInfo, paperColor))
+                    if (drawPageFromRasterCache(painter, item.pageIndex, page, placedRect, rect, baseMatrix, features, groupInfo, paperColor, &isContentDrawn))
                     {
                         rasterCachePages.push_back(item.pageIndex);
                     }
                     else
                     {
                         compiledPage->draw(painter, page->getCropBox(), matrix, features, groupInfo.transparency, &m_scaledImageCache);
+                        isContentDrawn = true;
                     }
+                }
+
+                drawnPages.push_back(item.pageIndex);
+                isWaitingForPages = isWaitingForPages || !compiledPage;
+
+                if (!isContentDrawn && !isPageContentDrawSuppressed && isPageViewPainter &&
+                    groupInfo.drawPaper && qFuzzyCompare(groupInfo.transparency, 1.0))
+                {
+                    // Page is not compiled or rasterized yet, draw its rough image
+                    drawPagePreview(painter, item.pageIndex, placedRect, matrix);
                 }
 
                 // Draw text blocks/text lines, if it is enabled
@@ -1004,10 +1039,70 @@ void PDFDrawWidgetProxy::drawPages(QPainter* painter, QRect rect, PDFRenderer::F
         }
     }
 
-    if (PDFAsynchronousPageRasterCache::isPainterSupported(painter))
+    if (isPageViewPainter)
     {
         std::sort(rasterCachePages.begin(), rasterCachePages.end());
         m_pageRasterCache->retainPages(rasterCachePages);
+
+        std::sort(drawnPages.begin(), drawnPages.end());
+        m_drawnPages = std::move(drawnPages);
+
+        if (!m_drawnPages.empty())
+        {
+            m_pagePreviewStore->setCurrentPage(m_drawnPages.front());
+        }
+
+        // Other pages are not compiled and previews are not created, while the displayed
+        // pages are compiled or rasterized - the displayed pages get the whole processor.
+        setBackgroundWorkPaused(isWaitingForPages || m_pageRasterCache->hasPendingRequests());
+    }
+}
+
+void PDFDrawWidgetProxy::setBackgroundWorkPaused(bool paused)
+{
+    m_compiler->setDisplayedPages(m_drawnPages, paused);
+    m_pagePreviewStore->setPaused(paused);
+
+    if (paused)
+    {
+        // Safety net - the background work is paused until the page view is painted again
+        m_backgroundWorkResumeTimer->start();
+    }
+    else
+    {
+        m_backgroundWorkResumeTimer->stop();
+    }
+}
+
+bool PDFDrawWidgetProxy::drawPagePreview(QPainter* painter, PDFInteger pageIndex, const QRect& placedRect, const QTransform& matrix)
+{
+    const PDFPagePreviewStore::Preview preview = m_pagePreviewStore->getPreview(pageIndex);
+    if (!preview.isValid())
+    {
+        return false;
+    }
+
+    bool isInvertible = false;
+    const QTransform imageToPage = preview.pageToImage.inverted(&isInvertible);
+    if (!isInvertible)
+    {
+        return false;
+    }
+
+    painter->save();
+    painter->setClipRect(placedRect, Qt::IntersectClip);
+    painter->setWorldTransform(imageToPage * matrix);
+    painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter->drawImage(QPointF(0.0, 0.0), preview.image);
+    painter->restore();
+    return true;
+}
+
+void PDFDrawWidgetProxy::onPagePreviewReady(PDFInteger pageIndex)
+{
+    if (std::binary_search(m_drawnPages.cbegin(), m_drawnPages.cend(), pageIndex))
+    {
+        Q_EMIT repaintNeeded();
     }
 }
 
@@ -1019,7 +1114,8 @@ bool PDFDrawWidgetProxy::drawPageFromRasterCache(QPainter* painter,
                                                  const QTransform& baseMatrix,
                                                  PDFRenderer::Features features,
                                                  const GroupInfo& groupInfo,
-                                                 const QColor& paperColor)
+                                                 const QColor& paperColor,
+                                                 bool* isContentDrawn)
 {
     // The cache draws an opaque image of the page on the paper, so it can't be used
     // for transparent pages or pages without paper. It can't be used also for other
@@ -1064,7 +1160,7 @@ bool PDFDrawWidgetProxy::drawPageFromRasterCache(QPainter* painter,
 
     painter->save();
     painter->setWorldTransform(QTransform());
-    m_pageRasterCache->drawPage(painter, parameters);
+    *isContentDrawn = m_pageRasterCache->drawPage(painter, parameters);
     painter->restore();
 
     // Page is handled by the cache even when nothing has been drawn yet - the image
@@ -2057,7 +2153,7 @@ void PDFDrawWidgetProxy::prefetchPages(PDFInteger pageIndex)
         const PDFInteger pageEnd = qMin(pageCount, pageIndex + prefetchCount + 1);
         for (PDFInteger i = pageIndex + 1; i < pageEnd; ++i)
         {
-            m_compiler->getCompiledPage(i, PDFAsynchronousPageCompiler::CompileMode::Viewport);
+            m_compiler->getCompiledPage(i, PDFAsynchronousPageCompiler::CompileMode::Prefetch);
         }
 
         // Pages before the current pages are prefetched too, plan sheets are often
@@ -2065,7 +2161,7 @@ void PDFDrawWidgetProxy::prefetchPages(PDFInteger pageIndex)
         const PDFInteger firstCurrentPage = pageIndex - (prefetchCount - 1);
         for (PDFInteger i = qMax(PDFInteger(0), firstCurrentPage - prefetchCount); i < firstCurrentPage; ++i)
         {
-            m_compiler->getCompiledPage(i, PDFAsynchronousPageCompiler::CompileMode::Viewport);
+            m_compiler->getCompiledPage(i, PDFAsynchronousPageCompiler::CompileMode::Prefetch);
         }
     }
 }
@@ -2176,9 +2272,11 @@ void PDFDrawWidgetProxy::setFeatures(PDFRenderer::Features features)
     {
         m_compiler->stop(true);
         m_textLayoutCompiler->stop(true);
+        m_pagePreviewStore->stop(true);
         m_features = features;
         m_compiler->start();
         m_textLayoutCompiler->start();
+        m_pagePreviewStore->start(m_isPagePreviewDiskCacheUsable);
         Q_EMIT pageImageChanged(true, { });
     }
 }
@@ -2188,8 +2286,10 @@ void PDFDrawWidgetProxy::setPreferredMeshResolutionRatio(PDFReal ratio)
     if (m_meshQualitySettings.preferredMeshResolutionRatio != ratio)
     {
         m_compiler->stop(true);
+        m_pagePreviewStore->stop(true);
         m_meshQualitySettings.preferredMeshResolutionRatio = ratio;
         m_compiler->start();
+        m_pagePreviewStore->start(m_isPagePreviewDiskCacheUsable);
         Q_EMIT pageImageChanged(true, { });
     }
 }
@@ -2199,8 +2299,10 @@ void PDFDrawWidgetProxy::setMinimalMeshResolutionRatio(PDFReal ratio)
     if (m_meshQualitySettings.minimalMeshResolutionRatio != ratio)
     {
         m_compiler->stop(true);
+        m_pagePreviewStore->stop(true);
         m_meshQualitySettings.minimalMeshResolutionRatio = ratio;
         m_compiler->start();
+        m_pagePreviewStore->start(m_isPagePreviewDiskCacheUsable);
         Q_EMIT pageImageChanged(true, { });
     }
 }
@@ -2210,8 +2312,10 @@ void PDFDrawWidgetProxy::setColorTolerance(PDFReal colorTolerance)
     if (m_meshQualitySettings.tolerance != colorTolerance)
     {
         m_compiler->stop(true);
+        m_pagePreviewStore->stop(true);
         m_meshQualitySettings.tolerance = colorTolerance;
         m_compiler->start();
+        m_pagePreviewStore->start(m_isPagePreviewDiskCacheUsable);
         Q_EMIT pageImageChanged(true, { });
     }
 }
@@ -2219,12 +2323,19 @@ void PDFDrawWidgetProxy::setColorTolerance(PDFReal colorTolerance)
 void PDFDrawWidgetProxy::onColorManagementSystemChanged()
 {
     m_compiler->reset();
+    m_pagePreviewStore->stop(true);
+    m_pagePreviewStore->start(m_isPagePreviewDiskCacheUsable);
     Q_EMIT pageImageChanged(true, { });
 }
 
 void PDFDrawWidgetProxy::onOptionalContentGroupStateChanged()
 {
     m_compiler->reset();
+
+    // Previews on the disk are created for the default state of the optional content
+    m_isPagePreviewDiskCacheUsable = false;
+    m_pagePreviewStore->stop(true);
+    m_pagePreviewStore->start(m_isPagePreviewDiskCacheUsable);
     m_textLayoutCompiler->reset();
     Q_EMIT pageImageChanged(true, { });
 }

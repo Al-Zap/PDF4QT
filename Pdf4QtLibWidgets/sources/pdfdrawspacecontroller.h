@@ -53,6 +53,7 @@ class PDFWidgetAnnotationManager;
 class PDFAsynchronousPageCompiler;
 class PDFAsynchronousTextLayoutCompiler;
 class PDFAsynchronousPageRasterCache;
+class PDFPagePreviewStore;
 
 /// This class controls draw space - page layout. Pages are divided into blocks
 /// each block can contain one or multiple pages. Units are in milimeters.
@@ -453,6 +454,9 @@ private:
     static constexpr PDFReal FIT_MARGIN_PIXELS = 1.0;
 
     static constexpr qint64 CACHE_CLEAR_TIMEOUT = 5000;
+
+    /// Timeout of the pause of the background work (see setBackgroundWorkPaused)
+    static constexpr int BACKGROUND_WORK_RESUME_TIMEOUT = 10000;
     static constexpr qint64 CACHE_PAGE_EXPIRATION_TIMEOUT = 30000;
 
     enum class ZoomMode
@@ -535,7 +539,19 @@ private:
                                  const QTransform& baseMatrix,
                                  PDFRenderer::Features features,
                                  const GroupInfo& groupInfo,
-                                 const QColor& paperColor);
+                                 const QColor& paperColor,
+                                 bool* isContentDrawn);
+
+    /// Draws the rough image of the page, which is not compiled or rasterized yet
+    /// \returns true, if the preview has been drawn
+    bool drawPagePreview(QPainter* painter, PDFInteger pageIndex, const QRect& placedRect, const QTransform& matrix);
+
+    /// Pauses the background work (prefetched pages, previews of the pages), while
+    /// the page view waits for the displayed pages, so they get the whole processor
+    void setBackgroundWorkPaused(bool paused);
+
+    /// Repaints the page view, if the page is displayed
+    void onPagePreviewReady(PDFInteger pageIndex);
 
     template<typename T>
     struct Range
@@ -617,6 +633,21 @@ private:
 
     /// Images of the visible pages rasterized in the background at the current zoom
     PDFAsynchronousPageRasterCache* m_pageRasterCache;
+
+    /// Rough images of all pages, created in the background. They are drawn,
+    /// when the page is not compiled or rasterized yet.
+    PDFPagePreviewStore* m_pagePreviewStore;
+
+    /// Can be the previews of the pages stored on the disk? Only previews of the
+    /// document as it has been opened, with the default state of the optional content.
+    bool m_isPagePreviewDiskCacheUsable = false;
+
+    /// Pages drawn by the page view, when it was painted last time (sorted)
+    std::vector<PDFInteger> m_drawnPages;
+
+    /// Resumes the background work (prefetched pages, previews), if the page view
+    /// is not painted for a long time, while it waits for the displayed pages
+    QTimer* m_backgroundWorkResumeTimer;
 
     /// Cache of the images downscaled for the current zoom. Precompiled pages are
     /// independent on the zoom, so the downscaled images cannot be stored in them;

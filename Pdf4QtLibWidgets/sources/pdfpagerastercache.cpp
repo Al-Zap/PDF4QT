@@ -222,6 +222,7 @@ void PDFAsynchronousPageRasterCache::request(const PageDrawParameters& parameter
     task.cropBox = parameters.cropBox;
     task.key = key;
     task.region = getRequestedRegion(parameters);
+    task.isWholePage = task.region == QRect(QPoint(0, 0), parameters.pageSize);
     task.cancelFlag = std::make_shared<std::atomic_bool>(false);
 
     if (task.region.isEmpty())
@@ -307,10 +308,20 @@ void PDFAsynchronousPageRasterCache::onTaskFinished(quint64 taskId, PDFInteger p
     entry.region = task.region;
     entry.pageToImage = createPageToImageMatrix(task.key, task.region);
     entry.image = std::move(image);
+
+    const bool isWholePage = task.isWholePage;
+    const QImage pageImage = entry.image;
+    const QTransform pageToImage = entry.pageToImage;
+
     m_entries[pageIndex] = std::move(entry);
     m_pending.erase(it);
 
     Q_EMIT imageReady();
+
+    if (isWholePage)
+    {
+        Q_EMIT pageRasterized(pageIndex, pageImage, pageToImage);
+    }
 }
 
 void PDFAsynchronousPageRasterCache::retainPages(const std::vector<PDFInteger>& pages)
