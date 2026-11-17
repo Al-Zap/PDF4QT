@@ -618,6 +618,15 @@ private:
     /// Set pen to the context
     static void setBLPen(BLContext& context, const QPen& pen);
 
+    /// Returns the pen, which is really used for stroking with the given transformation.
+    /// The line of zero width is the thinnest line the device can draw (PDF 2.0, 8.4.3.2,
+    /// plots of CAD programs use it for tables and symbols), so it is drawn one pixel wide,
+    /// and a cosmetic pen has its width in pixels. Lengths of the dashes are kept.
+    static QPen getEffectivePen(const QPen& pen, const QTransform& transform);
+
+    /// Updates the pen used for stroking from the pen of the painter and from the transformation
+    void updateEffectivePen();
+
     /// Set brush to the context
     static void setBLBrush(BLContext& context, const QBrush& brush);
 
@@ -667,7 +676,8 @@ private:
     std::optional<BLImage> m_blOffscreenBuffer;
     bool m_isMultithreaded;
 
-    QPen m_currentPen;
+    QPen m_statePen; ///< Pen set by the painter
+    QPen m_currentPen; ///< Pen used for stroking, see getEffectivePen
     QBrush m_currentBrush;
     QFont m_currentFont;
     QRawFont m_currentRawFont;
@@ -790,7 +800,8 @@ bool PDFBLPaintEngine::begin(QPaintDevice*)
         // already delivers the transformations in the real pixels of the offscreen buffer.
         // Applying it here as well would scale everything twice.
 
-        setBLPen(m_blContext.value(), m_currentPen);
+        m_currentTransform = QTransform();
+        updateEffectivePen();
         setBLBrush(m_blContext.value(), m_currentBrush);
         updateFont(QFont());
         return true;
@@ -838,8 +849,7 @@ void PDFBLPaintEngine::updateState(const QPaintEngineState& updatedState)
 {
     if (updatedState.state().testFlag(QPaintEngine::DirtyPen))
     {
-        m_currentPen = updatedState.pen();
-        setBLPen(m_blContext.value(), updatedState.pen());
+        m_statePen = updatedState.pen();
     }
 
     if (updatedState.state().testFlag(QPaintEngine::DirtyBrush))
@@ -862,6 +872,11 @@ void PDFBLPaintEngine::updateState(const QPaintEngineState& updatedState)
     {
         m_currentTransform = updatedState.transform();
         blcompat::set_transform(*m_blContext, getBLMatrix(updatedState.transform()));
+    }
+
+    if (updatedState.state() & (QPaintEngine::DirtyPen | QPaintEngine::DirtyTransform))
+    {
+        updateEffectivePen();
     }
 
     if (updatedState.state().testFlag(QPaintEngine::DirtyFont))
@@ -1436,6 +1451,73 @@ BLPath PDFBLPaintEngine::getBLPath(const QPainterPath& path)
     }
 
     return blPath;
+}
+
+QPen PDFBLPaintEngine::getEffectivePen(const QPen& pen, const QTransform& transform)
+{
+    if (pen.style() == Qt::NoPen)
+    {
+        return pen;
+    }
+
+    const qreal scale = std::sqrt(qAbs(transform.determinant()));
+    if (!std::isfinite(scale) || qFuzzyIsNull(scale))
+    {
+        return pen;
+    }
+
+    // A line thinner than a tenth of a pixel is drawn as the thinnest line of the device, one
+    // pixel wide. Other thin lines are left to the antialiasing: making them all one pixel
+    // wide turns the dense hatches of the plots into solid areas with ragged edges.
+    constexpr qreal HAIRLINE_THRESHOLD = 0.1;
+
+    const qreal width = pen.widthF();
+    const qreal minimalWidth = 1.0 / scale;
+    const qreal effectiveWidth = pen.isCosmetic() ? qMax(width, 1.0) / scale : ((width * scale < HAIRLINE_THRESHOLD) ? minimalWidth : width);
+
+    if (effectiveWidth == width && !pen.isCosmetic())
+    {
+        return pen;
+    }
+
+    QPen effectivePen = pen;
+    effectivePen.setWidthF(effectiveWidth);
+    effectivePen.setCosmetic(false);
+
+    if (effectivePen.joinStyle() == Qt::MiterJoin || effectivePen.joinStyle() == Qt::SvgMiterJoin)
+    {
+        // The thinnest line has no visible joins. Miter joins of the widened line would stick
+        // out of the sharp corners (plots fill areas with thin triangles, which are also stroked).
+        effectivePen.setJoinStyle(Qt::BevelJoin);
+    }
+
+    if (pen.style() == Qt::CustomDashLine)
+    {
+        // Dashes of the pen are in the units of the width of the pen (zero width is treated as one)
+        const qreal dashUnit = pen.isCosmetic() ? qMax(width, 1.0) / scale : (width > 0.0 ? width : 1.0);
+        const qreal factor = dashUnit / effectiveWidth;
+
+        QList<qreal> dashPattern = pen.dashPattern();
+        for (qreal& dash : dashPattern)
+        {
+            dash *= factor;
+        }
+
+        effectivePen.setDashPattern(dashPattern);
+        effectivePen.setDashOffset(pen.dashOffset() * factor);
+    }
+
+    return effectivePen;
+}
+
+void PDFBLPaintEngine::updateEffectivePen()
+{
+    m_currentPen = getEffectivePen(m_statePen, m_currentTransform);
+
+    if (m_blContext)
+    {
+        setBLPen(m_blContext.value(), m_currentPen);
+    }
 }
 
 void PDFBLPaintEngine::setBLPen(BLContext& context, const QPen& pen)
