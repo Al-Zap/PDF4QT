@@ -311,6 +311,21 @@ private:
     /// \param profile Color profile handle
     static cmsUInt32Number getProfileDataFormat(cmsHPROFILE profile);
 
+    /// Returns little CMS data format of the input of the transformations, which fill
+    /// the buffers of the images. Integer formats are used, where it is possible - little CMS
+    /// precalculates the transformations of the integer data, but it evaluates the whole
+    /// pipeline (including the power functions of the tone curves) for each pixel of the
+    /// floating point data, which takes minutes for the large images.
+    /// \param profile Color profile handle
+    static cmsUInt32Number getBufferDataFormat(cmsHPROFILE profile);
+
+    /// Transforms colors to the buffer of the image (three bytes per pixel)
+    /// \param transform Transformation created for the format of \p getBufferDataFormat
+    /// \param colors Color components in range [0, 1]
+    /// \param count Number of the color components
+    /// \param outputBuffer Output buffer
+    static void transformToRGBBuffer(cmsHTRANSFORM transform, const float* colors, size_t count, unsigned char* outputBuffer);
+
     /// Returns color from output color. Clamps invalid rgb output values to range [0.0, 1.0].
     /// \param color01 Rgb color (range 0-1 is assumed).
     static QColor getColorFromOutputColor(std::array<float, 3> color01);
@@ -349,10 +364,10 @@ bool PDFLittleCMS::fillRGBBufferFromDeviceGray(const std::vector<float>& colors,
         return false;
     }
 
-    if (cmsGetTransformInputFormat(transform) == TYPE_GRAY_FLT)
+    if (T_COLORSPACE(cmsGetTransformInputFormat(transform)) == PT_GRAY)
     {
         Q_ASSERT(cmsGetTransformOutputFormat(transform) == TYPE_RGB_8);
-        cmsDoTransform(transform, colors.data(), outputBuffer, static_cast<cmsUInt32Number>(colors.size()));
+        transformToRGBBuffer(transform, colors.data(), colors.size(), outputBuffer);
         return true;
     }
     else
@@ -374,10 +389,10 @@ bool PDFLittleCMS::fillRGBBufferFromDeviceRGB(const std::vector<float>& colors, 
     }
 
     const cmsUInt32Number inputFormat = cmsGetTransformInputFormat(transform);
-    if (inputFormat == TYPE_RGB_FLT && (colors.size()) % T_CHANNELS(inputFormat) == 0)
+    if (T_COLORSPACE(inputFormat) == PT_RGB && (colors.size()) % T_CHANNELS(inputFormat) == 0)
     {
         Q_ASSERT(cmsGetTransformOutputFormat(transform) == TYPE_RGB_8);
-        cmsDoTransform(transform, colors.data(), outputBuffer, static_cast<cmsUInt32Number>(colors.size()) / T_CHANNELS(inputFormat));
+        transformToRGBBuffer(transform, colors.data(), colors.size(), outputBuffer);
         return true;
     }
     else
@@ -399,15 +414,10 @@ bool PDFLittleCMS::fillRGBBufferFromDeviceCMYK(const std::vector<float>& colors,
     }
 
     const cmsUInt32Number inputFormat = cmsGetTransformInputFormat(transform);
-    if (inputFormat == TYPE_CMYK_FLT && (colors.size()) % T_CHANNELS(inputFormat) == 0)
+    if (T_COLORSPACE(inputFormat) == PT_CMYK && (colors.size()) % T_CHANNELS(inputFormat) == 0)
     {
         Q_ASSERT(cmsGetTransformOutputFormat(transform) == TYPE_RGB_8);
-        std::vector<float> fixedColors = colors;
-        for (size_t i = 0, count = fixedColors.size(); i < count; ++i)
-        {
-            fixedColors[i] = fixedColors[i] * 100.0f;
-        }
-        cmsDoTransform(transform, fixedColors.data(), outputBuffer, static_cast<cmsUInt32Number>(colors.size()) / T_CHANNELS(inputFormat));
+        transformToRGBBuffer(transform, colors.data(), colors.size(), outputBuffer);
         return true;
     }
     else
@@ -472,25 +482,10 @@ bool PDFLittleCMS::fillRGBBufferFromICC(const std::vector<float>& colors, Render
 
     const cmsUInt32Number format = cmsGetTransformInputFormat(transform);
     const cmsUInt32Number channels = T_CHANNELS(format);
-    const cmsUInt32Number colorSpace = T_COLORSPACE(format);
-    const bool isCMYK = colorSpace == PT_CMYK;
-    const float* inputColors = colors.data();
-    std::vector<float> cmykColors;
-
-    if (isCMYK)
-    {
-        cmykColors = colors;
-        for (size_t i = 0; i < cmykColors.size(); ++i)
-        {
-            cmykColors[i] = cmykColors[i] * 100.0f;
-        }
-        inputColors = cmykColors.data();
-    }
 
     if (colors.size() % channels == 0)
     {
-        const cmsUInt32Number pixels = static_cast<cmsUInt32Number>(colors.size()) / channels;
-        cmsDoTransform(transform, inputColors, outputBuffer, pixels);
+        transformToRGBBuffer(transform, colors.data(), colors.size(), outputBuffer);
         return true;
     }
     else
@@ -805,7 +800,7 @@ cmsHTRANSFORM PDFLittleCMS::getTransformFromICCProfile(const QByteArray& iccData
             cmsHPROFILE profile = cmsOpenProfileFromMem(iccData.data(), iccData.size());
             if (profile)
             {
-                if (const cmsUInt32Number inputDataFormat = getProfileDataFormat(profile))
+                if (const cmsUInt32Number inputDataFormat = isRGB888Buffer ? getBufferDataFormat(profile) : getProfileDataFormat(profile))
                 {
                     cmsUInt32Number lcmsIntent = getLittleCMSRenderingIntent(effectiveRenderingIntent);
 
@@ -1143,6 +1138,8 @@ cmsHTRANSFORM PDFLittleCMS::getTransform(Profile profile, RenderingIntent intent
 
             if (input && output)
             {
+                const cmsUInt32Number inputDataFormat = isRGB888Buffer ? getBufferDataFormat(input) : getProfileDataFormat(input);
+
                 if (isSoftProofing())
                 {
                     cmsHPROFILE proofingProfile = m_profiles[SoftProofing];
@@ -1152,12 +1149,12 @@ cmsHTRANSFORM PDFLittleCMS::getTransform(Profile profile, RenderingIntent intent
                         proofingIntent = intent;
                     }
 
-                    transform = cmsCreateProofingTransform(input, getProfileDataFormat(input), output, isRGB888Buffer ? TYPE_RGB_8 : TYPE_RGB_FLT, proofingProfile,
+                    transform = cmsCreateProofingTransform(input, inputDataFormat, output, isRGB888Buffer ? TYPE_RGB_8 : TYPE_RGB_FLT, proofingProfile,
                                                            getLittleCMSRenderingIntent(intent), getLittleCMSRenderingIntent(proofingIntent), getTransformationFlags());
                 }
                 else
                 {
-                    transform = cmsCreateTransform(input, getProfileDataFormat(input), output, isRGB888Buffer ? TYPE_RGB_8 : TYPE_RGB_FLT, getLittleCMSRenderingIntent(intent), getTransformationFlags());
+                    transform = cmsCreateTransform(input, inputDataFormat, output, isRGB888Buffer ? TYPE_RGB_8 : TYPE_RGB_FLT, getLittleCMSRenderingIntent(intent), getTransformationFlags());
                 }
             }
 
@@ -1270,6 +1267,83 @@ cmsUInt32Number PDFLittleCMS::getProfileDataFormat(cmsHPROFILE profile)
     }
 
     return 0;
+}
+
+cmsUInt32Number PDFLittleCMS::getBufferDataFormat(cmsHPROFILE profile)
+{
+    cmsColorSpaceSignature signature = cmsGetColorSpace(profile);
+    switch (signature)
+    {
+        case cmsSigGrayData:
+            return TYPE_GRAY_16;
+
+        case cmsSigRgbData:
+            return TYPE_RGB_16;
+
+        case cmsSigCmykData:
+            return TYPE_CMYK_16;
+
+        default:
+            break;
+    }
+
+    return getProfileDataFormat(profile);
+}
+
+void PDFLittleCMS::transformToRGBBuffer(cmsHTRANSFORM transform, const float* colors, size_t count, unsigned char* outputBuffer)
+{
+    const cmsUInt32Number format = cmsGetTransformInputFormat(transform);
+    const size_t channels = T_CHANNELS(format);
+
+    if (channels == 0)
+    {
+        return;
+    }
+
+    const size_t pixelCount = count / channels;
+
+    if (T_FLOAT(format))
+    {
+        if (T_COLORSPACE(format) == PT_CMYK)
+        {
+            // Little CMS uses range [0, 100] for the floating point CMYK
+            std::vector<float> fixedColors(colors, colors + pixelCount * channels);
+            for (float& color : fixedColors)
+            {
+                color *= 100.0f;
+            }
+            cmsDoTransform(transform, fixedColors.data(), outputBuffer, static_cast<cmsUInt32Number>(pixelCount));
+        }
+        else
+        {
+            cmsDoTransform(transform, colors, outputBuffer, static_cast<cmsUInt32Number>(pixelCount));
+        }
+
+        return;
+    }
+
+    // Integer format of 16 bits per component, colors are converted by blocks
+    Q_ASSERT(T_BYTES(format) == 2);
+
+    constexpr size_t BLOCK_PIXEL_COUNT = 1024;
+    std::array<cmsUInt16Number, BLOCK_PIXEL_COUNT * 4> block = { };
+    Q_ASSERT(channels <= 4);
+
+    size_t pixelIndex = 0;
+    while (pixelIndex < pixelCount)
+    {
+        const size_t blockPixelCount = qMin(BLOCK_PIXEL_COUNT, pixelCount - pixelIndex);
+        const size_t blockValueCount = blockPixelCount * channels;
+        const float* source = colors + pixelIndex * channels;
+
+        for (size_t i = 0; i < blockValueCount; ++i)
+        {
+            block[i] = static_cast<cmsUInt16Number>(qBound(0.0f, source[i], 1.0f) * 65535.0f + 0.5f);
+        }
+
+        cmsDoTransform(transform, block.data(), outputBuffer + pixelIndex * 3, static_cast<cmsUInt32Number>(blockPixelCount));
+        pixelIndex += blockPixelCount;
+    }
 }
 
 QColor PDFLittleCMS::getColorFromOutputColor(std::array<float, 3> color01)
