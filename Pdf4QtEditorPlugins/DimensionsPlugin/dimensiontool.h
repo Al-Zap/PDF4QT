@@ -30,6 +30,8 @@
 #include <QAction>
 #include <QPolygonF>
 
+#include <functional>
+
 class Dimension
 {
 public:
@@ -39,7 +41,8 @@ public:
         Linear,
         Perimeter,
         Area,
-        Angular
+        Angular,
+        Polyline    ///< Length of an open polyline, for example a run of a conduit
     };
 
     inline explicit Dimension() = default;
@@ -65,8 +68,13 @@ public:
     const DimensionScale& getScale() const { return m_scale; }
     void setScale(DimensionScale scale) { m_scale = qMove(scale); }
 
-    /// Returns true, if definition fo given type is complete
+    /// Returns true, if definition fo given type is complete. A polyline is never
+    /// complete by itself, it is finished by the user (see \p canBeFinished).
     static bool isComplete(Type type, const std::vector<QPointF>& polygon);
+
+    /// Returns true, if the user can finish the definition of the given type
+    /// (by a double click or by the Enter key) with the given picked points
+    static bool canBeFinished(Type type, const std::vector<QPointF>& polygon);
 
 private:
     Type m_type = Linear;
@@ -90,6 +98,7 @@ public:
         LinearHorizontal,
         LinearVertical,
         Linear,
+        Polyline,   ///< Length of an open polyline
         Perimeter,
         RectanglePerimeter,
         Area,
@@ -101,6 +110,19 @@ public:
 
 
     explicit DimensionTool(Style style, pdf::PDFDrawWidgetProxy* proxy, QAction* action, QObject* parent);
+
+    /// Formatter of the measured value, which is displayed next to the cursor
+    /// while the measurement is being picked. It gets the unfinished dimension.
+    using ValueFormatter = std::function<QString(const Dimension&)>;
+
+    /// Sets the formatter of the measured value displayed during picking
+    void setValueFormatter(ValueFormatter formatter) { m_valueFormatter = qMove(formatter); }
+
+    /// Enables snapping to the geometry of the drawing (end points, intersections, ...)
+    void setSnapToDrawing(bool snapToDrawing);
+
+    virtual void keyPressEvent(QWidget* widget, QKeyEvent* event) override;
+    virtual void mouseDoubleClickEvent(QWidget* widget, QMouseEvent* event) override;
 
     void drawPage(QPainter* painter,
                   pdf::PDFInteger pageIndex,
@@ -124,12 +146,23 @@ private:
     void onRectanglePicked(pdf::PDFInteger pageIndex, QRectF pageRectangle);
 
     QPointF adjustPagePoint(QPointF pagePoint) const;
+
+    /// Finishes the polygon or polyline being picked, if it has enough points.
+    /// Returns true, if the dimension was created.
+    bool finishPicking();
+
+    /// Creates the dimension from the picked points and resets the picking
+    void createDimension(pdf::PDFInteger pageIndex, std::vector<QPointF> points);
+
+    /// Returns true, if the dimension is defined by an arbitrary count of points
+    bool isMultiPointStyle() const;
     Dimension::Type getDimensionType() const;
     pdf::PDFReal getMeasuredValue(pdf::PDFInteger pageIndex, const std::vector<QPointF>& pickedPoints) const;
 
     Style m_style;
     int m_previewPointPixelSize;
     pdf::PDFPickTool* m_pickTool;
+    ValueFormatter m_valueFormatter;
 };
 
 #endif // DIMENSIONTOOL_H

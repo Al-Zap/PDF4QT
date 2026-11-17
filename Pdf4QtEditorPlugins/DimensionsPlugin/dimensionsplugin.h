@@ -31,6 +31,8 @@
 #include <QObject>
 
 class QMenu;
+class QToolButton;
+class ScaleDialog;
 
 namespace pdf
 {
@@ -65,6 +67,33 @@ public:
                           const pdf::PDFColorConvertor& convertor,
                           QList<pdf::PDFRenderError>& errors) const override;
 
+    /// Origin of the scale, which applies at some place of the document
+    enum class ScaleSource
+    {
+        Default,    ///< Nothing is known, the default scale from the settings is used
+        Drawing,    ///< Scale is defined by the document itself (viewport with a measure dictionary)
+        Sheet,      ///< Scale was set by the user for the single sheet (page)
+        Document    ///< Scale was set by the user for the whole document
+    };
+
+    /// Returns the scale of the drawing at the given point. This is the single
+    /// place, where the scale is resolved: the scale defined by the document
+    /// itself (a viewport, typically from CAD or Bluebeam) has the highest
+    /// priority, then the scale set by the user for the sheet, and finally
+    /// the scale of the whole document. Other tools, which need to convert
+    /// distances on a sheet, should use this function.
+    /// \param pageIndex Page index
+    /// \param point Point in the default user space of the page
+    /// \param source If not nullptr, the origin of the scale is returned in it
+    DimensionScale getScaleForPoint(pdf::PDFInteger pageIndex, const QPointF& point, ScaleSource* source = nullptr) const;
+
+    /// Returns the scale set by the user for the sheet (page), or the scale
+    /// of the whole document, if the sheet has no scale of its own. Viewports
+    /// are not taken into account.
+    /// \param pageIndex Page index
+    /// \param source If not nullptr, the origin of the scale is returned in it
+    DimensionScale getScaleForPage(pdf::PDFInteger pageIndex, ScaleSource* source = nullptr) const;
+
 private:
     void onShowDimensionsTriggered();
     void onClearDimensionsTriggered();
@@ -74,6 +103,7 @@ private:
     void onManagePresetsTriggered();
     void onCustomScaleTriggered();
     void onScaleMenuAboutToShow();
+    void onDrawSpaceChanged();
     void onCalibrationLinePicked(pdf::PDFReal measuredLength);
     void onDimensionCreated(Dimension dimension);
 
@@ -81,13 +111,32 @@ private:
     void updateGraphics();
     void updateScaleAction();
 
+    /// Creates the scale button in the status bar of the main window. The scale
+    /// is then always visible and it can be changed by a single click.
+    void createStatusBarButton();
+
+    /// Returns the page, which the user is currently working on
+    pdf::PDFInteger getCurrentPageIndex() const;
+
+    /// Returns the text describing the scale of the current sheet, which
+    /// is displayed in the status bar, for example "1 in = 20 ft (from drawing)"
+    QString getCurrentScaleText() const;
+
+    /// Returns the distinct scales defined by the viewports of the page
+    std::vector<DimensionScale> getViewportScales(pdf::PDFInteger pageIndex) const;
+
+    /// Shows the scale dialog for the scale either calibrated or entered by the user
+    /// and applies the result
+    void execScaleDialog(ScaleDialog& dialog);
+
     const DimensionsPluginSettings& getSettings() const { return m_settingsStorage.getSettings(); }
 
     /// Sets the scale currently in effect, remembers it for the current document,
     /// if it is requested by the settings, and stores everything to the application
     /// settings
     /// \param scale New scale
-    void setScale(const DimensionScale& scale);
+    /// \param isThisSheetOnly Apply the scale to the current sheet (page) only
+    void setScale(const DimensionScale& scale, bool isThisSheetOnly);
 
     /// Selects the scale for the currently opened document. The scale remembered
     /// for the document has the highest priority, then the scale defined by the
@@ -112,7 +161,7 @@ private:
     /// Returns the scale, which applies to the dimension - either the scale
     /// prescribed by the document, or the scale currently selected by the user
     /// \param dimension Dimension
-    const DimensionScale& getEffectiveScale(const Dimension& dimension) const;
+    DimensionScale getEffectiveScale(const Dimension& dimension) const;
 
     /// Returns true, if the measurements can be stored in the document
     /// as annotations
@@ -162,6 +211,9 @@ private:
     QAction* m_scaleAction;
     QAction* m_settingsAction;
     QMenu* m_scaleMenu;
+    QAction* m_scalePerSheetAction;
+    QToolButton* m_statusBarScaleButton;
+    pdf::PDFInteger m_statusBarPageIndex;
 
     DimensionsSettingsStorage m_settingsStorage;
 
@@ -172,6 +224,12 @@ private:
     /// Scale currently in effect. It is not a part of the settings, because it
     /// belongs to the opened document and must not leak to another one.
     DimensionScale m_scale;
+
+    /// Origin of the scale of the whole document
+    ScaleSource m_scaleSource = ScaleSource::Default;
+
+    /// Scales set by the user for single sheets (pages) of the current document
+    std::map<pdf::PDFInteger, DimensionScale> m_pageScales;
 };
 
 }   // namespace pdfplugin
