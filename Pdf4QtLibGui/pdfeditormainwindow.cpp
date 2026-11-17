@@ -349,6 +349,15 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
             m_actionManager->addAdditionalAction(action);
         }
         menuBar()->insertMenu(ui->menuInsert->menuAction(), pagesMenu);
+
+        // Simplified toolbar: rotation as buttons, other page actions in a drop-down
+        if (m_toolbarSlots && pageActions.size() >= 2)
+        {
+            using Section = PDFToolbarSlots::Section;
+            m_toolbarSlots->addAction(Section::Organize, pageActions[0]);
+            m_toolbarSlots->addAction(Section::Organize, pageActions[1]);
+            m_toolbarSlots->addActionGroup(Section::Organize, "pages", tr("Pages"), QList<QAction*>(std::next(pageActions.cbegin(), 2), pageActions.cend()), false);
+        }
     }
 
     m_advancedFindWidget = new PDFAdvancedFindWidget(m_programController->getPdfWidget()->getDrawWidgetProxy(), this);
@@ -520,8 +529,10 @@ void PDFEditorMainWindow::createSimpleToolbar()
     {
         m_toolbarSlots->addActionGroup(Section::Markup, "stickyNote", tr("Sticky Note"), stickyNoteGroup->actions());
     }
+    m_toolbarSlots->addActionGroup(Section::Markup, "cloud", tr("Revision Cloud"),
+                                   { ui->actionCreateCloudRectangle, ui->actionCreateCloudPolygon });
     m_toolbarSlots->addActionGroup(Section::Markup, "shapes", tr("Shapes"),
-                                   { ui->actionCreateStraightLine, ui->actionCreatePolyline, ui->actionCreateRectangle,
+                                   { ui->actionCreateStraightLine, ui->actionCreateArrow, ui->actionCreatePolyline, ui->actionCreateRectangle,
                                      ui->actionCreatePolygon, ui->actionCreateEllipse, ui->actionCreateFreehandCurve });
     // Stamps have no icons, they stay in the Markup menu only
 
@@ -631,6 +642,7 @@ void PDFEditorMainWindow::setSimpleLayoutShortcuts()
     ui->actionInlineText->setShortcut(QKeySequence(Qt::Key_T));
     ui->actionStickyNoteComment->setShortcut(QKeySequence(Qt::Key_N));
     ui->actionCreateStraightLine->setShortcut(QKeySequence(Qt::Key_L));
+    ui->actionCreateCloudRectangle->setShortcut(QKeySequence(Qt::Key_C));
     ui->actionCreateRectangle->setShortcut(QKeySequence(Qt::Key_R));
     ui->actionCreateEllipse->setShortcut(QKeySequence(Qt::Key_E));
     ui->actionCreateFreehandCurve->setShortcut(QKeySequence(Qt::Key_F));
