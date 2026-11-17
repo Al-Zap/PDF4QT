@@ -55,6 +55,7 @@ private slots:
     void test_scale_validity();
     void test_scale_serialization();
     void test_scale_from_measure();
+    void test_scale_from_measure_without_unit();
     void test_scale_from_measure_user_unit();
     void test_scale_from_measure_rejected();
     void test_settings_persistence();
@@ -301,6 +302,53 @@ void DimensionsTest::test_scale_from_measure()
     QVERIFY(feetScale.isImperial());
     QVERIFY(!scale.isImperial());
     QCOMPARE(feetScale.getRatioText(), QString("1 in = 30 ft"));
+}
+
+void DimensionsTest::test_scale_from_measure_without_unit()
+{
+    // Drawings plotted by AutoCAD define the conversion to the drawing units
+    // with a blank unit label. Values are taken from real plans.
+    auto createScale = [this](pdf::PDFReal unitsPerPoint, bool* isUnitAssumed = nullptr)
+    {
+        return DimensionScale::createFromMeasure(pdf::PDFMeasure::parse(&m_storage, createMeasure(" ", unitsPerPoint)), 1.0, isUnitAssumed);
+    };
+
+    // Site plan 1 in = 50 ft
+    bool isUnitAssumed = false;
+    const DimensionScale sitePlan = createScale(0.69444, &isUnitAssumed);
+    QVERIFY(sitePlan.isValid());
+    QVERIFY(isUnitAssumed);
+    QCOMPARE(sitePlan.getRatioText(), QString("1 in = 50 ft"));
+    QVERIFY(qFuzzyCompare(sitePlan.getScaleFactor(), 600.0));
+
+    // Rounded coordinates, still 1 in = 50 ft and 1 in = 40 ft
+    QCOMPARE(createScale(0.69366).getRatioText(), QString("1 in = 50 ft"));
+    QCOMPARE(createScale(0.5555).getRatioText(), QString("1 in = 40 ft"));
+
+    // The sheet itself (paper space), one drawing unit is an inch of the paper
+    QVERIFY(!createScale(1.0 / 72.0, &isUnitAssumed).isValid());
+    QVERIFY(!isUnitAssumed);
+
+    // Floor plan 1/4 in = 1 ft drawn in inches
+    const DimensionScale floorPlan = createScale(48.0 / 72.0);
+    QCOMPARE(floorPlan.getRealUnitId(), QByteArray("in"));
+    QVERIFY(qFuzzyCompare(floorPlan.getScaleFactor(), 48.0));
+
+    // Metric drawing 1:100 drawn in millimeters
+    const DimensionScale metricPlan = createScale(2540.0 / 72.0);
+    QCOMPARE(metricPlan.getRealUnitId(), QByteArray("mm"));
+    QVERIFY(qFuzzyCompare(metricPlan.getScaleFactor(), 100.0));
+
+    // A drawing fitted to the sheet is not in a common scale, feet are assumed
+    // and the ratio is kept as it is
+    const DimensionScale fitted = createScale(0.31406, &isUnitAssumed);
+    QVERIFY(isUnitAssumed);
+    QCOMPARE(fitted.getRealUnitId(), QByteArray("ft"));
+    QVERIFY(qAbs(fitted.getRealValue() - 0.31406 * 72.0) < 1e-9);
+
+    // A unit told by the drawing is never estimated
+    DimensionScale::createFromMeasure(pdf::PDFMeasure::parse(&m_storage, createMeasure("ft", 30.0 / 72.0)), 1.0, &isUnitAssumed);
+    QVERIFY(!isUnitAssumed);
 }
 
 void DimensionsTest::test_scale_from_measure_user_unit()

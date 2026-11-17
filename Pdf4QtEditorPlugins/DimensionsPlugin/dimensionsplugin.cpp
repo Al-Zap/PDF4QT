@@ -456,6 +456,26 @@ DimensionScale DimensionsPlugin::applyDrawingCorrection(const DimensionScale& sc
     return DimensionScale(scale.getPaperValue(), scale.getPaperUnitId(), scale.getRealValue() * correction, scale.getRealUnitId()).getReadable();
 }
 
+DimensionScale DimensionsPlugin::getRawViewportScale(const pdf::PDFViewport& viewport, pdf::PDFReal userUnit, bool* isUnitAssumed)
+{
+    if (isUnitAssumed)
+    {
+        *isUnitAssumed = false;
+    }
+
+    // CAD applications plot also viewports, which are just a sliver - nothing
+    // can be measured in them, but they would be reported as a scale of the sheet
+    const pdf::PDFReal minimalViewportSize = 4.0;
+    const QRectF boundingBox = viewport.getBoundingBox();
+
+    if (boundingBox.width() < minimalViewportSize || boundingBox.height() < minimalViewportSize)
+    {
+        return DimensionScale();
+    }
+
+    return DimensionScale::createFromMeasure(viewport.getMeasure(), userUnit, isUnitAssumed);
+}
+
 DimensionScale DimensionsPlugin::getSingleRawViewportScale(pdf::PDFInteger pageIndex) const
 {
     if (!m_document || pageIndex < 0 || size_t(pageIndex) >= m_document->getCatalog()->getPageCount())
@@ -469,7 +489,7 @@ DimensionScale DimensionsPlugin::getSingleRawViewportScale(pdf::PDFInteger pageI
     DimensionScale result;
     for (const pdf::PDFViewport& viewport : pdf::PDFViewport::parseViewports(&storage, page->getViewports(&storage)))
     {
-        DimensionScale scale = DimensionScale::createFromMeasure(viewport.getMeasure(), page->getUserUnit());
+        DimensionScale scale = getRawViewportScale(viewport, page->getUserUnit());
 
         if (!scale.isValid())
         {
@@ -2019,9 +2039,14 @@ DimensionScale DimensionsPlugin::getScaleForPoint(pdf::PDFInteger pageIndex, con
     return getScaleForPage(pageIndex, source);
 }
 
-std::vector<DimensionScale> DimensionsPlugin::getViewportScales(pdf::PDFInteger pageIndex) const
+std::vector<DimensionScale> DimensionsPlugin::getViewportScales(pdf::PDFInteger pageIndex, bool* isUnitAssumed) const
 {
     std::vector<DimensionScale> scales;
+
+    if (isUnitAssumed)
+    {
+        *isUnitAssumed = false;
+    }
 
     if (!m_document || pageIndex < 0 || size_t(pageIndex) >= m_document->getCatalog()->getPageCount())
     {
@@ -2035,7 +2060,13 @@ std::vector<DimensionScale> DimensionsPlugin::getViewportScales(pdf::PDFInteger 
 
     for (const pdf::PDFViewport& viewport : pdf::PDFViewport::parseViewports(&storage, page->getViewports(&storage)))
     {
-        DimensionScale scale = applyDrawingCorrection(DimensionScale::createFromMeasure(viewport.getMeasure(), page->getUserUnit()), correction);
+        bool isViewportUnitAssumed = false;
+        DimensionScale scale = applyDrawingCorrection(getRawViewportScale(viewport, page->getUserUnit(), &isViewportUnitAssumed), correction);
+
+        if (isUnitAssumed && scale.isValid() && isViewportUnitAssumed)
+        {
+            *isUnitAssumed = true;
+        }
 
         if (scale.isValid() && std::none_of(scales.cbegin(), scales.cend(), [&scale](const DimensionScale& item) { return qFuzzyCompare(item.getScaleFactor(), scale.getScaleFactor()); }))
         {
@@ -2049,9 +2080,18 @@ std::vector<DimensionScale> DimensionsPlugin::getViewportScales(pdf::PDFInteger 
 QString DimensionsPlugin::getCurrentScaleText() const
 {
     const pdf::PDFInteger pageIndex = getCurrentPageIndex();
-    const std::vector<DimensionScale> viewportScales = getViewportScales(pageIndex);
+    bool isUnitAssumed = false;
+    const std::vector<DimensionScale> viewportScales = getViewportScales(pageIndex, &isUnitAssumed);
 
     const bool isCorrected = !viewportScales.empty() && isDrawingCorrected(pageIndex);
+
+    if (isUnitAssumed && !isCorrected)
+    {
+        // The drawing does not tell its unit, the user should know that the unit
+        // is our estimate. A calibrated drawing was already checked by the user.
+        return viewportScales.size() == 1 ? tr("%1 (from drawing, unit assumed)").arg(viewportScales.front().getDisplayName())
+                                          : tr("%1 scales (from drawing, units assumed)").arg(viewportScales.size());
+    }
 
     if (viewportScales.size() == 1)
     {
@@ -2105,7 +2145,7 @@ DimensionScale DimensionsPlugin::getScaleFromDocument() const
 
         for (const pdf::PDFViewport& viewport : viewports)
         {
-            DimensionScale scale = DimensionScale::createFromMeasure(viewport.getMeasure(), page->getUserUnit());
+            DimensionScale scale = getRawViewportScale(viewport, page->getUserUnit());
 
             if (!scale.isValid())
             {
@@ -2157,10 +2197,21 @@ DimensionScale DimensionsPlugin::getRawScaleFromViewport(pdf::PDFInteger pageInd
     const std::vector<pdf::PDFViewport> viewports = pdf::PDFViewport::parseViewports(&storage, page->getViewports(&storage));
 
     // Overlapping viewports are resolved by the specification rule - the last
-    // viewport of the array wins
-    if (const pdf::PDFViewport* viewport = pdf::PDFViewport::findViewportForPoint(viewports, point))
+    // viewport of the array wins. Viewports without a usable scale are skipped,
+    // drawings plotted by CAD applications contain a viewport of the whole sheet
+    // (paper space), which would hide the scale of the drawing otherwise.
+    for (auto it = viewports.crbegin(); it != viewports.crend(); ++it)
     {
-        return DimensionScale::createFromMeasure(viewport->getMeasure(), page->getUserUnit());
+        if (!it->getBoundingBox().contains(point))
+        {
+            continue;
+        }
+
+        DimensionScale scale = getRawViewportScale(*it, page->getUserUnit());
+        if (scale.isValid())
+        {
+            return scale;
+        }
     }
 
     return DimensionScale();
