@@ -495,24 +495,42 @@ QByteArray PDFFlateDecodeFilter::uncompress(const QByteArray& data)
     stream.next_in = const_cast<Bytef*>(convertByteArrayToUcharPtr(data));
     stream.avail_in = data.size();
 
-    std::array<Bytef, 1024> outputBuffer = { };
-
     int error = inflateInit(&stream);
     if (error != Z_OK)
     {
         throw PDFException(PDFTranslationContext::tr("Failed to initialize flate decompression stream."));
     }
 
+    // Data are decompressed directly into the result, which grows geometrically.
+    // Content streams of large drawings have tens of megabytes, so the data are
+    // neither decompressed by small blocks, nor copied from a buffer.
+    constexpr qsizetype MINIMAL_BUFFER_SIZE = 4096;
+    constexpr qsizetype MAXIMAL_BLOCK_SIZE = 1 << 30;
+    qsizetype bytesWritten = 0;
+    result.resize(qMax<qsizetype>(MINIMAL_BUFFER_SIZE, qMin<qsizetype>(data.size(), MAXIMAL_BLOCK_SIZE / 4) * 4));
+
     do
     {
-        stream.next_out = outputBuffer.data();
-        stream.avail_out = static_cast<uInt>(outputBuffer.size());
+        if (bytesWritten == result.size())
+        {
+            result.resize(result.size() + qMin<qsizetype>(result.size(), MAXIMAL_BLOCK_SIZE));
+        }
+
+        const uInt availableSize = static_cast<uInt>(qMin<qsizetype>(result.size() - bytesWritten, MAXIMAL_BLOCK_SIZE));
+        stream.next_out = reinterpret_cast<Bytef*>(result.data() + bytesWritten);
+        stream.avail_out = availableSize;
 
         error = inflate(&stream, Z_NO_FLUSH);
 
-        int bytesWritten = int(outputBuffer.size()) - stream.avail_out;
-        result.append(reinterpret_cast<const char*>(outputBuffer.data()), bytesWritten);
+        bytesWritten += qsizetype(availableSize - stream.avail_out);
     } while (error == Z_OK);
+
+    result.resize(bytesWritten);
+    if (result.capacity() - bytesWritten > bytesWritten / 4 + MINIMAL_BUFFER_SIZE)
+    {
+        // Do not hold much more memory, than is needed (the data can be kept for a long time)
+        result.squeeze();
+    }
 
     QString errorMessage;
     if (stream.msg)
