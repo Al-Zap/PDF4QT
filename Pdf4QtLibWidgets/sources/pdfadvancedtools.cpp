@@ -1848,7 +1848,8 @@ void PDFCreateHighlightTextTool::mouseReleaseEvent(QWidget* widget, QMouseEvent*
                     {
                         case AnnotationType::Highlight:
                             annotationReference = modifier.getBuilder()->createAnnotationHighlight(page, quadrilaterals, m_color);
-                            modifier.getBuilder()->setAnnotationOpacity(annotationReference, 0.2);
+                            // Highlight is blended with the text (blend mode Multiply), so it is
+                            // not made transparent, otherwise it is hardly visible.
                             modifier.getBuilder()->updateAnnotationAppearanceStreams(annotationReference);
                             break;
 
@@ -1867,6 +1868,11 @@ void PDFCreateHighlightTextTool::mouseReleaseEvent(QWidget* widget, QMouseEvent*
                         default:
                             Q_ASSERT(false);
                             break;
+                    }
+
+                    if (annotationReference.isValid())
+                    {
+                        modifier.getBuilder()->setAnnotationTitle(annotationReference, PDFAuthorSettings::getAuthorName());
                     }
 
                     modifier.markAnnotationsChanged();
