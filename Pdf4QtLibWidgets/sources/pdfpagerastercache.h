@@ -103,6 +103,13 @@ public:
     /// Returns true, if the painter can use this cache (raster device, no scaling/rotation)
     static bool isPainterSupported(QPainter* painter);
 
+    /// Returns matrix with the same horizontal and vertical scale, if the scales of the
+    /// matrix differ only by the rounding of the size of the placed page to whole pixels
+    /// (thin lines are then drawn much faster). Otherwise returns the matrix unchanged.
+    /// \param pageToLocal Matrix, which maps page points to the logical pixels of the placed page
+    /// \param pageSize Logical size of the placed page
+    static QTransform createUniformScaleMatrix(const QTransform& pageToLocal, const QSize& pageSize);
+
     /// Maximal number of physical pixels of the image of a whole page. Larger pages are
     /// rasterized only in the neighbourhood of the visible area.
     static constexpr qint64 MAXIMAL_FULL_PAGE_PIXELS = 48LL * 1024 * 1024;
