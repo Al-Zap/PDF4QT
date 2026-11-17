@@ -33,6 +33,42 @@ class PDFDrawWidgetProxy;
 class PDFWidgetAnnotationManager;
 class PDFWidgetFormManager;
 
+/// History of the values typed into text form fields. It is used
+/// to suggest (autocomplete) previously typed values, for example
+/// project names, which repeat across a stack of filled forms.
+/// Values are remembered per field name (fields of the same name
+/// usually hold the same kind of value) and also globally, so a value
+/// typed into a field of one form is suggested in a differently named
+/// field of another form, when no value of the same field name matches.
+/// History is stored in the application settings.
+class PDF4QTLIBWIDGETSSHARED_EXPORT PDFFormFieldValueHistory
+{
+public:
+    explicit PDFFormFieldValueHistory() = delete;
+
+    /// Maximal number of values remembered for a single field name
+    static constexpr int MAX_FIELD_VALUES = 30;
+
+    /// Maximal number of values remembered globally
+    static constexpr int MAX_ALL_VALUES = 300;
+
+    /// Returns the most recently used value, which starts with \p prefix
+    /// (case insensitive) and is longer than the prefix. Values of the field
+    /// with the same name are preferred. Empty string is returned, if no
+    /// such value exists.
+    /// \param fieldName Field name (fully qualified name of the field)
+    /// \param prefix Text typed by the user
+    static QString complete(const QString& fieldName, const QString& prefix);
+
+    /// Remembers the value of the field as the most recently used value
+    /// \param fieldName Field name (fully qualified name of the field)
+    /// \param value Value
+    static void addValue(const QString& fieldName, const QString& value);
+
+    /// Forgets all remembered values
+    static void clear();
+};
+
 /// Base class for editors of form fields. It enables editation
 /// of form fields, such as entering text, clicking on check box etc.
 class PDF4QTLIBWIDGETSSHARED_EXPORT PDFFormFieldWidgetEditor
@@ -114,6 +150,11 @@ public:
     /// \param editor Editor to be focused
     void setFocusToEditor(PDFFormFieldWidgetEditor* editor);
 
+    /// Scrolls the view, so the widget of the editor is visible
+    /// (for example, when focus moves by Tab key to the next page).
+    /// \param editor Editor
+    void ensureEditorVisible(PDFFormFieldWidgetEditor* editor);
+
     /// Returns true, if widget is focused.
     /// \param widget Widget annotation reference
     virtual bool isFocused(PDFObjectReference widget) const override;
@@ -150,6 +191,13 @@ public:
     void setAnnotationManager(PDFWidgetAnnotationManager* annotationManager);
 
     PDFDrawWidgetProxy* getProxy() const { return m_proxy; }
+
+    /// Returns true, if previously typed values are suggested
+    /// in text fields (see \p PDFFormFieldValueHistory)
+    bool isAutocompleteEnabled() const { return m_autocompleteEnabled; }
+
+    /// Enables/disables suggestions of previously typed values in text fields
+    void setAutocompleteEnabled(bool enabled) { m_autocompleteEnabled = enabled; }
 
 protected:
     virtual void updateFieldValues() override;
@@ -192,6 +240,7 @@ private:
     std::optional<QCursor> m_mouseCursor;
     std::vector<PDFFormFieldWidgetEditor*> m_widgetEditors;
     PDFFormFieldWidgetEditor* m_focusedEditor;
+    bool m_autocompleteEnabled = true;
 };
 
 }   // namespace pdf

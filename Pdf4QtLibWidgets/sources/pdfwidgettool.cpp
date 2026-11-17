@@ -1206,6 +1206,8 @@ void PDFToolManager::onToolActivityChanged(bool active)
             m_pickPageCallback = nullptr;
         }
     }
+
+    Q_EMIT activeToolChanged();
 }
 
 void PDFToolManager::onToolActionTriggered(bool checked)
@@ -1486,9 +1488,14 @@ void PDFPickTool::mousePressEvent(QWidget* widget, QMouseEvent* event)
             case Mode::Points:
             case Mode::Rectangles:
             {
-                // Try to perform pick point
+                // Try to perform pick point. A snapped point is taken exactly,
+                // so a measurement between two snapped points is exact.
                 QPointF pagePoint;
-                PDFInteger pageIndex = getProxy()->getPageUnderPoint(m_snapper.getSnappedPoint().toPoint(), &pagePoint);
+                PDFInteger pageIndex = -1;
+                if (!m_snapper.getSnappedPagePoint(pageIndex, pagePoint))
+                {
+                    pageIndex = getProxy()->getPageUnderPoint(m_snapper.getSnappedPoint().toPoint(), &pagePoint);
+                }
                 if (pageIndex != -1 &&    // We have picked some point on page
                     (m_pageIndex == -1 || m_pageIndex == pageIndex)) // We are under current page
                 {
@@ -1640,6 +1647,15 @@ void PDFPickTool::setSnapToAnnotations(bool snapToAnnotations)
     }
 }
 
+void PDFPickTool::setSnapToPageGeometry(bool snapToPageGeometry)
+{
+    if (m_snapper.isGeometrySnapping() != snapToPageGeometry)
+    {
+        m_snapper.setGeometrySnapping(snapToPageGeometry);
+        buildSnapData();
+    }
+}
+
 void PDFPickTool::setActiveImpl(bool active)
 {
     BaseClass::setActiveImpl(active);
@@ -1735,6 +1751,26 @@ void PDFPickTool::makeLastPointOrthogonal()
     {
         m_pickedPoints[pickedPointsCount - 1] = getStaticOrthogonalPoint(m_pickedPoints[pickedPointsCount - 2], m_pickedPoints[pickedPointsCount - 1]);
     }
+}
+
+void PDFPickTool::removeLastPickedPoint()
+{
+    if (m_pickedPoints.empty())
+    {
+        return;
+    }
+
+    m_pickedPoints.pop_back();
+
+    if (m_pickedPoints.empty())
+    {
+        resetTool();
+        return;
+    }
+
+    m_snapper.setReferencePoint(m_pageIndex, m_pickedPoints.back());
+    buildSnapData();
+    Q_EMIT getProxy()->repaintNeeded();
 }
 
 void PDFPickTool::setDrawSelectionRectangle(bool drawSelectionRectangle)

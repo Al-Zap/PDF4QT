@@ -30,6 +30,7 @@
         <file>resources/find-next.svg</file>
         <file>resources/find-previous.svg</file>
         <file>resources/select-text.svg</file>
+        <file>resources/hand-tool.svg</file>
         <file>resources/ui.svg</file>
         <file>resources/rotate-left.svg</file>
         <file>resources/rotate-right.svg</file>
@@ -71,6 +72,7 @@
         <file>resources/optimize.svg</file>
         <file>resources/save.svg</file>
         <file>resources/save-as.svg</file>
+        <file>resources/save-flattened-copy.svg</file>
         <file>resources/select-all-text.svg</file>
         <file>resources/pce-align-bottom.svg</file>
         <file>resources/pce-align-h-center.svg</file>

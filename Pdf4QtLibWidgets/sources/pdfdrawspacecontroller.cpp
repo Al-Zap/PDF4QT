@@ -1080,15 +1080,19 @@ PDFInteger PDFDrawWidgetProxy::getPageUnderPoint(QPoint point, QPointF* pagePoin
         // The offsets m_horizontalOffset and m_verticalOffset are offsets to the
         // topleft point of the block. But block maybe doesn't start at (0, 0),
         // so we must also use translation from the block beginning.
-        QRect placedRect = item.pageRect.translated(m_horizontalOffset - m_layout.blockRect.left(), m_verticalOffset - m_layout.blockRect.top());
+        const QRect pageRect = item.pageRect.translated(m_horizontalOffset - m_layout.blockRect.left(), m_verticalOffset - m_layout.blockRect.top());
+        QRect placedRect = pageRect;
         placedRect.adjust(0, 0, 1, 1);
         if (placedRect.contains(point))
         {
             if (pagePoint)
             {
+                // The page point must not be rounded to whole points and it must be
+                // computed by the same matrix, by which the page is drawn (see
+                // getSnapshot), otherwise the measurements are imprecise
                 const PDFPage* page = m_controller->getDocument()->getCatalog()->getPage(item.pageIndex);
-                QTransform matrix = createPagePointToDevicePointMatrix(page, placedRect).inverted();
-                *pagePoint = matrix.map(point);
+                QTransform matrix = createPagePointToDevicePointMatrix(page, pageRect).inverted();
+                *pagePoint = matrix.map(QPointF(point));
             }
 
             return item.pageIndex;

@@ -44,6 +44,8 @@
 #include <QKeyEvent>
 #include <QPushButton>
 #include <QTextEdit>
+#include <QPlainTextEdit>
+#include <QScrollBar>
 #include <QVector2D>
 #include <QVBoxLayout>
 #include <QApplication>
@@ -520,6 +522,264 @@ void PDFCreateFreeTextTool::onRectanglePicked(PDFInteger pageIndex, QRectF pageR
     }
 
     setActive(false);
+}
+
+PDFCreateTypewriterTool::PDFCreateTypewriterTool(PDFDrawWidgetProxy* proxy, PDFToolManager* toolManager, QAction* action, QObject* parent) :
+    BaseClass(proxy, action, parent),
+    m_toolManager(toolManager)
+{
+    setCursor(Qt::IBeamCursor);
+
+    // Typed text is placed by widget coordinates, so it must be finished,
+    // when the view is scrolled or zoomed.
+    connect(proxy, &PDFDrawWidgetProxy::drawSpaceChanged, this, &PDFCreateTypewriterTool::commitText);
+
+    updateActions();
+}
+
+PDFCreateTypewriterTool::~PDFCreateTypewriterTool()
+{
+    delete m_editor;
+}
+
+void PDFCreateTypewriterTool::setActiveImpl(bool active)
+{
+    if (!active)
+    {
+        commitText();
+    }
+
+    BaseClass::setActiveImpl(active);
+}
+
+void PDFCreateTypewriterTool::keyPressEvent(QWidget* widget, QKeyEvent* event)
+{
+    Q_UNUSED(widget);
+
+    if (!m_editor && event->key() == Qt::Key_Escape)
+    {
+        // No text is typed, Escape finishes the tool
+        setActive(false);
+        event->accept();
+        return;
+    }
+
+    event->ignore();
+}
+
+void PDFCreateTypewriterTool::mousePressEvent(QWidget* widget, QMouseEvent* event)
+{
+    Q_UNUSED(widget);
+
+    if (event->button() != Qt::LeftButton)
+    {
+        event->ignore();
+        return;
+    }
+
+    commitText();
+    beginText(event->pos());
+    event->accept();
+}
+
+void PDFCreateTypewriterTool::mouseReleaseEvent(QWidget* widget, QMouseEvent* event)
+{
+    Q_UNUSED(widget);
+    event->accept();
+}
+
+void PDFCreateTypewriterTool::mouseMoveEvent(QWidget* widget, QMouseEvent* event)
+{
+    Q_UNUSED(widget);
+    event->ignore();
+}
+
+bool PDFCreateTypewriterTool::beginText(QPoint widgetPoint)
+{
+    commitText();
+
+    QPointF pagePoint;
+    const PDFInteger pageIndex = getProxy()->getPageUnderPoint(widgetPoint, &pagePoint);
+    const PDFDocument* document = getDocument();
+    if (!document || pageIndex < 0 || pageIndex >= PDFInteger(document->getCatalog()->getPageCount()))
+    {
+        return false;
+    }
+
+    QWidget* drawWidget = getProxy()->getWidget()->getDrawWidget()->getWidget();
+
+    // Scale between page points and widget pixels - measured by the distance
+    // on the page between two widget points (works for rotated pages too).
+    QPointF pagePoint2;
+    getProxy()->getPageUnderPoint(widgetPoint + QPoint(100, 0), &pagePoint2);
+    const PDFReal distance = QLineF(pagePoint, pagePoint2).length();
+    m_pixelsPerPoint = distance > 0.0 ? 100.0 / distance : 1.0;
+
+    m_pageIndex = pageIndex;
+    m_pagePoint = pagePoint;
+
+    m_editor = new QPlainTextEdit(drawWidget);
+    m_editor->setFrameShape(QFrame::NoFrame);
+    m_editor->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_editor->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_editor->setTabChangesFocus(true);
+    m_editor->document()->setDocumentMargin(0);
+
+    QFont font(m_style.fontFamily);
+    font.setStyleHint(QFont::Helvetica);
+    font.setPixelSize(qMax(1, qRound(m_style.fontSize * m_pixelsPerPoint)));
+    m_editor->setFont(font);
+
+    QPalette palette = m_editor->palette();
+    palette.setColor(QPalette::Base, QColor(255, 255, 255, 0));
+    palette.setColor(QPalette::Text, m_style.textColor);
+    m_editor->setPalette(palette);
+    m_editor->setStyleSheet("QPlainTextEdit { background: transparent; border: 1px dashed #4a90d9; }");
+
+    m_editor->installEventFilter(this);
+    connect(m_editor, &QPlainTextEdit::textChanged, this, &PDFCreateTypewriterTool::updateEditorGeometry);
+
+    m_editor->move(widgetPoint);
+    updateEditorGeometry();
+    m_editor->show();
+    m_editor->setFocus();
+    return true;
+}
+
+void PDFCreateTypewriterTool::updateEditorGeometry()
+{
+    if (!m_editor)
+    {
+        return;
+    }
+
+    QFontMetrics metrics(m_editor->font());
+    int width = metrics.horizontalAdvance(QStringLiteral("MM"));
+    const QStringList lines = m_editor->toPlainText().split('\n');
+    for (const QString& line : lines)
+    {
+        width = qMax(width, metrics.horizontalAdvance(line) + metrics.horizontalAdvance(QStringLiteral("MM")));
+    }
+    const int height = metrics.lineSpacing() * qMax<int>(1, lines.size()) + 4;
+    m_editor->resize(width + 4, height);
+}
+
+bool PDFCreateTypewriterTool::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == m_editor)
+    {
+        if (event->type() == QEvent::KeyPress)
+        {
+            QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
+            if (keyEvent->key() == Qt::Key_Escape ||
+                ((keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) && keyEvent->modifiers().testFlag(Qt::ControlModifier)))
+            {
+                QMetaObject::invokeMethod(this, &PDFCreateTypewriterTool::commitText, Qt::QueuedConnection);
+                return true;
+            }
+        }
+        else if (event->type() == QEvent::FocusOut)
+        {
+            // Focus moved elsewhere (other window, menu, ...) - finish the text.
+            // Popup of the context menu of the editor doesn't finish it.
+            QFocusEvent* focusEvent = static_cast<QFocusEvent*>(event);
+            if (focusEvent->reason() != Qt::PopupFocusReason)
+            {
+                QMetaObject::invokeMethod(this, &PDFCreateTypewriterTool::commitText, Qt::QueuedConnection);
+            }
+        }
+    }
+
+    return BaseClass::eventFilter(watched, event);
+}
+
+void PDFCreateTypewriterTool::cancelText()
+{
+    if (m_editor)
+    {
+        QPlainTextEdit* editor = m_editor;
+        m_editor = nullptr;
+        editor->removeEventFilter(this);
+        editor->hide();
+        editor->deleteLater();
+    }
+
+    m_pageIndex = -1;
+}
+
+void PDFCreateTypewriterTool::commitText()
+{
+    if (!m_editor)
+    {
+        return;
+    }
+
+    QString text = m_editor->toPlainText();
+    const PDFInteger pageIndex = m_pageIndex;
+    const QPointF pagePoint = m_pagePoint;
+    cancelText();
+
+    // Trailing empty lines are not wanted
+    while (text.endsWith('\n'))
+    {
+        text.chop(1);
+    }
+
+    const PDFDocument* document = getDocument();
+    if (text.trimmed().isEmpty() || !document || pageIndex < 0 || pageIndex >= PDFInteger(document->getCatalog()->getPageCount()))
+    {
+        return;
+    }
+
+    PDFDocumentModifier modifier(document);
+    PDFDocumentBuilder* builder = modifier.getBuilder();
+
+    const PDFReal padding = 1.0;
+    const PDFObjectReference page = document->getCatalog()->getPage(pageIndex)->getPageReference();
+
+    // Top left corner of the text is at the clicked point, rectangle
+    // is expanded to fit the contents (PDF y axis points up).
+    QFont font(m_style.fontFamily);
+    font.setPixelSize(qMax(int(std::ceil(m_style.fontSize)), 1));
+    QFontMetricsF metrics(font);
+    PDFReal textWidth = 0.0;
+    const QStringList lines = text.split('\n');
+    for (const QString& line : lines)
+    {
+        textWidth = qMax(textWidth, metrics.horizontalAdvance(line));
+    }
+    const PDFReal width = textWidth + 2.0 * padding + 1.0;
+    const PDFReal height = metrics.lineSpacing() * lines.size() + 2.0 * padding;
+    const QRectF rectangle(pagePoint.x() - padding, pagePoint.y() + padding - height, width, height);
+
+    const PDFObjectReference annotation = builder->createAnnotationFreeText(page, rectangle, PDFAuthorSettings::getAuthorName(), tr("Typewriter"), text, m_style, false, padding);
+
+    // Typewriter text has no border (and no background)
+    PDFObjectFactory factory;
+    factory.beginDictionary();
+    factory.beginDictionaryItem("IT");
+    factory << WrapName("FreeTextTypeWriter");
+    factory.endDictionaryItem();
+    factory.beginDictionaryItem("BS");
+    factory.beginDictionary();
+    factory.beginDictionaryItem("W");
+    factory << PDFInteger(0);
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    factory.endDictionaryItem();
+    factory.beginDictionaryItem("Border");
+    factory << std::vector<PDFInteger>{ 0, 0, 0 };
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    builder->mergeTo(annotation, factory.takeObject());
+    builder->updateAnnotationAppearanceStreams(annotation);
+
+    modifier.markAnnotationsChanged();
+    if (modifier.finalize())
+    {
+        Q_EMIT m_toolManager->documentModified(PDFModifiedDocument(modifier.getDocument(), nullptr, modifier.getFlags()));
+    }
 }
 
 PDFCreateAnnotationTool::PDFCreateAnnotationTool(PDFDrawWidgetProxy* proxy, QAction* action, QObject* parent) :

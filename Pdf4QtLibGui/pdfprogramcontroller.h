@@ -30,12 +30,15 @@
 #include "pdfdocumentpropertiesdialog.h"
 #include "pdfplugin.h"
 #include "pdfbookmarkmanager.h"
+#include "pdfrecoverymanager.h"
 
 #include <QObject>
 #include <QAction>
 #include <QToolButton>
 #include <QActionGroup>
 #include <QFileSystemWatcher>
+#include <QFuture>
+#include <QTimer>
 
 #include <array>
 
@@ -74,6 +77,27 @@ public:
     virtual void setDocument(const pdf::PDFModifiedDocument& document) = 0;
     virtual void adjustToolbar(QToolBar* toolbar) = 0;
     virtual pdf::PDFTextSelection getSelectedText() const = 0;
+
+    /// Places the user interface of a plugin into the main window. The main window
+    /// can place the toolbar actions of the plugin into its own toolbar, or hide
+    /// them. In that case, \p toolbarActionsPlaced is set to true and no toolbar
+    /// is created for the plugin. Otherwise the plugin gets its own toolbar.
+    /// The default implementation keeps the classic behaviour.
+    /// \param plugin Plugin
+    /// \param pluginName Name of the plugin (from its metadata)
+    /// \param toolbarActions Toolbar actions of the plugin (nullptr is a separator)
+    /// \param toolbarActionsPlaced Set to true, if no plugin toolbar is needed
+    /// \returns Menu, into which all actions of the plugin are inserted
+    virtual QMenu* addPluginUserInterface(pdf::PDFPlugin* plugin,
+                                          const QString& pluginName,
+                                          const std::vector<QAction*>& toolbarActions,
+                                          bool& toolbarActionsPlaced)
+    {
+        Q_UNUSED(pluginName);
+        Q_UNUSED(toolbarActions);
+        toolbarActionsPlaced = false;
+        return addToolMenu(plugin->getPluginMenuName(), plugin->getPluginMenuLocation());
+    }
 };
 
 class PDF4QTLIBGUILIBSHARED_EXPORT PDFActionManager : public QObject
@@ -213,6 +237,8 @@ public:
         BookmarkExport,
         BookmarkImport,
         BookmarkGenerateAutomatically,
+        SaveFlattenedCopy,
+        CreateTypewriter,
         LastAction
     };
 
@@ -330,6 +356,7 @@ public:
     void performPrint();
     void performSave();
     void performSaveAs();
+    void performSaveFlattenedCopy();
 
     void onActionTriggered(const pdf::PDFAction* action);
     void onDocumentModified(pdf::PDFModifiedDocument document);
@@ -468,6 +495,20 @@ private:
     /// \returns False, if the saving of the document should be cancelled
     bool askForWriteUnwrittenChanges();
 
+    /// Writes recovery copy of the document, if it has unsaved changes,
+    /// which are not yet in the recovery copy
+    void onRecoveryTimerTimeout();
+
+    /// Removes recovery copy of the document (document was saved or closed normally)
+    /// \param fileName File name of the document
+    void removeRecoveryCopy(const QString& fileName);
+
+    /// Offers the recovery copy of just opened document, if it exists
+    void offerRecoveryOfOpenedDocument();
+
+    /// Offers recovery copies of documents left by a crashed session
+    void offerRecoveryOfPreviousSession();
+
     PDFActionManager* m_actionManager;
     QMainWindow* m_mainWindow;
     IMainWindow* m_mainWindowInterface;
@@ -500,11 +541,19 @@ private:
     pdf::PDFProgress* m_progress;
 
     QStringList m_enabledPlugins;
+    QStringList m_knownPlugins;
     bool m_loadAllPlugins;
     pdf::PDFPluginInfos m_plugins;
     std::vector<std::pair<pdf::PDFPluginInfo, pdf::PDFPlugin*>> m_loadedPlugins;
     bool m_isFullscreenMode;
     PDFFullscreenWidget* m_fullscreenWidget;
+
+    PDFRecoveryManager m_recoveryManager;
+    QTimer* m_recoveryTimer = nullptr;
+    QFuture<bool> m_recoveryFuture;
+    quint64 m_documentRevision = 0;
+    quint64 m_recoveryRevision = 0;
+    QString m_autoRecoverFileName;
 };
 
 }   // namespace pdfviewer

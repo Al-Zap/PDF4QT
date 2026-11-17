@@ -25,7 +25,12 @@
 #include "pdfdrawwidget.h"
 #include "pdfcms.h"
 
+#include <QFontMetricsF>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPainter>
+
+#include <algorithm>
 
 DimensionTool::DimensionTool(Style style, pdf::PDFDrawWidgetProxy* proxy, QAction* action, QObject* parent) :
     BaseClass(proxy, action, parent),
@@ -40,6 +45,125 @@ DimensionTool::DimensionTool(Style style, pdf::PDFDrawWidgetProxy* proxy, QActio
     connect(m_pickTool, &pdf::PDFPickTool::pointPicked, this, &DimensionTool::onPointPicked);
     connect(m_pickTool, &pdf::PDFPickTool::rectanglePicked, this, &DimensionTool::onRectanglePicked);
     m_previewPointPixelSize = pdf::PDFWidgetUtils::scaleDPI_x(proxy->getWidget(), 5);
+
+    // Measuring on a plan is exact only when the points lie exactly on the drawing
+    setSnapToDrawing(true);
+}
+
+void DimensionTool::setSnapToDrawing(bool snapToDrawing)
+{
+    m_pickTool->setSnapToPageGeometry(snapToDrawing);
+}
+
+bool DimensionTool::isMultiPointStyle() const
+{
+    return m_style == Polyline || m_style == Perimeter || m_style == Area;
+}
+
+void DimensionTool::keyPressEvent(QWidget* widget, QKeyEvent* event)
+{
+    if (isMultiPointStyle())
+    {
+        switch (event->key())
+        {
+            case Qt::Key_Return:
+            case Qt::Key_Enter:
+                if (finishPicking())
+                {
+                    event->accept();
+                    return;
+                }
+                break;
+
+            case Qt::Key_Backspace:
+                if (!m_pickTool->getPickedPoints().empty())
+                {
+                    m_pickTool->removeLastPickedPoint();
+                    event->accept();
+                    return;
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+    else if (event->key() == Qt::Key_Backspace && !m_pickTool->getPickedPoints().empty())
+    {
+        m_pickTool->removeLastPickedPoint();
+        event->accept();
+        return;
+    }
+
+    BaseClass::keyPressEvent(widget, event);
+}
+
+void DimensionTool::mouseDoubleClickEvent(QWidget* widget, QMouseEvent* event)
+{
+    // The first click of the double click has already picked the last point
+    if (isMultiPointStyle() && event->button() == Qt::LeftButton && finishPicking())
+    {
+        event->accept();
+        return;
+    }
+
+    BaseClass::mouseDoubleClickEvent(widget, event);
+}
+
+bool DimensionTool::finishPicking()
+{
+    std::vector<QPointF> points = m_pickTool->getPickedPoints();
+
+    // Points picked twice at the same place (for example by the double click)
+    // do not define anything
+    points.erase(std::unique(points.begin(), points.end()), points.end());
+
+    const Dimension::Type type = getDimensionType();
+    if (type == Dimension::Perimeter || type == Dimension::Area)
+    {
+        if (points.size() > 1 && points.front() == points.back())
+        {
+            points.pop_back();
+        }
+
+        if (points.size() < 3)
+        {
+            return false;
+        }
+
+        points.push_back(points.front());
+    }
+
+    if (!Dimension::canBeFinished(type, points))
+    {
+        return false;
+    }
+
+    createDimension(m_pickTool->getPageIndex(), qMove(points));
+    return true;
+}
+
+void DimensionTool::createDimension(pdf::PDFInteger pageIndex, std::vector<QPointF> points)
+{
+    for (QPointF& point : points)
+    {
+        point = adjustPagePoint(point);
+    }
+
+    pdf::PDFReal measuredValue = getMeasuredValue(pageIndex, points);
+
+    if (m_style == Calibrate)
+    {
+        // Calibration does not create a dimension, the picked length is only
+        // used to derive the scale of the drawing
+        Q_EMIT calibrationLinePicked(measuredValue);
+    }
+    else
+    {
+        Q_EMIT dimensionCreated(Dimension(getDimensionType(), pageIndex, measuredValue, qMove(points)));
+    }
+
+    m_pickTool->resetTool();
 }
 
 void DimensionTool::drawPage(QPainter* painter,
@@ -73,11 +197,66 @@ void DimensionTool::drawPage(QPainter* painter,
         painter->drawLine(pagePointToDevicePointMatrix.map(points[i - 1]), pagePointToDevicePointMatrix.map(points[i]));
     }
 
+    std::vector<QPointF> previewPoints = points;
+
     if (!points.empty())
     {
         QTransform inverted = pagePointToDevicePointMatrix.inverted();
         QPointF adjustedPoint = adjustPagePoint(inverted.map(m_pickTool->getSnappedPoint()));
         painter->drawLine(pagePointToDevicePointMatrix.map(points.back()), pagePointToDevicePointMatrix.map(adjustedPoint));
+        previewPoints.push_back(adjustedPoint);
+
+        const Dimension::Type type = getDimensionType();
+        const bool isClosed = type == Dimension::Perimeter || type == Dimension::Area;
+
+        if (isClosed && previewPoints.size() > 2)
+        {
+            // Closing edge of the polygon, as it would be created now
+            QPen closingPen = painter->pen();
+            closingPen.setStyle(Qt::DashLine);
+            painter->save();
+            painter->setPen(closingPen);
+            painter->drawLine(pagePointToDevicePointMatrix.map(adjustedPoint), pagePointToDevicePointMatrix.map(points.front()));
+            painter->restore();
+            previewPoints.push_back(points.front());
+        }
+
+        // The measured value is displayed next to the cursor, so the user sees
+        // the result before the point is picked
+        const bool isValueDefined = (type == Dimension::Angular) ? previewPoints.size() == 3 : previewPoints.size() >= 2;
+        if (m_valueFormatter && m_style != Calibrate && isValueDefined)
+        {
+            Dimension previewDimension(type, pageIndex, getMeasuredValue(pageIndex, previewPoints), previewPoints);
+            QString text = m_valueFormatter(previewDimension);
+
+            if (type == Dimension::Polyline || type == Dimension::Perimeter)
+            {
+                // Length of the current segment helps to place the next point
+                Dimension segmentDimension(Dimension::Linear, pageIndex, getMeasuredValue(pageIndex, { points.back(), adjustedPoint }), { points.back(), adjustedPoint });
+                text = tr("%1  (segment %2)").arg(text, m_valueFormatter(segmentDimension));
+            }
+
+            if (isMultiPointStyle())
+            {
+                text += QChar('\n');
+                text += tr("Double click or Enter to finish, Backspace to undo a point");
+            }
+
+            const QPointF cursorPoint = m_pickTool->getSnappedPoint();
+            const qreal offset = pdf::PDFWidgetUtils::scaleDPI_x(painter->device(), 16);
+
+            painter->save();
+            QFontMetricsF fontMetrics(painter->font());
+            QRectF textRect = fontMetrics.boundingRect(QRectF(0, 0, 10000, 10000), Qt::AlignLeft | Qt::AlignTop, text);
+            textRect.moveTopLeft(cursorPoint + QPointF(offset, offset));
+            const QRectF backgroundRect = textRect.adjusted(-4, -2, 4, 2);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(255, 255, 225, 235));
+            painter->drawRect(backgroundRect);
+            painter->setPen(QColor(Qt::black));
+            painter->drawText(textRect, Qt::AlignLeft | Qt::AlignTop, text);
+            painter->restore();
+        }
     }
 
     QPen pen = painter->pen();
@@ -97,27 +276,7 @@ void DimensionTool::onPointPicked(pdf::PDFInteger pageIndex, QPointF pagePoint)
 
     if (Dimension::isComplete(getDimensionType(), m_pickTool->getPickedPoints()))
     {
-        // Create a new dimension...
-        std::vector<QPointF> points = m_pickTool->getPickedPoints();
-        for (QPointF& point : points)
-        {
-            point = adjustPagePoint(point);
-        }
-
-        pdf::PDFReal measuredValue = getMeasuredValue(pageIndex, points);
-
-        if (m_style == Calibrate)
-        {
-            // Calibration does not create a dimension, the picked length is only
-            // used to derive the scale of the drawing
-            Q_EMIT calibrationLinePicked(measuredValue);
-        }
-        else
-        {
-            Q_EMIT dimensionCreated(Dimension(getDimensionType(), pageIndex, measuredValue, qMove(points)));
-        }
-
-        m_pickTool->resetTool();
+        createDimension(pageIndex, m_pickTool->getPickedPoints());
     }
 
     if ((m_style == Perimeter || m_style == Area) && m_pickTool->getPickedPoints().size() == 1)
@@ -210,6 +369,12 @@ Dimension::Type DimensionTool::getDimensionType() const
 
         case DimensionTool::Angle:
             return Dimension::Type::Angular;
+
+        case DimensionTool::Polyline:
+            return Dimension::Type::Polyline;
+
+        case DimensionTool::LastStyle:
+            break;
     }
 
     Q_ASSERT(false);
@@ -225,6 +390,7 @@ pdf::PDFReal DimensionTool::getMeasuredValue(pdf::PDFInteger pageIndex, const st
     {
         case Dimension::Linear:
         case Dimension::Perimeter:
+        case Dimension::Polyline:
         {
             pdf::PDFReal length = 0.0;
 
@@ -285,10 +451,29 @@ bool Dimension::isComplete(Type type, const std::vector<QPointF>& polygon)
         case Dimension::Angular:
             return polygon.size() == 3;
 
+        case Dimension::Polyline:
+            return false;
+
         default:
             Q_ASSERT(false);
             break;
     }
 
     return false;
+}
+
+bool Dimension::canBeFinished(Type type, const std::vector<QPointF>& polygon)
+{
+    switch (type)
+    {
+        case Dimension::Polyline:
+            return polygon.size() >= 2;
+
+        case Dimension::Perimeter:
+        case Dimension::Area:
+            return polygon.size() > 3 && polygon.front() == polygon.back();
+
+        default:
+            return isComplete(type, polygon);
+    }
 }

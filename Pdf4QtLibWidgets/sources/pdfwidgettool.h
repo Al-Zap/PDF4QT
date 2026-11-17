@@ -424,6 +424,14 @@ public:
     /// \param snapToAnnotations Snap to annotation geometry
     void setSnapToAnnotations(bool snapToAnnotations);
 
+    /// Enables snapping to the vector geometry of the page (end points,
+    /// intersections, midpoints and points of the lines of the drawing)
+    /// \param snapToPageGeometry Snap to the page geometry
+    void setSnapToPageGeometry(bool snapToPageGeometry);
+
+    /// Returns type of the currently snapped point
+    SnapType getSnappedPointType() const { return m_snapper.getSnappedPointType(); }
+
     void resetTool();
 
     /// Turns on/off drawing of selection rectangle, if rectangle picking
@@ -443,6 +451,10 @@ public:
     void setSelectionRectangleColor(QColor selectionRectangleColor, bool isAnnotationColor = false);
 
     void makeLastPointOrthogonal();
+
+    /// Removes the last picked point, so the user can correct a misplaced
+    /// point without starting over. If no point remains, the tool is reset.
+    void removeLastPickedPoint();
 
 signals:
     void pointPicked(pdf::PDFInteger pageIndex, QPointF pagePoint);
@@ -706,6 +718,11 @@ signals:
     /// This signal is emitted, when tool changes the document by some way
     /// \param documet Modified document
     void documentModified(pdf::PDFModifiedDocument document);
+
+    /// This signal is emitted, when a tool is activated or deactivated,
+    /// so the user interface can show the current tool (for example the
+    /// hand tool is checked, when no tool is active).
+    void activeToolChanged();
 
 private:
     void onToolActivityChanged(bool active);

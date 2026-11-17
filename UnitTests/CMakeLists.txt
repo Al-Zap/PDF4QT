@@ -239,6 +239,24 @@ set_target_properties(UnitTestsDimensions PROPERTIES
 )
 add_test(UnitTestsDimensions  "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsDimensions")
 
+add_executable(UnitTestsFixtureCount
+	tst_fixturecounttest.cpp
+	../Pdf4QtEditorPlugins/FixtureCountPlugin/fixturecount.cpp
+	../Pdf4QtEditorPlugins/FixtureCountPlugin/fixturesymbolfinder.cpp
+)
+
+target_include_directories(UnitTestsFixtureCount PRIVATE ${CMAKE_SOURCE_DIR}/Pdf4QtEditorPlugins/FixtureCountPlugin)
+
+target_link_libraries(UnitTestsFixtureCount PRIVATE Pdf4QtLibCore Qt6::Core Qt6::Gui Qt6::Test)
+
+set_target_properties(UnitTestsFixtureCount PROPERTIES
+    WIN32_EXECUTABLE OFF
+    MACOSX_BUNDLE OFF
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_LIB_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+)
+add_test(UnitTestsFixtureCount  "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsFixtureCount")
+
 add_executable(UnitTestsFormFieldFormat
 	tst_formfieldformattest.cpp
 )
@@ -358,7 +376,7 @@ if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
     set_tests_properties(UnitTestsAnnotationIntegration PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     add_executable(UnitTestsFormFields tst_formfieldstest.cpp)
-    target_link_libraries(UnitTestsFormFields PRIVATE Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
+    target_link_libraries(UnitTestsFormFields PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
     set_target_properties(UnitTestsFormFields PROPERTIES
         WIN32_EXECUTABLE OFF
         MACOSX_BUNDLE OFF

@@ -26,10 +26,14 @@
 #include "pdfwidgetutils.h"
 
 #include <QComboBox>
+#include <QGridLayout>
+#include <QLabel>
 #include <QDoubleSpinBox>
 #include <QLineEdit>
 #include <QLocale>
 #include <QSignalBlocker>
+
+#include <algorithm>
 
 ScaleDialog::ScaleDialog(QWidget* parent, const DimensionScale& scale, Mode mode) :
     QDialog(parent),
@@ -67,6 +71,10 @@ void ScaleDialog::initialize(const DimensionScale& scale, Mode mode)
     ui->setupUi(this);
 
     m_lengthUnits = DimensionUnit::getLengthUnits();
+
+    // Feet and inches is only a way of displaying the feet, a scale is always
+    // defined by plain units
+    m_lengthUnits.erase(std::remove_if(m_lengthUnits.begin(), m_lengthUnits.end(), [](const DimensionUnit& unit) { return unit.isFeetAndInches(); }), m_lengthUnits.end());
 
     const DimensionScale effectiveScale = scale.isValid() ? scale : DimensionScale::createIdentity();
 
@@ -111,7 +119,8 @@ void ScaleDialog::initializeUnitComboBox(QComboBox* comboBox, const QByteArray& 
         comboBox->addItem(unit.symbol, unit.id);
     }
 
-    const int index = comboBox->findData(currentUnitId);
+    const QByteArray unitId = (currentUnitId == DimensionUnit::FEET_AND_INCHES_ID) ? QByteArray("ft") : currentUnitId;
+    const int index = comboBox->findData(unitId);
     comboBox->setCurrentIndex(index != -1 ? index : 0);
 }
 
@@ -153,6 +162,31 @@ void ScaleDialog::updateResultLabel()
     }
 
     ui->resultLabel->setText(tr("Resulting scale: %1").arg(ratio));
+}
+
+void ScaleDialog::setApplyToSheetChoice(bool isThisSheetDefault, int pageNumber)
+{
+    if (!m_applyToComboBox)
+    {
+        m_applyToComboBox = new QComboBox(this);
+        m_applyToComboBox->setObjectName("applyToComboBox");
+
+        QGridLayout* layout = qobject_cast<QGridLayout*>(ui->scaleGroupBox->layout());
+        Q_ASSERT(layout);
+        const int row = layout->rowCount();
+        layout->addWidget(new QLabel(tr("Apply to"), this), row, 0);
+        layout->addWidget(m_applyToComboBox, row, 1, 1, 2);
+    }
+
+    m_applyToComboBox->clear();
+    m_applyToComboBox->addItem(tr("All sheets"), false);
+    m_applyToComboBox->addItem(tr("This sheet only (sheet %1)").arg(pageNumber), true);
+    m_applyToComboBox->setCurrentIndex(isThisSheetDefault ? 1 : 0);
+}
+
+bool ScaleDialog::isAppliedToThisSheetOnly() const
+{
+    return m_applyToComboBox && m_applyToComboBox->currentData().toBool();
 }
 
 DimensionScale ScaleDialog::getScale() const
