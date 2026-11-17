@@ -61,7 +61,7 @@ public:
     /// Recovery copies older than this are removed
     static constexpr int MAX_AGE_DAYS = 30;
 
-    struct RecoveryItem
+    struct PDF4QTLIBGUILIBSHARED_EXPORT RecoveryItem
     {
         QString originalFileName;       ///< Absolute path of the original document
         QString recoveryFileName;       ///< Absolute path of the recovery copy
