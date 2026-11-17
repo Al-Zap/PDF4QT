@@ -703,7 +703,35 @@ void PDFDocumentManipulator::addOutlineAndDocumentParts(PDFDocumentBuilder& docu
     std::transform(documentParts.cbegin(), documentParts.cend(), std::back_inserter(documentPartPageCounts), [](const auto& part) { return part.pageCount; });
     documentBuilder.createDocumentParts(documentPartPageCounts);
 
-    if (m_outlineMode != OutlineMode::NoOutline)
+    if (m_outlineMode == OutlineMode::Merge)
+    {
+        // Top level items of the outlines of the documents follow each other,
+        // outline of a document, whose pages are used only partially, is omitted.
+        QSharedPointer<PDFOutlineItem> rootItem(new PDFOutlineItem());
+
+        for (const DocumentPartInfo& info : documentParts)
+        {
+            if (!info.isWholeDocument || !m_outlines.count(info.documentIndex))
+            {
+                continue;
+            }
+
+            QSharedPointer<PDFOutlineItem> outline = PDFOutlineItem::parse(documentBuilder.getStorage(), PDFObject::createReference(m_outlines.at(info.documentIndex)));
+            if (outline)
+            {
+                for (size_t i = 0; i < outline->getChildCount(); ++i)
+                {
+                    rootItem->addChild(outline->getChildPtr(i));
+                }
+            }
+        }
+
+        if (rootItem->getChildCount() > 0)
+        {
+            documentBuilder.setOutline(rootItem.data());
+        }
+    }
+    else if (m_outlineMode != OutlineMode::NoOutline)
     {
         QSharedPointer<PDFOutlineItem> rootItem(new PDFOutlineItem());
 

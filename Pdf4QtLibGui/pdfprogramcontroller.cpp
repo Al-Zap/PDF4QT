@@ -1229,6 +1229,21 @@ void PDFProgramController::initializeToolManager()
         pdf::PDFCreateLineTypeTool* createPolygonTool = new pdf::PDFCreateLineTypeTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, pdf::PDFCreateLineTypeTool::Type::Polygon, action, this);
         m_toolManager->addTool(createPolygonTool);
     }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateArrow))
+    {
+        pdf::PDFCreateLineTypeTool* tool = new pdf::PDFCreateLineTypeTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, pdf::PDFCreateLineTypeTool::Type::Arrow, action, this);
+        m_toolManager->addTool(tool);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateCloudRectangle))
+    {
+        pdf::PDFCreateLineTypeTool* tool = new pdf::PDFCreateLineTypeTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, pdf::PDFCreateLineTypeTool::Type::CloudRectangle, action, this);
+        m_toolManager->addTool(tool);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateCloudPolygon))
+    {
+        pdf::PDFCreateLineTypeTool* tool = new pdf::PDFCreateLineTypeTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, pdf::PDFCreateLineTypeTool::Type::CloudPolygon, action, this);
+        m_toolManager->addTool(tool);
+    }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::CreateEllipse))
     {
         pdf::PDFCreateEllipseTool* createEllipseTool = new pdf::PDFCreateEllipseTool(m_pdfWidget->getDrawWidgetProxy(), m_toolManager, action, this);

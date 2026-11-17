@@ -441,6 +441,16 @@ public:
     /// Removes annotation from the page
     void removeAnnotation(PDFObjectReference page, PDFObjectReference annotation);
 
+    /// Sets cloudy border effect (entry BE) of the square, circle, polygon or free text
+    /// annotation (revision cloud). Cloud is drawn around the geometry of the annotation.
+    /// For the square and the circle annotation, the geometry is the annotation rectangle
+    /// reduced by the rectangle differences (entry RD), which are written too, so that the
+    /// arcs of the cloud lie inside the annotation rectangle. For the polygon annotation,
+    /// intent PolygonCloud is written. The appearance streams are not updated.
+    /// \param annotation Annotation
+    /// \param intensity Intensity of the cloud in the range [0, 2]
+    void setAnnotationCloudyBorder(PDFObjectReference annotation, PDFReal intensity);
+
     /// Appends object to target object. Targed object reference must be valid.
     /// Arrays are concatenated.
     /// \param reference Target object reference

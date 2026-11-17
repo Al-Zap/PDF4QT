@@ -805,7 +805,7 @@ PDFCreateLineTypeTool::PDFCreateLineTypeTool(PDFDrawWidgetProxy* proxy, PDFToolM
     m_styleManager(nullptr),
     m_type(type)
 {
-    PDFPickTool::Mode mode = (type != Type::Rectangle) ? PDFPickTool::Mode::Points : PDFPickTool::Mode::Rectangles;
+    PDFPickTool::Mode mode = (type != Type::Rectangle && type != Type::CloudRectangle) ? PDFPickTool::Mode::Points : PDFPickTool::Mode::Rectangles;
     m_pickTool = new PDFPickTool(proxy, mode, this);
     m_pickTool->setSnapToAnnotations(true);
     addTool(m_pickTool);
@@ -813,10 +813,21 @@ PDFCreateLineTypeTool::PDFCreateLineTypeTool(PDFDrawWidgetProxy* proxy, PDFToolM
     connect(m_pickTool, &PDFPickTool::rectanglePicked, this, &PDFCreateLineTypeTool::onRectanglePicked);
     m_pickTool->setDrawSelectionRectangle(false);
 
-    m_styleManager = new PDFAnnotationStyleManager(this,
-                                                   PDFAnnotationStyleWidget::StrokeColor | PDFAnnotationStyleWidget::FillColor | PDFAnnotationStyleWidget::PenWidth,
-                                                   getDefaultShapeStyle(),
-                                                   PDFAnnotationStyleSettings::STYLE_SHAPE);
+    // Revision clouds and arrows have their own style, so the usual red outline
+    // of a revision cloud is not changed by the fill of the other shapes.
+    QString styleId = PDFAnnotationStyleSettings::STYLE_SHAPE;
+    PDFAnnotationStyleWidget::StyleItems styleFeatures = PDFAnnotationStyleWidget::StrokeColor | PDFAnnotationStyleWidget::FillColor | PDFAnnotationStyleWidget::PenWidth;
+    if (isCloudType())
+    {
+        styleId = PDFAnnotationStyleSettings::STYLE_CLOUD;
+    }
+    else if (m_type == Type::Arrow)
+    {
+        styleId = PDFAnnotationStyleSettings::STYLE_ARROW;
+        styleFeatures = PDFAnnotationStyleWidget::StrokeColor | PDFAnnotationStyleWidget::PenWidth;
+    }
+
+    m_styleManager = new PDFAnnotationStyleManager(this, styleFeatures, getDefaultStyle(m_type), styleId);
     connect(m_styleManager, &PDFAnnotationStyleManager::styleChanged, this, &PDFCreateLineTypeTool::onStyleChanged);
 
     updateActions();
@@ -853,7 +864,7 @@ void PDFCreateLineTypeTool::onPointPicked(PDFInteger pageIndex, QPointF pagePoin
         m_pickTool->makeLastPointOrthogonal();
     }
 
-    if (m_type == Type::Line && m_pickTool->getPickedPoints().size() == 2)
+    if ((m_type == Type::Line || m_type == Type::Arrow) && m_pickTool->getPickedPoints().size() == 2)
     {
         finishDefinition();
     }
@@ -879,14 +890,19 @@ void PDFCreateLineTypeTool::finishDefinition()
     switch (m_type)
     {
         case Type::Line:
+        case Type::Arrow:
         {
             if (pickedPoints.size() >= 2)
             {
                 PDFDocumentModifier modifier(getDocument());
 
+                // Arrow head is filled by the stroke color
+                const AnnotationLineEnding endLineEnding = (m_type == Type::Arrow) ? AnnotationLineEnding::ClosedArrow : AnnotationLineEnding::None;
+                const QColor lineFillColor = (m_type == Type::Arrow) ? strokeColor : fillColor;
+
                 QString author = PDFAuthorSettings::getAuthorName();
                 PDFObjectReference page = getDocument()->getCatalog()->getPage(m_pickTool->getPageIndex())->getPageReference();
-                modifier.getBuilder()->createAnnotationLine(page, QRectF(), pickedPoints.front(), pickedPoints.back(), penWidth, fillColor, strokeColor, author, QString(), QString(), AnnotationLineEnding::None, AnnotationLineEnding::None);
+                modifier.getBuilder()->createAnnotationLine(page, QRectF(), pickedPoints.front(), pickedPoints.back(), penWidth, lineFillColor, strokeColor, author, QString(), QString(), AnnotationLineEnding::None, endLineEnding);
                 modifier.markAnnotationsChanged();
 
                 if (modifier.finalize())
@@ -927,69 +943,34 @@ void PDFCreateLineTypeTool::finishDefinition()
         }
 
         case Type::Polygon:
+        case Type::CloudPolygon:
         {
             if (pickedPoints.size() >= 3)
             {
-                PDFDocumentModifier modifier(getDocument());
-
                 QPolygonF polygon;
                 for (const QPointF& point : pickedPoints)
                 {
                     polygon << point;
                 }
-                if (!polygon.isClosed())
-                {
-                    polygon << pickedPoints.front();
-                }
 
-                QString author = PDFAuthorSettings::getAuthorName();
-                PDFObjectReference page = getDocument()->getCatalog()->getPage(m_pickTool->getPageIndex())->getPageReference();
-                PDFObjectReference annotation = modifier.getBuilder()->createAnnotationPolygon(page, polygon, penWidth, fillColor, strokeColor, author, QString(), QString());
-                if (fillColor.isValid())
-                {
-                    modifier.getBuilder()->setAnnotationFillOpacity(annotation, fillColor.alphaF());
-                }
-                modifier.getBuilder()->updateAnnotationAppearanceStreams(annotation);
-                modifier.markAnnotationsChanged();
-
-                if (modifier.finalize())
-                {
-                    Q_EMIT m_toolManager->documentModified(PDFModifiedDocument(modifier.getDocument(), nullptr, modifier.getFlags()));
-                }
-
+                createPolygonAnnotation(polygon, penWidth, strokeColor, fillColor);
                 setActive(false);
             }
             break;
         }
 
         case Type::Rectangle:
+        case Type::CloudRectangle:
         {
             if (!m_rectOnPage.isEmpty())
             {
-                PDFDocumentModifier modifier(getDocument());
-
                 QPolygonF polygon;
                 polygon << m_rectOnPage.topLeft();
                 polygon << m_rectOnPage.topRight();
                 polygon << m_rectOnPage.bottomRight();
                 polygon << m_rectOnPage.bottomLeft();
-                polygon << m_rectOnPage.topLeft();
 
-                QString author = PDFAuthorSettings::getAuthorName();
-                PDFObjectReference page = getDocument()->getCatalog()->getPage(m_pickTool->getPageIndex())->getPageReference();
-                PDFObjectReference annotation = modifier.getBuilder()->createAnnotationPolygon(page, polygon, penWidth, fillColor, strokeColor, author, QString(), QString());
-                if (fillColor.isValid())
-                {
-                    modifier.getBuilder()->setAnnotationFillOpacity(annotation, fillColor.alphaF());
-                }
-                modifier.getBuilder()->updateAnnotationAppearanceStreams(annotation);
-                modifier.markAnnotationsChanged();
-
-                if (modifier.finalize())
-                {
-                    Q_EMIT m_toolManager->documentModified(PDFModifiedDocument(modifier.getDocument(), nullptr, modifier.getFlags()));
-                }
-
+                createPolygonAnnotation(polygon, penWidth, strokeColor, fillColor);
                 setActive(false);
             }
             break;
@@ -1001,6 +982,62 @@ void PDFCreateLineTypeTool::finishDefinition()
     }
 
     m_pickTool->resetTool();
+}
+
+void PDFCreateLineTypeTool::createPolygonAnnotation(QPolygonF polygon, PDFReal penWidth, QColor strokeColor, QColor fillColor)
+{
+    if (!polygon.isClosed())
+    {
+        polygon << polygon.front();
+    }
+
+    PDFDocumentModifier modifier(getDocument());
+
+    QString author = PDFAuthorSettings::getAuthorName();
+    PDFObjectReference page = getDocument()->getCatalog()->getPage(m_pickTool->getPageIndex())->getPageReference();
+    PDFObjectReference annotation = modifier.getBuilder()->createAnnotationPolygon(page, polygon, penWidth, fillColor, strokeColor, author, QString(), QString());
+    if (fillColor.isValid())
+    {
+        modifier.getBuilder()->setAnnotationFillOpacity(annotation, fillColor.alphaF());
+    }
+    if (isCloudType())
+    {
+        // Revision cloud is a polygon annotation with the cloudy border effect and the intent
+        // PolygonCloud, which is the way, how other PDF editors store revision clouds.
+        modifier.getBuilder()->setAnnotationCloudyBorder(annotation, CLOUD_INTENSITY);
+    }
+    modifier.getBuilder()->updateAnnotationAppearanceStreams(annotation);
+    modifier.markAnnotationsChanged();
+
+    if (modifier.finalize())
+    {
+        Q_EMIT m_toolManager->documentModified(PDFModifiedDocument(modifier.getDocument(), nullptr, modifier.getFlags()));
+    }
+}
+
+PDFAnnotationStyle PDFCreateLineTypeTool::getDefaultStyle(Type type)
+{
+    switch (type)
+    {
+        case Type::CloudRectangle:
+        case Type::CloudPolygon:
+        case Type::Arrow:
+        {
+            PDFAnnotationStyle style;
+            style.strokeColor = Qt::red;
+            style.fillColor = QColor();
+            style.penWidth = 1.5;
+            return style;
+        }
+
+        default:
+            return getDefaultShapeStyle();
+    }
+}
+
+bool PDFCreateLineTypeTool::isCloudType() const
+{
+    return m_type == Type::CloudRectangle || m_type == Type::CloudPolygon;
 }
 
 QColor PDFCreateLineTypeTool::getFillColor() const
@@ -1022,9 +1059,12 @@ bool PDFCreateLineTypeTool::canHaveOrthogonalMode() const
     case Type::Line:
     case Type::PolyLine:
     case Type::Polygon:
+    case Type::Arrow:
+    case Type::CloudPolygon:
         return true;
 
     case Type::Rectangle:
+    case Type::CloudRectangle:
         break;
     }
 
@@ -1083,6 +1123,7 @@ void PDFCreateLineTypeTool::keyPressEvent(QWidget* widget, QKeyEvent* event)
     {
         case Type::PolyLine:
         case Type::Polygon:
+        case Type::CloudPolygon:
         {
             if (event->key() == Qt::Key_Enter || event->key() == Qt::Key_Return)
             {
@@ -1116,6 +1157,7 @@ void PDFCreateLineTypeTool::keyReleaseEvent(QWidget* widget, QKeyEvent* event)
     {
         case Type::PolyLine:
         case Type::Polygon:
+        case Type::CloudPolygon:
         {
             if (event->key() == Qt::Key_Enter || event->key() == Qt::Key_Return)
             {
@@ -1193,6 +1235,7 @@ void PDFCreateLineTypeTool::drawPage(QPainter* painter,
     {
         case Type::Line:
         case Type::PolyLine:
+        case Type::Arrow:
         {
             for (size_t i = 1; i < points.size(); ++i)
             {
@@ -1214,6 +1257,26 @@ void PDFCreateLineTypeTool::drawPage(QPainter* painter,
             path.closeSubpath();
 
             painter->drawPath(path);
+            break;
+        }
+
+        case Type::CloudPolygon:
+        {
+            QPolygonF polygon;
+            for (const QPointF& point : points)
+            {
+                polygon << point;
+            }
+            polygon << mousePoint;
+
+            painter->drawPath(PDFAnnotationBorderEffect::createCloudyPath(polygon, CLOUD_INTENSITY));
+            break;
+        }
+
+        case Type::CloudRectangle:
+        {
+            const QRectF rect = QRectF(points.front(), mousePoint).normalized();
+            painter->drawPath(PDFAnnotationBorderEffect::createCloudyPath(QPolygonF(rect), CLOUD_INTENSITY));
             break;
         }
 

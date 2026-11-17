@@ -63,6 +63,7 @@ namespace pdfviewer
 class PDFTextToSpeech;
 class PDFViewerSettings;
 class PDFBookmarkItemModel;
+class PDFPageOrganizerUI;
 
 class PDF4QTLIBGUILIBSHARED_EXPORT PDFSidebarWidget : public QWidget
 {
@@ -121,6 +122,11 @@ public:
     /// intended to be also placed into the main window's menu, so that new
     /// outline items can be created without leaving the page being read.
     QAction* getOutlineNewItemAction() const { return m_outlineActionInsert; }
+
+    /// Returns actions organizing the pages (rotate, delete, insert, extract, split),
+    /// which work on the selected thumbnails, or on the current page. Actions are
+    /// available only when outline editing is enabled (editor), otherwise the list is empty.
+    std::vector<QAction*> getPageActions() const;
 
 signals:
     void actionTriggered(const pdf::PDFAction* action);
@@ -231,6 +237,7 @@ private:
     pdf::PDFOutlineTreeItemModel* m_outlineTreeModel;
     QSortFilterProxyModel* m_outlineSortProxyTreeModel;
     pdf::PDFThumbnailsItemModel* m_thumbnailsModel;
+    PDFPageOrganizerUI* m_pageOrganizer = nullptr;
     pdf::PDFOptionalContentTreeItemModel* m_optionalContentTreeModel;
     PDFBookmarkItemModel* m_bookmarkItemModel;
     QStandardItemModel* m_notesTreeModel;

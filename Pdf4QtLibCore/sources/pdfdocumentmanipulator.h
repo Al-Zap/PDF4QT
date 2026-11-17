@@ -50,7 +50,8 @@ public:
     {
         NoOutline,
         Join,
-        DocumentParts
+        DocumentParts,
+        Merge           ///< Outlines of the whole documents are merged, without an item for each document
     };
 
     struct AssembledPage

@@ -231,7 +231,10 @@
     <addaction name="menuHyperlinkToThisPDF"/>
     <addaction name="actionInlineText"/>
     <addaction name="actionCreateTypewriter"/>
+    <addaction name="actionCreateCloudRectangle"/>
+    <addaction name="actionCreateCloudPolygon"/>
     <addaction name="actionCreateStraightLine"/>
+    <addaction name="actionCreateArrow"/>
     <addaction name="actionCreatePolyline"/>
     <addaction name="actionCreateRectangle"/>
     <addaction name="actionCreatePolygon"/>
@@ -1067,6 +1070,51 @@
    </property>
    <property name="text">
     <string>&amp;Polygon</string>
+   </property>
+  </action>
+  <action name="actionCreateArrow">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="pdf4qtlibgui.qrc">
+     <normaloff>:/resources/annot-arrow.svg</normaloff>:/resources/annot-arrow.svg</iconset>
+   </property>
+   <property name="text">
+    <string>&amp;Arrow</string>
+   </property>
+   <property name="toolTip">
+    <string>Arrow: click the start and the end of the arrow</string>
+   </property>
+  </action>
+  <action name="actionCreateCloudRectangle">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="pdf4qtlibgui.qrc">
+     <normaloff>:/resources/annot-cloud.svg</normaloff>:/resources/annot-cloud.svg</iconset>
+   </property>
+   <property name="text">
+    <string>Revision &amp;Cloud</string>
+   </property>
+   <property name="toolTip">
+    <string>Revision cloud: drag a rectangle around the change</string>
+   </property>
+  </action>
+  <action name="actionCreateCloudPolygon">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="pdf4qtlibgui.qrc">
+     <normaloff>:/resources/annot-cloud-polygon.svg</normaloff>:/resources/annot-cloud-polygon.svg</iconset>
+   </property>
+   <property name="text">
+    <string>Revision Cloud (Pol&amp;ygon)</string>
+   </property>
+   <property name="toolTip">
+    <string>Revision cloud with any shape: click the corners, press Enter to finish</string>
    </property>
   </action>
   <action name="actionCreateEllipse">

@@ -231,8 +231,14 @@ public:
         Line,
         PolyLine,
         Polygon,
-        Rectangle
+        Rectangle,
+        Arrow,          ///< Line with closed arrow at the end
+        CloudRectangle, ///< Revision cloud drawn as a rectangle (polygon annotation with cloudy border)
+        CloudPolygon    ///< Revision cloud drawn as a polygon (polygon annotation with cloudy border)
     };
+
+    /// Intensity of the cloudy border of the revision clouds created by the tool
+    static constexpr PDFReal CLOUD_INTENSITY = 1.0;
 
     explicit PDFCreateLineTypeTool(PDFDrawWidgetProxy* proxy, PDFToolManager* toolManager, Type type, QAction* action, QObject* parent);
 
@@ -259,6 +265,13 @@ public:
 private:
     bool canHaveOrthogonalMode() const;
     bool isOrthogonalMode() const;
+    bool isCloudType() const;
+
+    /// Returns the style used, when the user has not chosen any style for the tool yet
+    static PDFAnnotationStyle getDefaultStyle(Type type);
+
+    /// Creates polygon annotation (optionally revision cloud) from the polygon
+    void createPolygonAnnotation(QPolygonF polygon, PDFReal penWidth, QColor strokeColor, QColor fillColor);
 
     void onPointPicked(PDFInteger pageIndex, QPointF pagePoint);
     void onRectanglePicked(pdf::PDFInteger pageIndex, QRectF pageRectangle);

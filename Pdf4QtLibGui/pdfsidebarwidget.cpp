@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 #include "pdfsidebarwidget.h"
+#include "pdfpageorganizerui.h"
 #include "ui_pdfsidebarwidget.h"
 
 #include "pdfviewersettings.h"
@@ -144,6 +145,12 @@ PDFSidebarWidget::PDFSidebarWidget(pdf::PDFDrawWidgetProxy* proxy,
     connect(ui->thumbnailsListView, &QListView::clicked, this, &PDFSidebarWidget::onThumbnailClicked);
     onThumbnailsSizeChanged(ui->thumbnailsSizeSlider->value());
 
+    if (editableOutline)
+    {
+        m_pageOrganizer = new PDFPageOrganizerUI(proxy, ui->thumbnailsListView, m_thumbnailsModel, this);
+        connect(m_pageOrganizer, &PDFPageOrganizerUI::documentModified, this, &PDFSidebarWidget::documentModified);
+    }
+
     // Optional content
     ui->optionalContentTreeView->header()->hide();
     m_optionalContentTreeModel = new pdf::PDFOptionalContentTreeItemModel(this);
@@ -248,6 +255,10 @@ void PDFSidebarWidget::setDocument(const pdf::PDFModifiedDocument& document, con
 
     // Thumbnails
     m_thumbnailsModel->setDocument(document);
+    if (m_pageOrganizer)
+    {
+        m_pageOrganizer->setDocument(document);
+    }
 
     // Update optional content
     m_optionalContentTreeModel->setDocument(document);
@@ -310,9 +321,18 @@ void PDFSidebarWidget::setDocument(const pdf::PDFModifiedDocument& document, con
         }
     }
 
-    if (!document.hasReset() && preferred == Invalid && m_currentPage != Invalid && !isEmpty(m_currentPage))
+    // Editing of the document (organizing of the pages, undo/redo) keeps the page of the sidebar
+    const bool isDocumentEdited = !document.hasReset() || document.hasPreserveUndoRedo() || document.hasPreserveView();
+    if (isDocumentEdited && m_currentPage != Invalid && !isEmpty(m_currentPage))
     {
         preferred = m_currentPage;
+    }
+
+    // Thumbnails are the place, where the pages are organized, so the editor
+    // displays them, if the document doesn't ask for something else.
+    if (preferred == Invalid && m_pageOrganizer)
+    {
+        preferred = Thumbnails;
     }
 
     // Update GUI
@@ -436,6 +456,11 @@ std::vector<PDFSidebarWidget::Page> PDFSidebarWidget::getValidPages() const
     }
 
     return result;
+}
+
+std::vector<QAction*> PDFSidebarWidget::getPageActions() const
+{
+    return m_pageOrganizer ? m_pageOrganizer->getActions() : std::vector<QAction*>();
 }
 
 void PDFSidebarWidget::setCurrentPages(const std::vector<pdf::PDFInteger>& currentPages)
