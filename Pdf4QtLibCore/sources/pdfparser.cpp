@@ -574,6 +574,47 @@ QByteArray PDFLexicalAnalyzer::fetchByteArray(PDFInteger length)
     return result;
 }
 
+PDFInteger PDFLexicalAnalyzer::getStreamDataLength(PDFInteger position, PDFInteger declaredLength) const
+{
+    const PDFInteger size = std::distance(m_begin, m_end);
+    if (position < 0 || position > size)
+    {
+        return -1;
+    }
+
+    const PDFInteger endKeywordLength = qstrlen(PDF_STREAM_END_COMMAND);
+    if (declaredLength >= 0 && declaredLength <= size - position)
+    {
+        PDFInteger i = position + declaredLength;
+        while (i < size && isWhitespace(m_begin[i]))
+        {
+            ++i;
+        }
+
+        if (size - i >= endKeywordLength && memcmp(m_begin + i, PDF_STREAM_END_COMMAND, endKeywordLength) == 0)
+        {
+            return declaredLength;
+        }
+    }
+
+    PDFInteger end = findSubstring(PDF_STREAM_END_COMMAND, position);
+    if (end < 0)
+    {
+        return -1;
+    }
+
+    if (end > position && m_begin[end - 1] == CHAR_LINE_FEED)
+    {
+        --end;
+    }
+    if (end > position && m_begin[end - 1] == CHAR_CARRIAGE_RETURN)
+    {
+        --end;
+    }
+
+    return end - position;
+}
+
 PDFInteger PDFLexicalAnalyzer::findSubstring(const char* str, PDFInteger position) const
 {
     const PDFInteger length = std::distance(m_begin, m_end);
@@ -943,25 +984,26 @@ PDFObject PDFParser::getObject()
                 // content can be placed in the file. If this is the case, then try to load file
                 // content in the memory. But even in this case, stream content should be skipped.
 
-                if (!dictionary->hasKey(PDF_STREAM_DICT_LENGTH))
+                // A missing, invalid or wrong length does not make the file unreadable,
+                // the data of the stream then end at the keyword endstream. Such files
+                // are produced by tools editing the files without updating the lengths.
+                PDFInteger declaredLength = -1;
+                if (dictionary->hasKey(PDF_STREAM_DICT_LENGTH))
                 {
-                    error(tr("Stream length is not specified."));
-                }
-
-                PDFObject lengthObject = m_context ? m_context->getObject(dictionary->get(PDF_STREAM_DICT_LENGTH)) : dictionary->get(PDF_STREAM_DICT_LENGTH);
-                if (!lengthObject.isInt())
-                {
-                    error(tr("Bad value of stream length. It should be an integer number."));
-                }
-                PDFInteger length = lengthObject.getInteger();
-
-                if (length < 0)
-                {
-                    error(tr("Length of the stream buffer is negative (%1). It must be a positive number.").arg(length));
+                    PDFObject lengthObject = m_context ? m_context->getObject(dictionary->get(PDF_STREAM_DICT_LENGTH)) : dictionary->get(PDF_STREAM_DICT_LENGTH);
+                    if (lengthObject.isInt())
+                    {
+                        declaredLength = lengthObject.getInteger();
+                    }
                 }
 
                 // Skip the stream start, then fetch data of the stream
                 m_lexicalAnalyzer.skipStreamStart();
+                const PDFInteger length = m_lexicalAnalyzer.getStreamDataLength(m_lexicalAnalyzer.pos(), declaredLength);
+                if (length < 0)
+                {
+                    error(tr("End of stream should end in keyword 'endstream'."));
+                }
                 QByteArray buffer = m_lexicalAnalyzer.fetchByteArray(length);
 
                 // According to the PDF Reference 1.7, chapter 3.2.7, stream content can also be specified
