@@ -58,6 +58,7 @@ public:
     virtual std::vector<QAction*> getActions() const override;
     virtual QString getPluginMenuName() const override;
     virtual QString getToolbarSection() const override;
+    virtual std::vector<QAction*> getToolbarActions() const override;
 
     virtual void drawPage(QPainter* painter,
                           pdf::PDFInteger pageIndex,
