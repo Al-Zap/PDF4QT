@@ -86,11 +86,11 @@ PDFPageOrganizerUI::PDFPageOrganizerUI(pdf::PDFDrawWidgetProxy* proxy,
 
     createAction(RotateLeft, ":/resources/rotate-left.svg", tr("Rotate Pages &Left"), tr("Rotate the selected pages 90° counterclockwise"), &PDFPageOrganizerUI::onRotateLeft);
     createAction(RotateRight, ":/resources/rotate-right.svg", tr("Rotate Pages &Right"), tr("Rotate the selected pages 90° clockwise"), &PDFPageOrganizerUI::onRotateRight);
-    createAction(Delete, QString(), tr("&Delete Pages"), tr("Delete the selected pages"), &PDFPageOrganizerUI::onDelete);
+    createAction(Delete, ":/resources/page-delete.svg", tr("&Delete Pages"), tr("Delete the selected pages"), &PDFPageOrganizerUI::onDelete);
     createAction(InsertFromFile, ":/resources/open.svg", tr("&Insert Pages from File..."), tr("Insert pages of other PDF files after the selected pages"), &PDFPageOrganizerUI::onInsertFromFile);
     createAction(InsertBlankPage, ":/resources/page.svg", tr("Insert &Blank Page"), tr("Insert a blank page after the selected pages"), &PDFPageOrganizerUI::onInsertBlankPage);
     createAction(Extract, ":/resources/save-as.svg", tr("&Extract Pages..."), tr("Save the selected pages as a new PDF file"), &PDFPageOrganizerUI::onExtract);
-    createAction(Split, QString(), tr("&Split Document..."), tr("Split the document into several PDF files"), &PDFPageOrganizerUI::onSplit);
+    createAction(Split, ":/resources/page-split.svg", tr("&Split Document..."), tr("Split the document into several PDF files"), &PDFPageOrganizerUI::onSplit);
 
     m_actions[RotateLeft]->setObjectName("actionPagesRotateLeft");
     m_actions[RotateRight]->setObjectName("actionPagesRotateRight");
@@ -126,6 +126,11 @@ PDFPageOrganizerUI::PDFPageOrganizerUI(pdf::PDFDrawWidgetProxy* proxy,
         QTimer::singleShot(0, this, [this, fileNames, insertPosition]() { insertFiles(fileNames, insertPosition); });
     });
 
+    // Selection of the thumbnails is used by the actions only, if the user worked
+    // with the thumbnails last. When the user continues in the document itself,
+    // the actions work with the page displayed in the document.
+    connect(qApp, &QApplication::focusChanged, this, &PDFPageOrganizerUI::onFocusChanged);
+
     updateActions();
 }
 
@@ -158,8 +163,8 @@ std::vector<pdf::PDFInteger> PDFPageOrganizerUI::getSelectedPages() const
         return pages;
     }
 
-    // Selection of the thumbnails is used only, when the user can see it
-    if (m_thumbnailsView->isVisible() && m_thumbnailsView->selectionModel())
+    // Selection of the thumbnails is used only, when the user can see it and works with it
+    if (m_thumbnailsActive && m_thumbnailsView->isVisible() && m_thumbnailsView->selectionModel())
     {
         for (const QModelIndex& index : m_thumbnailsView->selectionModel()->selectedIndexes())
         {
@@ -227,19 +232,27 @@ void PDFPageOrganizerUI::insertFiles(const QStringList& fileNames, pdf::PDFInteg
 
     for (const QString& fileName : fileNames)
     {
+        // File, which can't be inserted, is reported and skipped, other files are inserted
         pdf::PDFDocument insertedDocument;
         if (!readDocument(fileName, &insertedDocument))
         {
-            return;
+            continue;
         }
 
         PDFPageOrganizerUIWaitCursor waitCursor;
-        if (!checkResult(pdf::PDFPageOrganizer::insertDocument(&document, &insertedDocument, insertPosition)))
+        pdf::PDFDocument updatedDocument = document;
+        if (!checkResult(pdf::PDFPageOrganizer::insertDocument(&updatedDocument, &insertedDocument, insertPosition)))
         {
-            return;
+            continue;
         }
+        document = std::move(updatedDocument);
         insertPosition += pdf::PDFInteger(insertedDocument.getCatalog()->getPageCount());
         m_lastDirectory = QFileInfo(fileName).absolutePath();
+    }
+
+    if (insertPosition == firstInsertedPage)
+    {
+        return;
     }
 
     std::vector<pdf::PDFInteger> selection;
@@ -249,6 +262,54 @@ void PDFPageOrganizerUI::insertFiles(const QStringList& fileNames, pdf::PDFInteg
     }
 
     applyDocument(std::move(document), std::move(selection), firstInsertedPage);
+}
+
+void PDFPageOrganizerUI::onFocusChanged(QWidget* old, QWidget* now)
+{
+    Q_UNUSED(old);
+
+    if (!now)
+    {
+        return;
+    }
+
+    // Other widgets (menus, toolbars, dialogs) do not change, what the user works with
+    QWidget* documentWidget = m_proxy->getWidget();
+    if (now == m_thumbnailsView || m_thumbnailsView->isAncestorOf(now))
+    {
+        m_thumbnailsActive = true;
+    }
+    else if (documentWidget && (now == documentWidget || documentWidget->isAncestorOf(now)))
+    {
+        m_thumbnailsActive = false;
+    }
+}
+
+QString PDFPageOrganizerUI::getPagesText(const std::vector<pdf::PDFInteger>& pages)
+{
+    // Pages are sorted, ranges of consecutive pages are joined
+    QStringList ranges;
+    size_t i = 0;
+    while (i < pages.size())
+    {
+        size_t j = i;
+        while (j + 1 < pages.size() && pages[j + 1] == pages[j] + 1)
+        {
+            ++j;
+        }
+
+        ranges << ((i == j) ? QString::number(pages[i] + 1) : QString("%1-%2").arg(pages[i] + 1).arg(pages[j] + 1));
+        i = j + 1;
+    }
+
+    const int maxRanges = 6;
+    if (ranges.size() > maxRanges)
+    {
+        ranges = ranges.mid(0, maxRanges);
+        ranges << QString("...");
+    }
+
+    return ranges.join(", ");
 }
 
 void PDFPageOrganizerUI::updateActions()
@@ -274,6 +335,8 @@ void PDFPageOrganizerUI::onThumbnailsContextMenuRequested(const QPoint& pos)
         m_thumbnailsView->selectionModel()->select(index, QItemSelectionModel::ClearAndSelect);
         m_thumbnailsView->selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate);
     }
+
+    m_thumbnailsActive = true;
 
     QMenu menu(m_thumbnailsView);
     menu.addAction(m_actions[RotateLeft]);
@@ -313,6 +376,20 @@ void PDFPageOrganizerUI::onDelete()
 {
     const std::vector<pdf::PDFInteger> pages = getSelectedPages();
     if (pages.empty())
+    {
+        return;
+    }
+
+    const pdf::PDFInteger documentPageCount = pdf::PDFInteger(m_document->getCatalog()->getPageCount());
+    if (pdf::PDFInteger(pages.size()) >= documentPageCount)
+    {
+        QMessageBox::information(m_dialogParent, tr("Delete Pages"), tr("All pages of the document can't be deleted."));
+        return;
+    }
+
+    const QString question = (pages.size() == 1) ? tr("Do you want to delete page %1?").arg(pages.front() + 1)
+                                                 : tr("Do you want to delete %1 pages (%2)?").arg(pages.size()).arg(getPagesText(pages));
+    if (QMessageBox::question(m_dialogParent, tr("Delete Pages"), question, QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
     {
         return;
     }
@@ -362,7 +439,7 @@ void PDFPageOrganizerUI::onExtract()
     }
 
     QString suggestedName = (pages.size() == 1) ? tr("Page %1.pdf").arg(pages.front() + 1)
-                                                : tr("Pages %1-%2.pdf").arg(pages.front() + 1).arg(pages.back() + 1);
+                                                : tr("Pages %1.pdf").arg(getPagesText(pages));
     QString fileName = QFileDialog::getSaveFileName(m_dialogParent, tr("Extract Pages"), QDir(getDirectory()).filePath(suggestedName), tr("PDF document (*.pdf)"));
     if (fileName.isEmpty())
     {
@@ -394,7 +471,7 @@ void PDFPageOrganizerUI::onSplit()
         return;
     }
 
-    QString baseFileName = QFileDialog::getSaveFileName(m_dialogParent, tr("Split Document - Name of the Files"), QDir(getDirectory()).filePath(tr("Document.pdf")), tr("PDF document (*.pdf)"));
+    QString baseFileName = QFileDialog::getSaveFileName(m_dialogParent, tr("Split Document - Name of the Files"), QDir(getDirectory()).filePath(tr("Document.pdf")), tr("PDF document (*.pdf)"), nullptr, QFileDialog::DontConfirmOverwrite);
     if (baseFileName.isEmpty())
     {
         return;

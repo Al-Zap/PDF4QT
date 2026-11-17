@@ -323,9 +323,16 @@ void PDFSidebarWidget::setDocument(const pdf::PDFModifiedDocument& document, con
 
     // Editing of the document (organizing of the pages, undo/redo) keeps the page of the sidebar
     const bool isDocumentEdited = !document.hasReset() || document.hasPreserveUndoRedo() || document.hasPreserveView();
-    if (isDocumentEdited && preferred == Invalid && m_currentPage != Invalid && !isEmpty(m_currentPage))
+    if (isDocumentEdited && m_currentPage != Invalid && !isEmpty(m_currentPage))
     {
         preferred = m_currentPage;
+    }
+
+    // Thumbnails are the place, where the pages are organized, so the editor
+    // displays them, if the document doesn't ask for something else.
+    if (preferred == Invalid && m_pageOrganizer)
+    {
+        preferred = Thumbnails;
     }
 
     // Update GUI

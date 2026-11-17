@@ -65,11 +65,11 @@ public:
     {
         RotateLeft,
         RotateRight,
-        Delete,
         InsertFromFile,
         InsertBlankPage,
         Extract,
         Split,
+        Delete,
         LastAction
     };
 
@@ -115,6 +115,10 @@ private:
 
     /// Selects thumbnails of the given pages
     void selectPages(const std::vector<pdf::PDFInteger>& pages);
+    void onFocusChanged(QWidget* old, QWidget* now);
+
+    /// Returns text describing the pages for the user, for example "1-3, 7"
+    static QString getPagesText(const std::vector<pdf::PDFInteger>& pages);
 
     /// Shows the error message, if operation failed, returns success of the operation
     bool checkResult(const pdf::PDFOperationResult& result);
@@ -130,6 +134,7 @@ private:
     pdf::PDFOptionalContentActivity* m_optionalContentActivity = nullptr;
     std::vector<QAction*> m_actions;
     std::vector<pdf::PDFInteger> m_pendingSelection;
+    bool m_thumbnailsActive = false;
     QString m_lastDirectory;
 };
 
