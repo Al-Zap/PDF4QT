@@ -1,6 +1,7 @@
 # Main build of this fork: a portable Windows build of the editor on every push and pull request.
 # Based on WindowsInstall.yml of upstream PDF4QT, without the MSI/MSIX packaging and attestation steps.
-# The result is the artifact PDF4QT-Windows-<version>.zip; unzip it and run Pdf4QtEditor.exe.
+# The results are the artifacts PDF4QT-Windows-<version>.zip (unzip it and run Pdf4QtEditor.exe) and
+# PDF4QT-Setup-<version>.exe (per-user installer, no administrator rights needed).
 name: Windows build
 
 on:
@@ -242,5 +243,25 @@ jobs:
         with:
           name: 'PDF4QT-Windows-${{ env.pdf4qt_version }}.zip'
           path: .\pdf4qt\build\install\PDF4QT-Windows-${{ env.pdf4qt_version }}.zip
+          retention-days: 30
+          compression-level: 0
+
+      # Per-user installer (Inno Setup) of the same files as the ZIP archive, see installer/pdf4qt.iss
+      - name: Build installer
+        shell: pwsh
+        run: |
+          .\pdf4qt\installer\build-installer.ps1 -Version "${{ env.pdf4qt_version }}" -SourceDir .\pdf4qt\build\install\usr\bin -OutputDir .\pdf4qt\build\install
+
+      # Installs, updates and uninstalls the installer on the runner and checks files, shortcuts and registry
+      - name: Test installer
+        shell: pwsh
+        run: |
+          .\pdf4qt\installer\smoke-test-installer.ps1 -Installer ".\pdf4qt\build\install\PDF4QT-Setup-${{ env.pdf4qt_version }}.exe"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: 'PDF4QT-Setup-${{ env.pdf4qt_version }}.exe'
+          path: .\pdf4qt\build\install\PDF4QT-Setup-${{ env.pdf4qt_version }}.exe
           retention-days: 30
           compression-level: 0

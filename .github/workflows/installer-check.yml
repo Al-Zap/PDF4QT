@@ -1,0 +1,43 @@
+# Quick check of the installer scripts (installer/): compiles pdf4qt.iss against a dummy set of files and runs
+# the install/update/uninstall smoke test, in a few minutes instead of the full Windows build.
+name: Installer check
+
+on:
+  pull_request:
+    paths:
+      - 'installer/**'
+      - '.github/workflows/installer-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installer_check:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          path: pdf4qt
+
+      - name: Dummy application files
+        shell: pwsh
+        run: |
+          $bin = New-Item -ItemType Directory -Force -Path dummy\usr\bin
+          foreach ($exe in @('Pdf4QtEditor.exe', 'Pdf4QtViewer.exe', 'Pdf4QtPageMaster.exe', 'Pdf4QtDiff.exe')) {
+            Copy-Item "$env:WINDIR\System32\where.exe" (Join-Path $bin $exe)
+          }
+          New-Item -ItemType Directory -Force -Path dummy\usr\bin\ocr\tesseract | Out-Null
+          Set-Content dummy\usr\bin\ocr\tesseract\model.txt 'dummy'
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          .\pdf4qt\installer\build-installer.ps1 -Version 0.0.0.1 -SourceDir .\dummy\usr\bin -OutputDir .\out
+
+      - name: Test installer
+        shell: pwsh
+        run: |
+          .\pdf4qt\installer\smoke-test-installer.ps1 -Installer .\out\PDF4QT-Setup-0.0.0.1.exe
