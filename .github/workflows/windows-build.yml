@@ -1,0 +1,246 @@
+# Main build of this fork: a portable Windows build of the editor on every push and pull request.
+# Based on WindowsInstall.yml of upstream PDF4QT, without the MSI/MSIX packaging and attestation steps.
+# The result is the artifact PDF4QT-Windows-<version>.zip; unzip it and run Pdf4QtEditor.exe.
+name: Windows build
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the run, which is still in progress
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: '6.11.3'
+  QT_MODULES: 'qtspeech qtmultimedia qtimageformats'
+  # aqtinstall 3.3 cannot read the Windows repository layout of Qt 6.11+, use a commit of its master until a
+  # release supports it
+  AQT_SOURCE: 'git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7'
+  # Release only triplet, the dependencies are built once, not in the debug and release configuration
+  VCPKG_TRIPLET: x64-windows-release
+
+jobs:
+  build_windows:
+    # The image contains Visual Studio 2022 (redistributables of MSVC) and WiX Toolset v3
+    runs-on: windows-2022
+    timeout-minutes: 150
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          path: pdf4qt
+
+      - name: Set up paths
+        run: |
+          # Paths with forward slashes (CMake and vcpkg accept them also on Windows)
+          workspace="$(cygpath -m "$GITHUB_WORKSPACE")"
+          {
+            echo "VCPKG_ROOT=$workspace/vcpkg"
+            echo "VCPKG_INSTALLED_DIR=$workspace/vcpkg_installed"
+            echo "VCPKG_DEFAULT_BINARY_CACHE=$workspace/vcpkg-binary-cache"
+            echo "VCPKG_DISABLE_METRICS=1"
+          } >> "$GITHUB_ENV"
+
+      - name: 'VCPKG: Set up VCPKG'
+        run: |
+          # vcpkg is checked out exactly at the builtin-baseline of vcpkg.json. The ABI hashes of the binary
+          # cache depend also on the scripts and tools of vcpkg, a checkout of its master would change them
+          # with each commit of vcpkg and all dependencies would be built again.
+          baseline="$(sed -n 's/.*"builtin-baseline": *"\([0-9a-f]*\)".*/\1/p' pdf4qt/vcpkg.json)"
+          git init -q vcpkg
+          git -C vcpkg remote add origin https://github.com/microsoft/vcpkg.git
+          git -C vcpkg fetch -q --depth=1 origin "$baseline"
+          git -C vcpkg checkout -q --detach FETCH_HEAD
+          ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+
+      # The key contains the runner image, the compiler differs from the CI build (windows-latest) and the
+      # binaries of the two builds would push each other out of the cache
+      - name: 'VCPKG: Restore binary cache'
+        uses: actions/cache/restore@v6
+        with:
+          path: vcpkg-binary-cache
+          key: vcpkg-bin-v1-windows-2022-${{ env.VCPKG_TRIPLET }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            vcpkg-bin-v1-windows-2022-${{ env.VCPKG_TRIPLET }}-
+
+      - name: 'VCPKG: Install project dependencies'
+        run: |
+          mkdir -p vcpkg-binary-cache
+          find vcpkg-binary-cache -type f -name '*.zip' | sort > vcpkg-cache-before.txt
+          ./vcpkg/vcpkg install --x-manifest-root=pdf4qt --x-install-root="$VCPKG_INSTALLED_DIR" --triplet=$VCPKG_TRIPLET --host-triplet=$VCPKG_TRIPLET --clean-buildtrees-after-build --clean-packages-after-build
+
+      - name: 'VCPKG: Prune binary cache'
+        id: vcpkg-cache
+        run: |
+          # The archives of the binary cache are named by the ABI hash of the package. The archives, which were
+          # not used by this build, are deleted, so the cache does not grow with outdated binaries. The cache is
+          # saved only when its content has changed.
+          # The directory updates exists only when the status was not yet compacted into the status file
+          shopt -s nullglob
+          { cat "$VCPKG_INSTALLED_DIR"/vcpkg/status "$VCPKG_INSTALLED_DIR"/vcpkg/updates/* || true; } | tr -d '\r' | sed -n 's/^Abi: *//p' | sort -u > vcpkg-cache-used.txt
+          if [ -s vcpkg-cache-used.txt ]; then
+            find vcpkg-binary-cache -type f -name '*.zip' | while read -r archive; do
+              grep -qxF "$(basename "$archive" .zip)" vcpkg-cache-used.txt || rm -f "$archive"
+            done
+          else
+            echo "::warning::ABI hashes of the installed packages were not found, the binary cache is not pruned"
+          fi
+          find vcpkg-binary-cache -type f -name '*.zip' | sort > vcpkg-cache-after.txt
+          echo "Packages: $(wc -l < vcpkg-cache-after.txt), cache size: $(du -sh vcpkg-binary-cache | cut -f1)"
+          if cmp -s vcpkg-cache-before.txt vcpkg-cache-after.txt; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Saved right after the installation of the dependencies, so a failure of the build does not lose them
+      - name: 'VCPKG: Save binary cache'
+        if: steps.vcpkg-cache.outputs.changed == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: vcpkg-binary-cache
+          key: vcpkg-bin-v1-windows-2022-${{ env.VCPKG_TRIPLET }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Qt is cached by own steps, the automatic cache of install-qt-action has a long key containing also the
+      # version of the runner image
+      - name: 'Qt: Cache key'
+        id: qt-key
+        run: |
+          hash="$(printf '%s\n' "$QT_VERSION" "windows" "win64_msvc2022_64" "$QT_MODULES" "$AQT_SOURCE" | sha256sum | cut -c1-16)"
+          echo "key=$RUNNER_OS-qt-$QT_VERSION-$hash" >> "$GITHUB_OUTPUT"
+
+      - name: 'Qt: Restore cache'
+        id: qt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: qt
+          key: ${{ steps.qt-key.outputs.key }}
+
+      - name: 'Qt: Install'
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          dir: '${{ github.workspace }}/qt/'
+          modules: ${{ env.QT_MODULES }}
+          aqtsource: ${{ env.AQT_SOURCE }}
+          cache: 'false'
+          # The environment is set by the step below, the same for an installed and for a restored Qt
+          set-env: 'false'
+
+      - name: 'Qt: Save cache'
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: qt
+          key: ${{ steps.qt-key.outputs.key }}
+
+      - name: 'Qt: Set up environment'
+        run: |
+          # The same variables as install-qt-action sets
+          qt_root="$(cygpath -m "$GITHUB_WORKSPACE")/qt/Qt/$QT_VERSION/msvc2022_64"
+          if [ ! -d "$qt_root/bin" ]; then echo "::error::Qt not found in $qt_root"; exit 1; fi
+          {
+            echo "QT_ROOT_DIR=$qt_root"
+            echo "QT_PLUGIN_PATH=$qt_root/plugins"
+            echo "QML2_IMPORT_PATH=$qt_root/qml"
+          } >> "$GITHUB_ENV"
+          echo "$qt_root/bin" >> "$GITHUB_PATH"
+
+      - name: Find VC Redistributable Directories
+        shell: pwsh
+        run: |
+          # The runtime of the default (newest) toolset of Visual Studio, which compiles the project. The runtime
+          # must not be older than the toolset; the image contains also 14.29 of VS 2019, which was shipped by
+          # mistake earlier (the first directory in alphabetical order).
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $version = (Get-Content "$vs\VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt" -Raw).Trim()
+          $arch = "x64"
+          $redistDir = Get-ChildItem "$vs\VC\Redist\MSVC\$version\$arch" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+          if (-not $redistDir) {
+            Write-Error "No redistributable of MSVC $version found."
+            exit 1
+          }
+          $toolsetVersion = $redistDir.Name -replace '^Microsoft\.VC(\d+)\.CRT$', '$1'
+          Write-Host "Found MSVC Redistributable $version, toolset $toolsetVersion, $($redistDir.FullName)"
+          echo "MSVC_TOOLSET_VERSION=$toolsetVersion" >> $env:GITHUB_ENV
+          echo "VCToolsRedistDir=$vs\VC\Redist\MSVC\$version" >> $env:GITHUB_ENV
+          echo "VSCMD_ARG_TGT_ARCH=$arch" >> $env:GITHUB_ENV
+          echo "MSVC_REDISTRIBUTABLES_PATH=$($redistDir.FullName)" >> $env:GITHUB_ENV
+
+      - name: Build project
+        working-directory: pdf4qt
+        run: |
+          # The dependencies are already installed, CMake must not run vcpkg install again into the build tree
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=$VCPKG_TRIPLET -DVCPKG_HOST_TRIPLET=$VCPKG_TRIPLET -DVCPKG_INSTALLED_DIR="$VCPKG_INSTALLED_DIR" -DVCPKG_MANIFEST_INSTALL=OFF -DPDF4QT_INSTALL_QT_DEPENDENCIES=ON -DPDF4QT_INSTALL_DEPENDENCIES=ON -DPDF4QT_QT_ROOT="$QT_ROOT_DIR" -DPDF4QT_INSTALL_MSVC_REDISTRIBUTABLE=ON -DPDF4QT_INSTALL_PREPARE_WIX_INSTALLER=OFF -DPDF4QT_INSTALL_TO_USR=ON
+          cmake --build build --target release_translations --config Release -j6
+          cmake --build build --config Release -j6
+          cmake --install build --config Release
+
+      # The generator of Visual Studio is multi-configuration, the configuration is given by --config. The check
+      # of the installed binaries is the real guarantee: a debug build (also a debug Qt) links the debug runtime.
+      - name: Check release build
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $failed = $false
+          foreach ($binary in @("Pdf4QtLibCore.dll", "Pdf4QtLibGui.dll", "Pdf4QtEditor.exe", "Pdf4QtViewer.exe")) {
+            $dependents = & $dumpbin.FullName /dependents "pdf4qt\build\install\usr\bin\$binary" | Out-String
+            if ($LASTEXITCODE -ne 0) { Write-Error "dumpbin failed for $binary"; exit 1 }
+            if ($dependents -match '(?i)\b(VCRUNTIME140D|VCRUNTIME140_1D|MSVCP140D|UCRTBASED)\.dll') {
+              Write-Host "::error::$binary is a debug build:`n$dependents"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host "Release binaries confirmed"
+
+          # The shipped runtime of MSVC must not be older than the compiler (compiler 19.xx belongs to the
+          # runtime 14.xx)
+          $compilerFile = Get-ChildItem "pdf4qt\build\CMakeFiles\*\CMakeCXXCompiler.cmake" | Select-Object -First 1
+          $compiler = [version](Select-String -Path $compilerFile.FullName -Pattern 'set\(CMAKE_CXX_COMPILER_VERSION "([0-9.]+)"\)').Matches[0].Groups[1].Value
+          $runtime = (Get-Item "pdf4qt\build\install\usr\bin\msvcp140.dll").VersionInfo.FileVersionRaw
+          if ($runtime.Minor -lt $compiler.Minor) {
+            Write-Host "::error::The shipped runtime of MSVC $runtime is older than the compiler $compiler"
+            exit 1
+          }
+          Write-Host "Runtime of MSVC $runtime, compiler $compiler"
+
+      - name: Read version
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Path ".\pdf4qt\build\version.txt" -Raw).Trim()
+          Write-Host "Version: $version"
+          echo "pdf4qt_version=$version" >> $env:GITHUB_ENV
+
+      - name: Create ZIP archive
+        shell: pwsh
+        working-directory: pdf4qt\build\install\usr\bin
+        run: |
+          7z a -tzip -mx=9 "..\..\PDF4QT-Windows-${{ env.pdf4qt_version }}.zip" *
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload ZIP archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: 'PDF4QT-Windows-${{ env.pdf4qt_version }}.zip'
+          path: .\pdf4qt\build\install\PDF4QT-Windows-${{ env.pdf4qt_version }}.zip
+          retention-days: 30
+          compression-level: 0

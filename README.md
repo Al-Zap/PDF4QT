@@ -1,4 +1,7 @@
-[![CI](https://github.com/JakubMelka/PDF4QT/actions/workflows/ci.yml/badge.svg)](https://github.com/JakubMelka/PDF4QT/actions/workflows/ci.yml)
+[![Windows build](https://github.com/Al-Zap/PDF4QT/actions/workflows/windows-build.yml/badge.svg)](https://github.com/Al-Zap/PDF4QT/actions/workflows/windows-build.yml)
+
+> **About this fork.** This is a personal Windows PDF app built on PDF4QT, aimed at plan sets, measuring, fixture counts and spec sheet forms. Every push and pull request produces a portable Windows build (`PDF4QT-Windows-<version>.zip`) on the Actions tab. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build it and where each feature lives in the code. The upstream README follows.
+
 
 # PDF4QT
 

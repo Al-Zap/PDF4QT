@@ -1,10 +1,8 @@
 name: CI
 
+# This fork builds Windows on every push and pull request with windows-build.yml; this upstream matrix
+# (Ubuntu and Windows) runs only on demand, so each push does not build Windows twice.
 on:
-  push:
-    branches:
-      - master
-
   workflow_dispatch:
 
 # A newer push to the same branch cancels the run, which is still in progress
