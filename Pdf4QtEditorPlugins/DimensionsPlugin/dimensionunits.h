@@ -164,11 +164,24 @@ public:
     /// an invalid scale, if the unit of the measure dictionary is not recognized,
     /// or if the coordinate system is anisotropic, because such a coordinate
     /// system cannot be expressed by a single scale factor.
+    ///
+    /// Drawings plotted by CAD applications often define the conversion without
+    /// a unit. The unit is then estimated from the ratio, see \p estimateRealUnit,
+    /// and the viewport of the sheet itself (paper space) is skipped.
     /// \param measure Measure dictionary
     /// \param userUnit Value of the UserUnit entry of the page, for which is
     ///        the measure defined. Measured lengths are multiplied by it before
     ///        the scale is applied, so it must be removed from the factor here.
-    static DimensionScale createFromMeasure(const pdf::PDFMeasure& measure, pdf::PDFReal userUnit);
+    /// \param[out] isUnitAssumed Set to true, if the unit was estimated
+    static DimensionScale createFromMeasure(const pdf::PDFMeasure& measure, pdf::PDFReal userUnit, bool* isUnitAssumed = nullptr);
+
+    /// Estimates the unit of a drawing, which defines only the count of its
+    /// drawing units displayed by an inch of the paper. Returns an empty id, if the
+    /// ratio describes the sheet itself (an inch of the paper is a drawing unit or
+    /// less), such a ratio is not a scale of a drawing. If the ratio is close to
+    /// a scale used on drawings, it is replaced by the exact value of that scale.
+    /// \param[in,out] unitsPerInch Count of the drawing units displayed by an inch of the paper
+    static QByteArray estimateRealUnit(pdf::PDFReal& unitsPerInch);
 
     /// Returns the same scale expressed for a single paper unit, which people
     /// use on drawings - an inch for the imperial real units, a millimeter

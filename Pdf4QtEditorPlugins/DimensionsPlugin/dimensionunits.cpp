@@ -374,8 +374,69 @@ DimensionScale DimensionScale::createIdentity()
     return DimensionScale(1.0, "mm", 1.0, "mm");
 }
 
-DimensionScale DimensionScale::createFromMeasure(const pdf::PDFMeasure& measure, pdf::PDFReal userUnit)
+QByteArray DimensionScale::estimateRealUnit(pdf::PDFReal& unitsPerInch)
 {
+    if (unitsPerInch < 1.5)
+    {
+        // Viewport of the sheet itself (paper space), the drawing unit is an inch
+        // of the paper. It is not a scale of a drawing.
+        return QByteArray();
+    }
+
+    // Plotted coordinates are rounded, so the ratio of a drawing in the scale
+    // 1 in = 50 ft arrives for example as 49.94
+    const pdf::PDFReal tolerance = 0.0025;
+
+    auto snap = [&unitsPerInch, tolerance](const std::vector<pdf::PDFReal>& values, pdf::PDFReal multiplier)
+    {
+        for (const pdf::PDFReal value : values)
+        {
+            const pdf::PDFReal nominal = value * multiplier;
+            if (qAbs(unitsPerInch - nominal) <= nominal * tolerance)
+            {
+                unitsPerInch = nominal;
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    // Drawings of buildings drawn in inches: 1 in = 1 ft, 1/2 in = 1 ft, ...,
+    // and sites drawn in inches: 1 in = 10 ft, 1 in = 20 ft, ...
+    static const std::vector<pdf::PDFReal> inchRatios = { 12.0, 24.0, 32.0, 48.0, 64.0, 96.0, 120.0, 128.0, 192.0, 240.0, 360.0, 384.0, 480.0, 600.0, 720.0, 1200.0 };
+    if (snap(inchRatios, 1.0))
+    {
+        return QByteArray("in");
+    }
+
+    // Metric drawings drawn in millimeters or in meters, 1:20 to 1:5000
+    static const std::vector<pdf::PDFReal> metricRatios = { 20.0, 25.0, 50.0, 75.0, 100.0, 125.0, 150.0, 200.0, 250.0, 500.0, 750.0, 1000.0, 1250.0, 2000.0, 2500.0, 5000.0 };
+    if (snap(metricRatios, 25.4))
+    {
+        return QByteArray("mm");
+    }
+    if (snap(metricRatios, 0.0254))
+    {
+        return QByteArray("m");
+    }
+
+    // Site plans drawn in feet: 1 in = 10 ft, 1 in = 20 ft, ...
+    static const std::vector<pdf::PDFReal> feetRatios = { 2.0, 4.0, 5.0, 8.0, 10.0, 15.0, 16.0, 20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0, 800.0, 1000.0, 2000.0 };
+    snap(feetRatios, 1.0);
+
+    // A drawing in a scale, which is not a common one, was most probably
+    // fitted to the sheet - that is done with site plans, they are drawn in feet
+    return QByteArray("ft");
+}
+
+DimensionScale DimensionScale::createFromMeasure(const pdf::PDFMeasure& measure, pdf::PDFReal userUnit, bool* isUnitAssumed)
+{
+    if (isUnitAssumed)
+    {
+        *isUnitAssumed = false;
+    }
+
     if (!measure.isValid() || !measure.isRectilinear())
     {
         return DimensionScale();
@@ -391,11 +452,36 @@ DimensionScale DimensionScale::createFromMeasure(const pdf::PDFMeasure& measure,
     const pdf::PDFReal unitsPerPoint = measure.getUnitsPerUserSpaceUnit();
     const DimensionUnit unit = DimensionUnit::findLengthUnitByLabel(measure.getUnitLabel());
 
-    if (unitsPerPoint <= 0.0 || userUnit <= 0.0 || !unit.isValid())
+    if (unitsPerPoint <= 0.0 || userUnit <= 0.0)
     {
-        // Either the measure does not define the conversion at all, or it uses
-        // a unit we are not able to interpret
+        // The measure does not define the conversion at all
         return DimensionScale();
+    }
+
+    if (!unit.isValid() && !measure.getUnitLabel().trimmed().isEmpty())
+    {
+        // The measure uses a unit we are not able to interpret
+        return DimensionScale();
+    }
+
+    if (!unit.isValid())
+    {
+        // CAD applications plot the conversion to the drawing units without
+        // telling what the drawing unit is. The unit is estimated from the ratio.
+        pdf::PDFReal unitsPerInch = unitsPerPoint * 72.0;
+        const QByteArray unitId = estimateRealUnit(unitsPerInch);
+
+        if (unitId.isEmpty())
+        {
+            return DimensionScale();
+        }
+
+        if (isUnitAssumed)
+        {
+            *isUnitAssumed = true;
+        }
+
+        return DimensionScale(1.0, "in", unitsPerInch / userUnit, unitId).getReadable();
     }
 
     // Measured lengths are multiplied by the UserUnit of the page before the scale

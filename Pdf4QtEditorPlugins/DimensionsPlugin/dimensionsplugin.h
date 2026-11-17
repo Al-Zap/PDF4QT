@@ -37,6 +37,7 @@ class ScaleDialog;
 namespace pdf
 {
 class PDFDocumentBuilder;
+class PDFViewport;
 }
 
 namespace pdfplugin
@@ -165,7 +166,7 @@ private:
     QString getCurrentScaleText() const;
 
     /// Returns the distinct scales defined by the viewports of the page
-    std::vector<DimensionScale> getViewportScales(pdf::PDFInteger pageIndex) const;
+    std::vector<DimensionScale> getViewportScales(pdf::PDFInteger pageIndex, bool* isUnitAssumed = nullptr) const;
 
     /// Shows the scale dialog for the scale either calibrated or entered by the user
     /// and applies the result
@@ -227,6 +228,14 @@ private:
 
     /// Returns the scale with the real value multiplied by the correction
     static DimensionScale applyDrawingCorrection(const DimensionScale& scale, pdf::PDFReal correction);
+
+    /// Returns the scale defined by a viewport of a page, without the calibration.
+    /// Returns an invalid scale, if the viewport does not define a usable scale.
+    /// \param viewport Viewport
+    /// \param userUnit Value of the UserUnit entry of the page
+    /// \param[out] isUnitAssumed Set to true, if the drawing does not tell its
+    ///             unit and the unit was estimated
+    static DimensionScale getRawViewportScale(const pdf::PDFViewport& viewport, pdf::PDFReal userUnit, bool* isUnitAssumed = nullptr);
 
     /// Returns the scale, which applies to the dimension - either the scale
     /// prescribed by the document, or the scale currently selected by the user
