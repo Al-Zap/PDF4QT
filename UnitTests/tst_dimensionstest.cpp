@@ -25,6 +25,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSettings>
+#include <QElapsedTimer>
 #include <QTemporaryDir>
 
 #include "dimensionsettings.h"
@@ -32,6 +33,14 @@
 
 #include "pdfdocumentbuilder.h"
 #include "pdfmeasure.h"
+#include "pdfcms.h"
+#include "pdfconstants.h"
+#include "pdfdocumentreader.h"
+#include "pdffont.h"
+#include "pdfoptionalcontent.h"
+#include "pdfpainter.h"
+#include "pdfrenderer.h"
+#include "pdfsnapper.h"
 
 class DimensionsTest : public QObject
 {
@@ -54,6 +63,16 @@ private slots:
     void test_document_scale_by_permanent_id();
     void test_document_scale_path_has_priority();
     void test_document_identity_canonical_path();
+    void test_feet_and_inches_format();
+    void test_feet_and_inches_unit();
+    void test_default_presets();
+    void test_page_scales();
+    void test_page_scales_persistence();
+    void test_geometry_snap_priority();
+    void test_geometry_snap_curve();
+    void test_geometry_snap_limits();
+    void test_geometry_snap_compiled_page();
+    void geometrySnapBenchmark();
 
 private:
     /// Creates a measure dictionary with a single number format on each axis
@@ -465,6 +484,405 @@ void DimensionsTest::test_document_identity_canonical_path()
     // A document, which has neither a file name nor an identifier, cannot
     // be identified
     QVERIFY(!pdfplugin::DocumentIdentity::create(nullptr, QString()).isValid());
+}
+
+void DimensionsTest::test_feet_and_inches_format()
+{
+    QCOMPARE(DimensionUnit::formatFeetAndInches(0.0), QString("0'-0\""));
+    QCOMPARE(DimensionUnit::formatFeetAndInches(12.0), QString("12'-0\""));
+    QCOMPARE(DimensionUnit::formatFeetAndInches(12.5), QString("12'-6\""));
+    QCOMPARE(DimensionUnit::formatFeetAndInches(12.0 + 6.5 / 12.0), QString("12'-6 1/2\""));
+    QCOMPARE(DimensionUnit::formatFeetAndInches(1.0 / 12.0 * (3.0 + 3.0 / 16.0)), QString("0'-3 3/16\""));
+    QCOMPARE(DimensionUnit::formatFeetAndInches(100.0), QString("100'-0\""));
+
+    // Rounding to the nearest sixteenth carries over to the inches and to the feet
+    QCOMPARE(DimensionUnit::formatFeetAndInches(11.0 + 11.999 / 12.0), QString("12'-0\""));
+    QCOMPARE(DimensionUnit::formatFeetAndInches(2.0 + 5.999 / 12.0), QString("2'-6\""));
+
+    // Other precision
+    QCOMPARE(DimensionUnit::formatFeetAndInches(1.0 + 1.3 / 12.0, 4), QString("1'-1 1/4\""));
+    QCOMPARE(DimensionUnit::formatFeetAndInches(-1.5), QString("-1'-6\""));
+}
+
+void DimensionsTest::test_feet_and_inches_unit()
+{
+    const DimensionUnit foot = DimensionUnit::getLengthUnit("ft");
+    const DimensionUnit feetAndInches = DimensionUnit::getLengthUnit(DimensionUnit::FEET_AND_INCHES_ID);
+
+    QVERIFY(feetAndInches.isFeetAndInches());
+    QVERIFY(!foot.isFeetAndInches());
+    QVERIFY(qFuzzyCompare(feetAndInches.scale, foot.scale));
+
+    // 864 points is one foot
+    QCOMPARE(feetAndInches.formatLength(864.0 * feetAndInches.scale * 10.25), QString("10'-3\""));
+    QCOMPARE(foot.formatLength(10.25), QLocale().toString(10.25, 'f', 2) + QString(" ft"));
+}
+
+void DimensionsTest::test_default_presets()
+{
+    const std::vector<DimensionScale> presets = DimensionScale::getDefaultPresets();
+
+    auto findFactor = [&presets](pdf::PDFReal factor)
+    {
+        return std::any_of(presets.cbegin(), presets.cend(), [factor](const DimensionScale& scale) { return scale.isValid() && qFuzzyCompare(scale.getScaleFactor(), factor); });
+    };
+
+    // Engineering scales 1" = 10' ... 200', i.e. 1:120 ... 1:2400
+    for (int feet : { 10, 20, 30, 40, 50, 60, 100, 200 })
+    {
+        QVERIFY2(findFactor(12.0 * feet), qPrintable(QString("Engineering 1\" = %1'").arg(feet)));
+    }
+
+    // Architectural scales 1/8" = 1'-0" is 1:96, 1/4" = 1'-0" is 1:48, 3/32" = 1'-0" is 1:128
+    QVERIFY(findFactor(96.0));
+    QVERIFY(findFactor(48.0));
+    QVERIFY(findFactor(128.0));
+    QVERIFY(findFactor(4.0));
+
+    // Each preset is named, so it can be recognized in the menu
+    for (const DimensionScale& preset : presets)
+    {
+        QVERIFY(preset.isValid());
+        QVERIFY(!preset.getName().isEmpty());
+    }
+}
+
+void DimensionsTest::test_page_scales()
+{
+    pdfplugin::DocumentIdentity document;
+    document.filePath = "/documents/plan-set.pdf";
+
+    const DimensionScale siteScale(1.0, "in", 20.0, "ft");
+    const DimensionScale detailScale(0.25, "in", 1.0, "ft");
+
+    pdfplugin::DimensionsSettingsStorage storage;
+    QVERIFY(storage.getPageScales(document).empty());
+
+    // A sheet can be calibrated, even if the document was not
+    storage.setPageScale(document, 3, detailScale);
+    QVERIFY(!storage.getDocumentScale(document).isValid());
+    QCOMPARE(storage.getPageScales(document).size(), size_t(1));
+    QVERIFY(qFuzzyCompare(storage.getPageScales(document).at(3).getScaleFactor(), 48.0));
+
+    // Scale of the whole document applies to all sheets, so the exceptions are removed
+    storage.setDocumentScale(document, siteScale);
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).getScaleFactor(), 240.0));
+    QVERIFY(storage.getPageScales(document).empty());
+
+    // Exception of a single sheet keeps the scale of the document
+    storage.setPageScale(document, 5, detailScale);
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).getScaleFactor(), 240.0));
+    QCOMPARE(storage.getPageScales(document).count(5), size_t(1));
+
+    // Invalid scale removes the exception
+    storage.setPageScale(document, 5, DimensionScale());
+    QVERIFY(storage.getPageScales(document).empty());
+    QVERIFY(storage.getDocumentScale(document).isValid());
+
+    // Invalid identity or page are ignored
+    storage.setPageScale(pdfplugin::DocumentIdentity(), 0, detailScale);
+    storage.setPageScale(document, -1, detailScale);
+    QVERIFY(storage.getPageScales(document).empty());
+}
+
+void DimensionsTest::test_page_scales_persistence()
+{
+    pdfplugin::DocumentIdentity document;
+    document.filePath = "/documents/lighting.pdf";
+
+    pdfplugin::DocumentIdentity sheetsOnlyDocument;
+    sheetsOnlyDocument.filePath = "/documents/details.pdf";
+
+    {
+        pdfplugin::DimensionsSettingsStorage storage;
+        storage.load();
+        storage.setDocumentScale(document, DimensionScale(0.125, "in", 1.0, "ft"));
+        storage.setPageScale(document, 0, DimensionScale(1.0, "in", 30.0, "ft"));
+        storage.setPageScale(document, 12, DimensionScale(0.5, "in", 1.0, "ft", QString("Detail")));
+        storage.setPageScale(sheetsOnlyDocument, 2, DimensionScale(1.0, "in", 40.0, "ft"));
+        storage.save();
+    }
+
+    pdfplugin::DimensionsSettingsStorage storage;
+    storage.load();
+
+    QVERIFY(qFuzzyCompare(storage.getDocumentScale(document).getScaleFactor(), 96.0));
+
+    const std::map<pdf::PDFInteger, DimensionScale> pageScales = storage.getPageScales(document);
+    QCOMPARE(pageScales.size(), size_t(2));
+    QVERIFY(qFuzzyCompare(pageScales.at(0).getScaleFactor(), 360.0));
+    QVERIFY(qFuzzyCompare(pageScales.at(12).getScaleFactor(), 24.0));
+    QCOMPARE(pageScales.at(12).getName(), QString("Detail"));
+
+    // A document with calibrated sheets only is remembered as well
+    QVERIFY(!storage.getDocumentScale(sheetsOnlyDocument).isValid());
+    QCOMPARE(storage.getPageScales(sheetsOnlyDocument).size(), size_t(1));
+    QVERIFY(qFuzzyCompare(storage.getPageScales(sheetsOnlyDocument).at(2).getScaleFactor(), 480.0));
+}
+
+void DimensionsTest::test_geometry_snap_priority()
+{
+    using Kind = pdf::PDFPageGeometrySnapIndex::Kind;
+
+    pdf::PDFPageGeometrySnapIndex index;
+
+    // Horizontal line from (0, 0) to (100, 0) and a vertical line crossing it at (40, 0)
+    index.addSegment(QPointF(0, 0), QPointF(100, 0), true, true, true);
+    index.addSegment(QPointF(40, -50), QPointF(40, 50), true, true, true);
+    index.build();
+
+    QCOMPARE(index.getSegmentCount(), size_t(2));
+
+    // End point
+    pdf::PDFPageGeometrySnapIndex::Result result = index.find(QPointF(98, 1), 5.0);
+    QCOMPARE(result.kind, Kind::Endpoint);
+    QCOMPARE(result.point, QPointF(100, 0));
+
+    // Intersection of the two lines
+    result = index.find(QPointF(42, 2), 5.0);
+    QCOMPARE(result.kind, Kind::Intersection);
+    QVERIFY(QLineF(result.point, QPointF(40, 0)).length() < 1e-4);
+
+    // Midpoint of the horizontal line
+    result = index.find(QPointF(51, -2), 5.0);
+    QCOMPARE(result.kind, Kind::Midpoint);
+    QCOMPARE(result.point, QPointF(50, 0));
+
+    // Nearest point on the line
+    result = index.find(QPointF(75, 3), 5.0);
+    QCOMPARE(result.kind, Kind::Nearest);
+    QVERIFY(QLineF(result.point, QPointF(75, 0)).length() < 1e-4);
+    QVERIFY(qAbs(result.distance - 3.0) < 1e-4);
+
+    // Nothing within the tolerance
+    QVERIFY(!index.find(QPointF(75, 10), 5.0).isValid());
+    QVERIFY(!index.find(QPointF(1000, 1000), 5.0).isValid());
+
+    // End point wins over an intersection, even if the intersection is nearer
+    pdf::PDFPageGeometrySnapIndex cornerIndex;
+    cornerIndex.addSegment(QPointF(0, 0), QPointF(10, 0), true, true, true);
+    cornerIndex.addSegment(QPointF(2, -5), QPointF(2, 5), true, true, true);
+    cornerIndex.build();
+    result = cornerIndex.find(QPointF(1.5, 0.0), 3.0);
+    QCOMPARE(result.kind, Kind::Endpoint);
+    QCOMPARE(result.point, QPointF(0, 0));
+}
+
+void DimensionsTest::test_geometry_snap_curve()
+{
+    using Kind = pdf::PDFPageGeometrySnapIndex::Kind;
+
+    // Quarter of a circle approximated by a cubic curve, its inner points
+    // must not be snapped as end points
+    QPainterPath path;
+    path.moveTo(100, 0);
+    path.cubicTo(100, 55.23, 55.23, 100, 0, 100);
+
+    pdf::PDFPageGeometrySnapIndex index;
+    index.addPath(path, QTransform());
+    index.build();
+
+    QVERIFY(index.getSegmentCount() > 1);
+
+    pdf::PDFPageGeometrySnapIndex::Result result = index.find(QPointF(70.7, 70.7), 3.0);
+    QCOMPARE(result.kind, Kind::Nearest);
+
+    result = index.find(QPointF(99, 1), 3.0);
+    QCOMPARE(result.kind, Kind::Endpoint);
+    QCOMPARE(result.point, QPointF(100, 0));
+
+    result = index.find(QPointF(1, 99), 3.0);
+    QCOMPARE(result.kind, Kind::Endpoint);
+    QCOMPARE(result.point, QPointF(0, 100));
+
+    // Rectangle - its corners are end points, the transformation is applied
+    QPainterPath rectangle;
+    rectangle.addRect(QRectF(0, 0, 10, 20));
+    pdf::PDFPageGeometrySnapIndex rectangleIndex;
+    rectangleIndex.addPath(rectangle, QTransform::fromTranslate(100, 200));
+    rectangleIndex.build();
+
+    result = rectangleIndex.find(QPointF(109, 219), 2.0);
+    QCOMPARE(result.kind, Kind::Endpoint);
+    QCOMPARE(result.point, QPointF(110, 220));
+}
+
+void DimensionsTest::test_geometry_snap_limits()
+{
+    // Empty index snaps nothing
+    pdf::PDFPageGeometrySnapIndex emptyIndex;
+    emptyIndex.build();
+    QVERIFY(emptyIndex.isEmpty());
+    QVERIFY(!emptyIndex.find(QPointF(0, 0), 10.0).isValid());
+
+    // Many segments - a dense grid of lines, the query is answered from the
+    // cells around the point only and the result is still exact
+    pdf::PDFPageGeometrySnapIndex gridIndex;
+    for (int i = 0; i <= 200; ++i)
+    {
+        gridIndex.addSegment(QPointF(i * 10.0, 0.0), QPointF(i * 10.0, 2000.0), true, true, true);
+        gridIndex.addSegment(QPointF(0.0, i * 10.0), QPointF(2000.0, i * 10.0), true, true, true);
+    }
+    gridIndex.addSegment(QPointF(0.0, 0.0), QPointF(2000.0, 2000.0), true, true, true);
+    gridIndex.build();
+
+    pdf::PDFPageGeometrySnapIndex::Result result = gridIndex.find(QPointF(1231.0, 569.0), 3.0);
+    QCOMPARE(result.kind, pdf::PDFPageGeometrySnapIndex::Kind::Intersection);
+    QVERIFY(QLineF(result.point, QPointF(1230.0, 570.0)).length() < 1e-3);
+
+    // Between the lines only the nearest point on a line is found
+    result = gridIndex.find(QPointF(1234.0, 567.0), 3.0);
+    QCOMPARE(result.kind, pdf::PDFPageGeometrySnapIndex::Kind::Nearest);
+    QVERIFY(QLineF(result.point, QPointF(1234.0, 570.0)).length() < 1e-3);
+
+    // The long diagonal line is found in the middle of the page
+    result = gridIndex.find(QPointF(1003.0, 1001.0), 2.0);
+    QVERIFY(result.isValid());
+
+    // Segment limit
+    pdf::PDFPageGeometrySnapIndex limitedIndex = pdf::PDFPageGeometrySnapIndex::create(nullptr, 0);
+    QVERIFY(limitedIndex.isEmpty());
+
+    QPainterPath manyLines;
+    for (int i = 0; i < 100; ++i)
+    {
+        manyLines.moveTo(i, 0);
+        manyLines.lineTo(i, 10);
+    }
+
+    pdf::PDFPrecompiledPage page;
+    page.addPath(QPen(Qt::black), QBrush(), manyLines, false);
+    limitedIndex = pdf::PDFPageGeometrySnapIndex::create(&page, 10);
+    QCOMPARE(limitedIndex.getSegmentCount(), size_t(10));
+    QVERIFY(limitedIndex.isTruncated());
+}
+
+void DimensionsTest::test_geometry_snap_compiled_page()
+{
+    using Kind = pdf::PDFPageGeometrySnapIndex::Kind;
+
+    QPainterPath line;
+    line.moveTo(0, 0);
+    line.lineTo(10, 0);
+
+    QPainterPath glyph;
+    glyph.moveTo(500, 500);
+    glyph.lineTo(510, 500);
+
+    pdf::PDFPrecompiledPage page;
+    page.addSetWorldMatrix(QTransform::fromTranslate(100, 100));
+    page.addPath(QPen(Qt::black), QBrush(), line, false);
+    page.addSaveGraphicState();
+    page.addSetWorldMatrix(QTransform::fromScale(2, 2));
+    page.addPath(QPen(Qt::black), QBrush(), line, false);
+    page.addRestoreGraphicState();
+
+    // Restored world matrix applies again
+    QPainterPath secondLine;
+    secondLine.moveTo(0, 50);
+    secondLine.lineTo(10, 50);
+    page.addPath(QPen(Qt::black), QBrush(), secondLine, false);
+
+    // Text is never snapped
+    page.addPath(QPen(Qt::black), QBrush(Qt::black), glyph, true);
+
+    const pdf::PDFPageGeometrySnapIndex index = pdf::PDFPageGeometrySnapIndex::create(&page);
+    QCOMPARE(index.getSegmentCount(), size_t(3));
+
+    pdf::PDFPageGeometrySnapIndex::Result result = index.find(QPointF(110, 101), 2.0);
+    QCOMPARE(result.kind, Kind::Endpoint);
+    QCOMPARE(result.point, QPointF(110, 100));
+
+    result = index.find(QPointF(20, 1), 2.0);
+    QCOMPARE(result.kind, Kind::Endpoint);
+    QCOMPARE(result.point, QPointF(20, 0));
+
+    result = index.find(QPointF(110, 149), 2.0);
+    QCOMPARE(result.kind, Kind::Endpoint);
+    QCOMPARE(result.point, QPointF(110, 150));
+
+    QVERIFY(!index.find(QPointF(500, 500), 5.0).isValid());
+}
+
+void DimensionsTest::geometrySnapBenchmark()
+{
+    // Measures the time needed to build the geometry index of the pages of a real
+    // drawing and the time of a single query, i.e. of a single mouse move. It runs
+    // only when PDF4QT_GEOMETRY_SNAP_BENCHMARK is set to a PDF file. When the page
+    // has a viewport with a measure, the snapped points are converted to the real
+    // units, set PDF4QT_GEOMETRY_SNAP_POINTS to "x1,y1,x2,y2" (page coordinates)
+    // to measure the distance between the points snapped near them.
+    const QString fileName = qEnvironmentVariable("PDF4QT_GEOMETRY_SNAP_BENCHMARK");
+    if (fileName.isEmpty())
+    {
+        QSKIP("Set PDF4QT_GEOMETRY_SNAP_BENCHMARK to a PDF file to run the benchmark");
+    }
+
+    pdf::PDFDocumentReader reader(nullptr, [](bool*) { return QString(); }, true, false);
+    const pdf::PDFDocument document = reader.readFromFile(fileName);
+    QCOMPARE(reader.getReadingResult(), pdf::PDFDocumentReader::Result::OK);
+
+    pdf::PDFFontCache fontCache(pdf::DEFAULT_FONT_CACHE_LIMIT, pdf::DEFAULT_REALIZED_FONT_CACHE_LIMIT);
+    pdf::PDFICCProfileCache iccProfileCache;
+    pdf::PDFOptionalContentActivity optionalContentActivity(&document, pdf::OCUsage::View, nullptr);
+    fontCache.setDocument(pdf::PDFModifiedDocument(const_cast<pdf::PDFDocument*>(&document), &optionalContentActivity));
+    iccProfileCache.setDocument(pdf::PDFModifiedDocument(const_cast<pdf::PDFDocument*>(&document), &optionalContentActivity));
+    pdf::PDFCMSManager cmsManager(nullptr);
+    cmsManager.setDocument(&document);
+    pdf::PDFCMSPointer cms = cmsManager.getCurrentCMS();
+    pdf::PDFRenderer renderer(&document, &fontCache, &iccProfileCache, cms.data(), &optionalContentActivity, pdf::PDFRenderer::getDefaultFeatures(), pdf::PDFMeshQualitySettings());
+
+    const QStringList pointsText = qEnvironmentVariable("PDF4QT_GEOMETRY_SNAP_POINTS").split(QChar(','), Qt::SkipEmptyParts);
+
+    for (size_t pageIndex = 0; pageIndex < document.getCatalog()->getPageCount(); ++pageIndex)
+    {
+        QElapsedTimer timer;
+        timer.start();
+        pdf::PDFPrecompiledPage compiledPage;
+        renderer.compile(&compiledPage, pageIndex);
+        const qint64 compileTime = timer.elapsed();
+
+        timer.restart();
+        const pdf::PDFPageGeometrySnapIndex index = pdf::PDFPageGeometrySnapIndex::create(&compiledPage);
+        const qint64 buildTime = timer.elapsed();
+
+        // Queries along the diagonal of the page, as the mouse would move
+        const QRectF mediaBox = document.getCatalog()->getPage(pageIndex)->getMediaBox();
+        constexpr int QUERY_COUNT = 10000;
+        int snappedCount = 0;
+        timer.restart();
+        for (int i = 0; i < QUERY_COUNT; ++i)
+        {
+            const QPointF point = mediaBox.topLeft() + (mediaBox.bottomRight() - mediaBox.topLeft()) * (qreal(i) / QUERY_COUNT);
+            snappedCount += index.find(point, 5.0).isValid() ? 1 : 0;
+        }
+        const qint64 queryTime = timer.nsecsElapsed() / QUERY_COUNT;
+
+        qInfo().noquote() << QString("page %1: compile %2 ms, %3 segments%4, index %5 ms, query %6 us, snapped %7 of %8")
+                                 .arg(pageIndex + 1).arg(compileTime).arg(index.getSegmentCount()).arg(index.isTruncated() ? " (truncated)" : "")
+                                 .arg(buildTime).arg(queryTime / 1000.0, 0, 'f', 1).arg(snappedCount).arg(QUERY_COUNT);
+
+        if (pointsText.size() == 4)
+        {
+            const QPointF p1(pointsText[0].toDouble(), pointsText[1].toDouble());
+            const QPointF p2(pointsText[2].toDouble(), pointsText[3].toDouble());
+            const pdf::PDFPageGeometrySnapIndex::Result r1 = index.find(p1, 5.0);
+            const pdf::PDFPageGeometrySnapIndex::Result r2 = index.find(p2, 5.0);
+            QVERIFY(r1.isValid() && r2.isValid());
+
+            const pdf::PDFObjectStorage& storage = document.getStorage();
+            const pdf::PDFPage* page = document.getCatalog()->getPage(pageIndex);
+            const std::vector<pdf::PDFViewport> viewports = pdf::PDFViewport::parseViewports(&storage, page->getViewports(&storage));
+            const pdf::PDFViewport* viewport = pdf::PDFViewport::findViewportForPoint(viewports, r1.point);
+            const DimensionScale scale = viewport ? DimensionScale::createFromMeasure(viewport->getMeasure(), page->getUserUnit()) : DimensionScale();
+            const DimensionUnit foot = DimensionUnit::getLengthUnit("ft");
+            const pdf::PDFReal length = QLineF(r1.point, r2.point).length() * page->getUserUnit() * scale.getScaleFactor() * foot.scale;
+
+            qInfo().noquote() << QString("  snapped (%1, %2) and (%3, %4), scale %5, distance %6 ft = %7")
+                                     .arg(r1.point.x()).arg(r1.point.y()).arg(r2.point.x()).arg(r2.point.y())
+                                     .arg(scale.getDisplayName()).arg(length, 0, 'f', 4).arg(DimensionUnit::formatFeetAndInches(length));
+        }
+    }
 }
 
 QTEST_MAIN(DimensionsTest)

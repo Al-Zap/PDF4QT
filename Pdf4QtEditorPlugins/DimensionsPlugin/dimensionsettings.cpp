@@ -26,6 +26,7 @@
 
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QLocale>
 #include <QSettings>
 
 #include <algorithm>
@@ -79,11 +80,17 @@ DimensionsPluginSettings DimensionsPluginSettings::createDefault()
 {
     DimensionsPluginSettings settings;
 
-    settings.lengthUnit = DimensionUnit::getLengthUnits().front();
-    settings.areaUnit = DimensionUnit::getAreaUnits().front();
+    // Plans are measured in feet in the countries using the imperial units,
+    // in meters elsewhere - points are never a useful default
+    const bool isImperial = QLocale().measurementSystem() != QLocale::MetricSystem;
+    settings.lengthUnit = DimensionUnit::getLengthUnit(isImperial ? "ft" : "m");
+    settings.areaUnit = DimensionUnit::getAreaUnit(isImperial ? "sqft" : "sqm");
     settings.angleUnit = DimensionUnit::getAngleUnits().front();
     settings.defaultScale = DimensionScale::createIdentity();
-    settings.storageMode = StorageMode::Temporary;
+
+    // Measurements are saved with the document, as standard measurement
+    // annotations, so they are not lost and other applications see them
+    settings.storageMode = StorageMode::Annotations;
     settings.isScaleStoredPerDocument = true;
     settings.textColor = QColor(Qt::black);
 
@@ -120,9 +127,10 @@ void DimensionsSettingsStorage::load()
         m_settings.defaultScale = qMove(defaultScale);
     }
 
-    m_settings.storageMode = settings.value("storeAsAnnotations", false).toBool() ? DimensionsPluginSettings::StorageMode::Annotations
+    m_settings.storageMode = settings.value("storeAsAnnotations", m_settings.storageMode == DimensionsPluginSettings::StorageMode::Annotations).toBool() ? DimensionsPluginSettings::StorageMode::Annotations
                                                                                   : DimensionsPluginSettings::StorageMode::Temporary;
     m_settings.isScaleStoredPerDocument = settings.value("scalePerDocument", m_settings.isScaleStoredPerDocument).toBool();
+    m_settings.isScaleAppliedPerSheet = settings.value("scalePerSheet", m_settings.isScaleAppliedPerSheet).toBool();
 
     const QString fontDescriptor = settings.value("font").toString();
     if (!fontDescriptor.isEmpty())
@@ -183,7 +191,20 @@ void DimensionsSettingsStorage::load()
         documentScale.scale = DimensionScale::fromStringList(settings.value("scale").toStringList());
         documentScale.lastUsed = settings.value("lastUsed").toDateTime();
 
-        if (documentScale.identity.isValid() && documentScale.scale.isValid())
+        const QVariantMap pageScales = settings.value("pageScales").toMap();
+        for (auto it = pageScales.cbegin(); it != pageScales.cend(); ++it)
+        {
+            bool isPageIndexOk = false;
+            const pdf::PDFInteger pageIndex = it.key().toLongLong(&isPageIndexOk);
+            DimensionScale pageScale = DimensionScale::fromStringList(it.value().toStringList());
+
+            if (isPageIndexOk && pageIndex >= 0 && pageScale.isValid())
+            {
+                documentScale.pageScales[pageIndex] = qMove(pageScale);
+            }
+        }
+
+        if (documentScale.isValid())
         {
             m_documentScales.push_back(qMove(documentScale));
         }
@@ -204,6 +225,7 @@ void DimensionsSettingsStorage::save() const
     settings.setValue("defaultScale", m_settings.defaultScale.toStringList());
     settings.setValue("storeAsAnnotations", m_settings.storageMode == DimensionsPluginSettings::StorageMode::Annotations);
     settings.setValue("scalePerDocument", m_settings.isScaleStoredPerDocument);
+    settings.setValue("scalePerSheet", m_settings.isScaleAppliedPerSheet);
     settings.setValue("font", m_settings.font.toString());
     settings.setValue("textColor", m_settings.textColor.name(QColor::HexArgb));
     settings.setValue("backgroundColor", m_settings.backgroundColor.name(QColor::HexArgb));
@@ -225,6 +247,13 @@ void DimensionsSettingsStorage::save() const
         settings.setValue("id", m_documentScales[i].identity.permanentId);
         settings.setValue("scale", m_documentScales[i].scale.toStringList());
         settings.setValue("lastUsed", m_documentScales[i].lastUsed);
+
+        QVariantMap pageScales;
+        for (const auto& [pageIndex, pageScale] : m_documentScales[i].pageScales)
+        {
+            pageScales[QString::number(pageIndex)] = pageScale.toStringList();
+        }
+        settings.setValue("pageScales", pageScales);
     }
     settings.endArray();
 
@@ -313,13 +342,8 @@ DimensionScale DimensionsSettingsStorage::getDocumentScale(const DocumentIdentit
     return DimensionScale();
 }
 
-void DimensionsSettingsStorage::setDocumentScale(const DocumentIdentity& identity, const DimensionScale& scale)
+DimensionsSettingsStorage::DocumentScale* DimensionsSettingsStorage::getOrCreateDocumentScale(const DocumentIdentity& identity)
 {
-    if (!identity.isValid() || !scale.isValid())
-    {
-        return;
-    }
-
     DocumentScale* documentScale = const_cast<DocumentScale*>(findDocumentScale(identity));
 
     if (!documentScale)
@@ -331,8 +355,14 @@ void DimensionsSettingsStorage::setDocumentScale(const DocumentIdentity& identit
     // The identity is always rewritten, so a record found by the permanent
     // identifier is moved to the current path of the file
     documentScale->identity = identity;
-    documentScale->scale = scale;
     documentScale->lastUsed = QDateTime::currentDateTime();
+    return documentScale;
+}
+
+void DimensionsSettingsStorage::discardOldDocumentScales()
+{
+    // Records without any scale are useless
+    m_documentScales.erase(std::remove_if(m_documentScales.begin(), m_documentScales.end(), [](const DocumentScale& item) { return !item.isValid(); }), m_documentScales.end());
 
     if (m_documentScales.size() > MAXIMUM_DOCUMENT_SCALES)
     {
@@ -340,6 +370,51 @@ void DimensionsSettingsStorage::setDocumentScale(const DocumentIdentity& identit
         std::sort(m_documentScales.begin(), m_documentScales.end(), [](const DocumentScale& left, const DocumentScale& right) { return left.lastUsed > right.lastUsed; });
         m_documentScales.resize(MAXIMUM_DOCUMENT_SCALES);
     }
+}
+
+void DimensionsSettingsStorage::setDocumentScale(const DocumentIdentity& identity, const DimensionScale& scale)
+{
+    if (!identity.isValid() || !scale.isValid())
+    {
+        return;
+    }
+
+    DocumentScale* documentScale = getOrCreateDocumentScale(identity);
+    documentScale->scale = scale;
+    documentScale->pageScales.clear();
+
+    discardOldDocumentScales();
+}
+
+std::map<pdf::PDFInteger, DimensionScale> DimensionsSettingsStorage::getPageScales(const DocumentIdentity& identity) const
+{
+    if (const DocumentScale* documentScale = findDocumentScale(identity))
+    {
+        return documentScale->pageScales;
+    }
+
+    return {};
+}
+
+void DimensionsSettingsStorage::setPageScale(const DocumentIdentity& identity, pdf::PDFInteger pageIndex, const DimensionScale& scale)
+{
+    if (!identity.isValid() || pageIndex < 0)
+    {
+        return;
+    }
+
+    DocumentScale* documentScale = getOrCreateDocumentScale(identity);
+
+    if (scale.isValid())
+    {
+        documentScale->pageScales[pageIndex] = scale;
+    }
+    else
+    {
+        documentScale->pageScales.erase(pageIndex);
+    }
+
+    discardOldDocumentScales();
 }
 
 }   // namespace pdfplugin
