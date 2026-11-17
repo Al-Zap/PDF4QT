@@ -147,6 +147,14 @@ void PDFWidget::setSmoothWheelScrolling(bool enabled)
     }
 }
 
+void PDFWidget::setPlanNavigation(bool enabled)
+{
+    if (PDFDrawWidget* drawWidget = dynamic_cast<PDFDrawWidget*>(m_drawWidget))
+    {
+        drawWidget->setPlanNavigation(enabled);
+    }
+}
+
 void PDFWidget::setWheelScrollSpeed(int horizontalPercent, int verticalPercent)
 {
     if (PDFDrawWidget* drawWidget = dynamic_cast<PDFDrawWidget*>(m_drawWidget))
@@ -298,6 +306,11 @@ void PDFDrawWidget::setSmoothWheelScrolling(bool enabled)
     }
 }
 
+void PDFDrawWidget::setPlanNavigation(bool enabled)
+{
+    m_planNavigation = enabled;
+}
+
 void PDFDrawWidget::setWheelScrollSpeed(int horizontalPercent, int verticalPercent)
 {
     m_horizontalWheelScrollSpeed = qMax(PDFReal(0.01), PDFReal(horizontalPercent) / PDFReal(100.0));
@@ -442,7 +455,13 @@ void PDFDrawWidget::mousePressEvent(QMouseEvent* event)
         m_lastMousePosition = event->pos();
     }
 
-    if (event->button() == Qt::MiddleButton)
+    if (event->button() == Qt::MiddleButton && m_planNavigation)
+    {
+        // Pages are dragged by the middle button, as in the CAD viewers
+        m_mouseOperation = MouseOperation::Translate;
+        m_lastMousePosition = event->pos();
+    }
+    else if (event->button() == Qt::MiddleButton)
     {
         if (m_mouseOperation == MouseOperation::AutoScroll)
         {
@@ -495,7 +514,7 @@ void PDFDrawWidget::mouseReleaseEvent(QMouseEvent* event)
 
         case MouseOperation::Translate:
         {
-            if (event->button() != Qt::MiddleButton)
+            if (event->button() != Qt::MiddleButton || m_planNavigation)
             {
                 m_mouseOperation = MouseOperation::None;
             }
@@ -740,7 +759,12 @@ void PDFDrawWidget::wheelEvent(QWheelEvent* event)
     const bool shiftModifier = keyboardModifiers.testFlag(Qt::ShiftModifier);
 
     PDFDrawWidgetProxy* proxy = m_widget->getDrawWidgetProxy();
-    if (keyboardModifiers.testFlag(Qt::ControlModifier))
+    // Navigation of the CAD viewers: the wheel of the mouse zooms and Ctrl + wheel scrolls.
+    // Pixel deltas come from the touchpads, which scroll in both modes.
+    const bool isControlPressed = keyboardModifiers.testFlag(Qt::ControlModifier);
+    const bool isZoom = (m_planNavigation && event->pixelDelta().isNull() && !shiftModifier) ? !isControlPressed : isControlPressed;
+
+    if (isZoom)
     {
         // Zoom in/Zoom out
         const int angleDeltaY = event->angleDelta().y();
