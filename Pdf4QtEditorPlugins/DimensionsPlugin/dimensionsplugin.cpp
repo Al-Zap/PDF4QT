@@ -33,6 +33,7 @@
 #include "pdfwidgetutils.h"
 
 #include <QCursor>
+#include <QKeySequence>
 #include <QMainWindow>
 #include <QStatusBar>
 #include <QTimer>
@@ -125,7 +126,8 @@ void DimensionsPlugin::setWidget(pdf::PDFWidget* widget)
     angleAction->setCheckable(true);
     calibrateAction->setCheckable(true);
 
-    calibrateAction->setToolTip(tr("Pick two points of a known distance in the document to calculate the scale of the drawing"));
+    calibrateAction->setToolTip(tr("Pick two points of a known distance in the document to calculate the scale of the drawing (S)"));
+    calibrateAction->setShortcut(QKeySequence(Qt::Key_S));
     polylineDimensionAction->setToolTip(tr("Measure the length of an open polyline. Double click or press Enter to finish it."));
     perimeterDimensionAction->setToolTip(tr("Measure the perimeter of a polygon. Click the first point, double click or press Enter to finish it."));
     areaDimensionAction->setToolTip(tr("Measure the area of a polygon. Click the first point, double click or press Enter to finish it."));
@@ -339,6 +341,29 @@ QString DimensionsPlugin::getPluginMenuName() const
 QString DimensionsPlugin::getToolbarSection() const
 {
     return QStringLiteral("measure");
+}
+
+std::vector<QAction*> DimensionsPlugin::getToolbarActions() const
+{
+    // The toolbar holds only the measuring tools and the calibration. The scale
+    // itself is always visible and selectable in the status bar, the rest
+    // (show, clear, export, settings) stays in the Measure menu.
+    std::vector<QAction*> result;
+
+    for (size_t i = 0; i < m_dimensionTools.size(); ++i)
+    {
+        if (i != size_t(DimensionTool::Calibrate) && m_dimensionTools[i])
+        {
+            result.push_back(m_dimensionTools[i]->getAction());
+        }
+    }
+
+    if (DimensionTool* calibrateTool = m_dimensionTools[DimensionTool::Calibrate])
+    {
+        result.push_back(calibrateTool->getAction());
+    }
+
+    return result;
 }
 
 void DimensionsPlugin::drawPage(QPainter* painter,
