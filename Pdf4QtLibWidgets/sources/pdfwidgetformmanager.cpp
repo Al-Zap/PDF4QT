@@ -36,6 +36,7 @@
 #include <QByteArray>
 #include <QClipboard>
 #include <QStyleOption>
+#include <QSettings>
 
 namespace pdf
 {
@@ -253,6 +254,11 @@ protected:
 private:
     /// Returns text value of the form field
     QString getFieldText() const;
+
+    /// Suggests a previously typed value, which starts with the text in the editor
+    /// \param event Key press event, which was processed by the editor
+    /// \param textBefore Text before the key press
+    void performAutocomplete(QKeyEvent* event, const QString& textBefore);
 
     PDFTextEditPseudowidget m_textEdit;
 
@@ -483,6 +489,11 @@ protected:
 
 private:
     static PDFFormField::FieldFlags getTextEditFlags(PDFFormField::FieldFlags flags);
+
+    /// Performs keyboard action, when the popup list is closed (select next/previous
+    /// option, open the list, type-ahead). Returns true, if key was handled.
+    /// \param event Key event
+    bool performClosedComboBoxKeyboardAction(QKeyEvent* event);
 
     /// Updates list box selection based on current text. If current text
     /// corresponds to some item in the list box, then item is selected
@@ -846,47 +857,71 @@ bool PDFWidgetFormManager::focusNextPrevFormField(bool next)
         return false;
     }
 
-    std::vector<PDFFormFieldWidgetEditor*>::const_iterator newFocusIterator = m_widgetEditors.cend();
+    // Editors are ordered in the tab order (see updateFormWidgetEditors).
+    // Read only fields can't be edited, so they are skipped.
+    auto isFocusable = [this](const PDFFormFieldWidgetEditor* editor)
+    {
+        return !isReadOnly(editor->getFormField());
+    };
 
-    if (!m_focusedEditor)
+    const std::ptrdiff_t count = static_cast<std::ptrdiff_t>(m_widgetEditors.size());
+    std::ptrdiff_t index = next ? -1 : count;
+
+    if (m_focusedEditor)
     {
-        // We are setting a new focus
-        if (next)
-        {
-            newFocusIterator = m_widgetEditors.cbegin();
-        }
-        else
-        {
-            newFocusIterator = std::prev(m_widgetEditors.cend());
-        }
-    }
-    else
-    {
-        std::vector<PDFFormFieldWidgetEditor*>::const_iterator it = std::find(m_widgetEditors.cbegin(), m_widgetEditors.cend(), m_focusedEditor);
+        auto it = std::find(m_widgetEditors.cbegin(), m_widgetEditors.cend(), m_focusedEditor);
         Q_ASSERT(it != m_widgetEditors.cend());
-
-        if (next)
-        {
-            newFocusIterator = std::next(it);
-        }
-        else if (it != m_widgetEditors.cbegin())
-        {
-            newFocusIterator = std::prev(it);
-        }
+        index = std::distance(m_widgetEditors.cbegin(), it);
     }
 
-    if (newFocusIterator != m_widgetEditors.cend())
+    for (index += next ? 1 : -1; index >= 0 && index < count; index += next ? 1 : -1)
     {
-        setFocusToEditor(*newFocusIterator);
-        return true;
-    }
-    else
-    {
-        // Jakub Melka: We must remove focus out of editor, because
-        setFocusToEditor(nullptr);
+        PDFFormFieldWidgetEditor* editor = m_widgetEditors[index];
+        if (isFocusable(editor))
+        {
+            setFocusToEditor(editor);
+            ensureEditorVisible(editor);
+            return true;
+        }
     }
 
+    // Jakub Melka: We must remove focus out of editor, because
+    // focus is leaving the form (end of the focus chain).
+    setFocusToEditor(nullptr);
     return false;
+}
+
+void PDFWidgetFormManager::ensureEditorVisible(PDFFormFieldWidgetEditor* editor)
+{
+    const PDFDocument* document = getDocument();
+    if (!editor || !document || !m_proxy)
+    {
+        return;
+    }
+
+    const PDFFormWidget* formWidget = editor->getFormWidget();
+    PDFObjectReference pageReference = formWidget->getPage();
+    size_t pageIndex = document->getCatalog()->getPageIndexFromPageReference(pageReference);
+
+    if (pageIndex == PDFCatalog::INVALID_PAGE_INDEX)
+    {
+        // Widget has no page reference (entry P is optional), find it in the annotations
+        const size_t pageCount = document->getCatalog()->getPageCount();
+        for (size_t i = 0; i < pageCount; ++i)
+        {
+            const std::vector<PDFObjectReference>& annotations = document->getCatalog()->getPage(i)->getAnnotations();
+            if (std::find(annotations.cbegin(), annotations.cend(), formWidget->getWidget()) != annotations.cend())
+            {
+                pageIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (pageIndex != PDFCatalog::INVALID_PAGE_INDEX)
+    {
+        m_proxy->goToPageAndEnsureVisible(PDFInteger(pageIndex), getWidgetRectangle(*formWidget));
+    }
 }
 
 void PDFWidgetFormManager::clearEditors()
@@ -900,7 +935,8 @@ void PDFWidgetFormManager::updateFormWidgetEditors()
     setFocusToEditor(nullptr);
     clearEditors();
 
-    for (const PDFFormWidget& widget : getWidgets())
+    // Editors are created in the tab order, so focus chain follows it
+    for (const PDFFormWidget& widget : getWidgetsInTabOrder())
     {
         const PDFFormField* formField = widget.getParent();
         switch (formField->getFieldType())
@@ -1314,6 +1350,11 @@ void PDFFormFieldComboBoxEditor::shortcutOverrideEvent(QWidget* widget, QKeyEven
     if (!m_hasFocus || !m_listBoxVisible)
     {
         m_textEdit.shortcutOverrideEvent(widget, event);
+
+        if (event->key() == Qt::Key_F4)
+        {
+            event->accept();
+        }
     }
     else
     {
@@ -1358,6 +1399,10 @@ void PDFFormFieldComboBoxEditor::keyPressEvent(QWidget* widget, QKeyEvent* event
         }
         event->accept();
     }
+    else if (!m_listBoxVisible && performClosedComboBoxKeyboardAction(event))
+    {
+        event->accept();
+    }
     else if (!m_listBoxVisible)
     {
         m_textEdit.keyPressEvent(widget, event);
@@ -1371,6 +1416,91 @@ void PDFFormFieldComboBoxEditor::keyPressEvent(QWidget* widget, QKeyEvent* event
     {
         widget->update();
     }
+}
+
+bool PDFFormFieldComboBoxEditor::performClosedComboBoxKeyboardAction(QKeyEvent* event)
+{
+    // Keyboard works as in the combo boxes of Windows: Alt+Down or F4 opens
+    // the list, Up/Down select the previous/next option, and in the combo box,
+    // which is not editable, a typed letter selects the next option starting with it.
+    const PDFFormFieldChoice* parentField = dynamic_cast<const PDFFormFieldChoice*>(m_formWidget.getParent());
+    if (!parentField || parentField->getOptions().empty() || m_formManager->isReadOnly(parentField))
+    {
+        return false;
+    }
+
+    const PDFFormFieldChoice::Options& options = parentField->getOptions();
+    const int optionCount = int(options.size());
+    const bool isEditable = m_formManager->getEffectiveFieldFlags(parentField).testFlag(PDFFormField::Edit);
+
+    auto getOptionText = [&options](int index) { return options[index].userString.isEmpty() ? options[index].exportString : options[index].userString; };
+
+    int currentIndex = -1;
+    for (int i = 0; i < optionCount; ++i)
+    {
+        if (getOptionText(i) == m_textEdit.getText())
+        {
+            currentIndex = i;
+            break;
+        }
+    }
+
+    auto selectOption = [&](int index)
+    {
+        m_textEdit.setText(getOptionText(index));
+        if (isEditable)
+        {
+            m_textEdit.performSelectAll();
+        }
+        updateListBoxSelection();
+    };
+
+    if (event->key() == Qt::Key_F4 || ((event->key() == Qt::Key_Down || event->key() == Qt::Key_Up) && event->modifiers().testFlag(Qt::AltModifier)))
+    {
+        updateListBoxSelection();
+        m_listBoxVisible = true;
+        return true;
+    }
+
+    if (event->key() == Qt::Key_Down)
+    {
+        selectOption(qMin(currentIndex + 1, optionCount - 1));
+        return true;
+    }
+
+    if (event->key() == Qt::Key_Up)
+    {
+        selectOption(qMax(currentIndex - 1, 0));
+        return true;
+    }
+
+    if (event->key() == Qt::Key_Home || event->key() == Qt::Key_End)
+    {
+        if (isEditable)
+        {
+            return false;
+        }
+
+        selectOption(event->key() == Qt::Key_Home ? 0 : optionCount - 1);
+        return true;
+    }
+
+    const QString text = event->text();
+    if (!isEditable && text.size() == 1 && text.at(0).isPrint() && !event->modifiers().testAnyFlags(Qt::ControlModifier | Qt::AltModifier))
+    {
+        for (int offset = 1; offset <= optionCount; ++offset)
+        {
+            const int index = (currentIndex + offset + optionCount) % optionCount;
+            if (getOptionText(index).startsWith(text, Qt::CaseInsensitive))
+            {
+                selectOption(index);
+                break;
+            }
+        }
+        return true;
+    }
+
+    return false;
 }
 
 void PDFFormFieldComboBoxEditor::mousePressEvent(QWidget* widget, QMouseEvent* event, const QPointF& mousePagePosition)
@@ -1670,8 +1800,109 @@ void PDFFormFieldTextBoxEditor::setFocusImpl(bool focused)
             parameters.scope = PDFFormField::SetValueParameters::Scope::User;
             parameters.value = qMove(object);
             m_formManager->setFormFieldValue(parameters);
+
+            if (m_formManager->isAutocompleteEnabled())
+            {
+                PDFFormFieldValueHistory::addValue(m_formWidget.getParent()->getName(PDFFormField::FullyQualified), text);
+            }
         }
     }
+}
+
+namespace
+{
+constexpr const char* FORM_FIELD_HISTORY_GROUP = "FormFieldValueHistory";
+constexpr const char* FORM_FIELD_HISTORY_ALL = "All";
+
+QString getFormFieldHistoryKey(const QString& fieldName)
+{
+    // Field names can contain characters, which have special meaning
+    // in the settings keys (for example, slash), so they are encoded.
+    return QString("Field_") + QString::fromLatin1(fieldName.toUtf8().toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
+}
+
+QString findCompletion(const QStringList& values, const QString& prefix)
+{
+    for (const QString& value : values)
+    {
+        if (value.length() > prefix.length() && value.startsWith(prefix, Qt::CaseInsensitive))
+        {
+            return value;
+        }
+    }
+
+    return QString();
+}
+
+void addToHistoryList(QStringList& values, const QString& value, int maxCount)
+{
+    values.removeAll(value);
+    values.prepend(value);
+
+    while (values.size() > maxCount)
+    {
+        values.removeLast();
+    }
+}
+
+}   // namespace
+
+QString PDFFormFieldValueHistory::complete(const QString& fieldName, const QString& prefix)
+{
+    if (prefix.isEmpty())
+    {
+        return QString();
+    }
+
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::organizationName(), QCoreApplication::applicationName());
+    settings.beginGroup(FORM_FIELD_HISTORY_GROUP);
+
+    QString completion;
+    if (!fieldName.isEmpty())
+    {
+        completion = findCompletion(settings.value(getFormFieldHistoryKey(fieldName)).toStringList(), prefix);
+    }
+
+    if (completion.isEmpty())
+    {
+        completion = findCompletion(settings.value(FORM_FIELD_HISTORY_ALL).toStringList(), prefix);
+    }
+
+    settings.endGroup();
+    return completion;
+}
+
+void PDFFormFieldValueHistory::addValue(const QString& fieldName, const QString& value)
+{
+    // Multiline values (notes) are not good candidates for suggestions
+    QString simplifiedValue = value.trimmed();
+    if (simplifiedValue.isEmpty() || simplifiedValue.contains(QChar('\n')) || simplifiedValue.contains(QChar('\r')))
+    {
+        return;
+    }
+
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::organizationName(), QCoreApplication::applicationName());
+    settings.beginGroup(FORM_FIELD_HISTORY_GROUP);
+
+    if (!fieldName.isEmpty())
+    {
+        const QString key = getFormFieldHistoryKey(fieldName);
+        QStringList fieldValues = settings.value(key).toStringList();
+        addToHistoryList(fieldValues, simplifiedValue, MAX_FIELD_VALUES);
+        settings.setValue(key, fieldValues);
+    }
+
+    QStringList allValues = settings.value(FORM_FIELD_HISTORY_ALL).toStringList();
+    addToHistoryList(allValues, simplifiedValue, MAX_ALL_VALUES);
+    settings.setValue(FORM_FIELD_HISTORY_ALL, allValues);
+
+    settings.endGroup();
+}
+
+void PDFFormFieldValueHistory::clear()
+{
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::organizationName(), QCoreApplication::applicationName());
+    settings.remove(FORM_FIELD_HISTORY_GROUP);
 }
 
 PDFFormFieldTextBoxEditor::PDFFormFieldTextBoxEditor(PDFWidgetFormManager* formManager, PDFFormWidget formWidget) :
@@ -1717,12 +1948,55 @@ void PDFFormFieldTextBoxEditor::keyPressEvent(QWidget* widget, QKeyEvent* event)
         return;
     }
 
+    const QString textBefore = m_textEdit.getText();
     m_textEdit.keyPressEvent(widget, event);
 
     if (event->isAccepted())
     {
+        performAutocomplete(event, textBefore);
         widget->update();
     }
+}
+
+void PDFFormFieldTextBoxEditor::performAutocomplete(QKeyEvent* event, const QString& textBefore)
+{
+    // Suggest only, when user typed a character at the end of the text
+    // (like autocomplete in spreadsheets). Suggested part of the text is
+    // selected, so typing continues normally, Backspace/Delete removes
+    // the suggestion and Tab/Enter accepts it.
+    const QString typedText = event->text();
+    const bool isCharacterTyped = !typedText.isEmpty() && typedText.at(0).isPrint() &&
+                                  !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier));
+
+    if (!isCharacterTyped ||
+        !m_formManager->isAutocompleteEnabled() ||
+        m_textEdit.isPassword() ||
+        m_textEdit.isMultiline() ||
+        m_textEdit.isComb() ||
+        m_keystroke.isKeystroke() ||
+        m_textEdit.getText() == textBefore ||
+        m_textEdit.isTextSelected() ||
+        m_textEdit.getPositionCursor() != m_textEdit.getPositionEnd())
+    {
+        return;
+    }
+
+    const QString text = m_textEdit.getText();
+    const QString completion = PDFFormFieldValueHistory::complete(m_formWidget.getParent()->getName(PDFFormField::FullyQualified), text);
+    if (completion.isEmpty())
+    {
+        return;
+    }
+
+    const int maxTextLength = m_textEdit.getMaxTextLength();
+    if (maxTextLength > 0 && completion.length() > maxTextLength)
+    {
+        return;
+    }
+
+    // Keep the letters typed by the user, append the rest of the suggestion
+    m_textEdit.setText(text + completion.mid(text.length()));
+    m_textEdit.setCursorPosition(text.length(), true);
 }
 
 void PDFFormFieldTextBoxEditor::mousePressEvent(QWidget* widget, QMouseEvent* event, const QPointF& mousePagePosition)

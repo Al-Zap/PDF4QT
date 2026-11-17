@@ -28,6 +28,10 @@
 #include "pdfannotation.h"
 #include "pdfannotationstyle.h"
 
+#include <QPointer>
+#include <QPlainTextEdit>
+
+
 class QActionGroup;
 
 namespace pdf
@@ -155,6 +159,62 @@ private:
     PDFPickTool* m_pickTool;
     PDFFreeTextStyle m_style;
     bool m_autoResizeToContents = true;
+};
+
+/// Typewriter tool - click anywhere on a page and type. It is intended
+/// for filling forms, which have no interactive form fields (flat, scanned,
+/// or printed-to-PDF spec sheets). Text is typed directly on the page,
+/// without dialog. Enter starts a new line, Escape, Ctrl+Enter, or click
+/// elsewhere finishes the text (click elsewhere also starts a new text at
+/// the clicked position). Text is stored as a free text annotation with
+/// intent \p FreeTextTypeWriter (without border and background), so other
+/// PDF applications show it as typewriter text.
+class PDF4QTLIBWIDGETSSHARED_EXPORT PDFCreateTypewriterTool : public PDFCreateAnnotationTool
+{
+    Q_OBJECT
+
+private:
+    using BaseClass = PDFCreateAnnotationTool;
+
+public:
+    explicit PDFCreateTypewriterTool(PDFDrawWidgetProxy* proxy, PDFToolManager* toolManager, QAction* action, QObject* parent);
+    virtual ~PDFCreateTypewriterTool() override;
+
+    virtual void keyPressEvent(QWidget* widget, QKeyEvent* event) override;
+    virtual void mousePressEvent(QWidget* widget, QMouseEvent* event) override;
+    virtual void mouseReleaseEvent(QWidget* widget, QMouseEvent* event) override;
+    virtual void mouseMoveEvent(QWidget* widget, QMouseEvent* event) override;
+
+    /// Starts typing a new text at the given point of the widget (top left
+    /// corner of the text). Returns false, if there is no page under the point.
+    /// \param widgetPoint Point in the draw widget
+    bool beginText(QPoint widgetPoint);
+
+    /// Finishes the typed text (creates the annotation, if text is not empty)
+    void commitText();
+
+    /// Cancels the typed text
+    void cancelText();
+
+    /// Returns editor of the typed text, or nullptr, if no text is being typed
+    QPlainTextEdit* getEditor() const { return m_editor; }
+
+    const PDFFreeTextStyle& getStyle() const { return m_style; }
+    void setStyle(const PDFFreeTextStyle& style) { m_style = style; }
+
+protected:
+    virtual void setActiveImpl(bool active) override;
+    virtual bool eventFilter(QObject* watched, QEvent* event) override;
+
+private:
+    void updateEditorGeometry();
+
+    PDFToolManager* m_toolManager;
+    PDFFreeTextStyle m_style;
+    QPointer<QPlainTextEdit> m_editor;
+    PDFInteger m_pageIndex = -1;
+    QPointF m_pagePoint;
+    PDFReal m_pixelsPerPoint = 1.0;
 };
 
 /// Tool that creates line/polyline/polygon annotations.
