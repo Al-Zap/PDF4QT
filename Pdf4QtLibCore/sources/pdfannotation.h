@@ -192,6 +192,30 @@ public:
     /// \param object Border effect object
     static PDFAnnotationBorderEffect parse(const PDFObjectStorage* storage, PDFObject object);
 
+    Effect getEffect() const { return m_effect; }
+    PDFReal getIntensity() const { return m_intensity; }
+    bool isCloudy() const { return m_effect == Effect::Cloudy; }
+
+    /// Returns radius of the arcs (scallops) of the cloudy border with given intensity.
+    /// Intensity is clamped to the range [0, 2] defined by the PDF specification,
+    /// zero intensity gives the smallest arcs.
+    /// \param intensity Intensity of the cloudy border
+    static PDFReal getCloudyArcRadius(PDFReal intensity);
+
+    /// Returns the distance, which the cloudy border reaches outside of the cloud
+    /// polygon (arcs bulge outward, pen width is included).
+    /// \param intensity Intensity of the cloudy border
+    /// \param penWidth Width of the pen used for drawing of the border
+    static PDFReal getCloudyBorderMargin(PDFReal intensity, PDFReal penWidth);
+
+    /// Creates path of the cloudy border (revision cloud) around the closed polygon.
+    /// Each edge is divided into arcs of similar size, which bulge outward from the
+    /// polygon, regardless of the orientation of the polygon. The path is closed
+    /// and it can be filled.
+    /// \param polygon Polygon (closing point is optional)
+    /// \param intensity Intensity of the cloudy border
+    static QPainterPath createCloudyPath(const QPolygonF& polygon, PDFReal intensity);
+
 private:
     Effect m_effect = Effect::None;
     PDFReal m_intensity = 0.0;
@@ -1005,6 +1029,10 @@ protected:
     virtual QColor getFillColor() const override;
 
 private:
+    /// Returns rectangle, around which the cloudy border is drawn
+    /// \param margin Margin of the cloudy border
+    QRectF getCloudyGeometryRectangle(PDFReal margin) const;
+
     friend PDFAnnotationPtr PDFAnnotation::parse(const PDFObjectStorage* storage, PDFObjectReference reference);
 
     AnnotationType m_type;

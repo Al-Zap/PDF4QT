@@ -319,8 +319,44 @@ public:
 
     PDFInteger getPageIndex(const QModelIndex& index) const;
 
+    /// Enables organizing of the pages by drag and drop: thumbnails can be dragged
+    /// to a new position and PDF files can be dropped between the thumbnails.
+    /// The model itself does not change the document, it emits requests
+    /// \p pagesMoveRequested and \p filesInsertRequested instead.
+    /// \param enabled Enable page organizing
+    void setPageOrganizingEnabled(bool enabled) { m_pageOrganizingEnabled = enabled; }
+    bool isPageOrganizingEnabled() const { return m_pageOrganizingEnabled; }
+
+    virtual Qt::ItemFlags flags(const QModelIndex& index) const override;
+    virtual Qt::DropActions supportedDropActions() const override;
+    virtual Qt::DropActions supportedDragActions() const override;
+    virtual QStringList mimeTypes() const override;
+    virtual QMimeData* mimeData(const QModelIndexList& indexes) const override;
+    virtual bool canDropMimeData(const QMimeData* data, Qt::DropAction action, int row, int column, const QModelIndex& parent) const override;
+    virtual bool dropMimeData(const QMimeData* data, Qt::DropAction action, int row, int column, const QModelIndex& parent) override;
+
+    /// Returns local PDF files contained in the mime data (dropped files)
+    static QStringList getPdfFiles(const QMimeData* data);
+
+    /// Returns index of the page, before which the dropped items are inserted
+    /// \param row Row of the drop (-1, if dropped onto the item or into the empty space)
+    /// \param parent Item, onto which the data are dropped
+    /// \param draggedPages Dragged pages (empty, if files are dropped)
+    PDFInteger getDropInsertPosition(int row, const QModelIndex& parent, const std::vector<PDFInteger>& draggedPages) const;
+
+signals:
+    /// Pages were dragged to the new position (index of the page in the current
+    /// document, before which the pages are moved, page count means the end).
+    void pagesMoveRequested(std::vector<pdf::PDFInteger> pageIndices, pdf::PDFInteger insertPosition);
+
+    /// PDF files were dropped before the page with given index (page count means the end)
+    void filesInsertRequested(QStringList fileNames, pdf::PDFInteger insertPosition);
+
 private:
     void onPageImageChanged(bool all, const std::vector<PDFInteger>& pages);
+
+    /// Returns pages stored in the mime data, if they were dragged from this model
+    std::vector<PDFInteger> getDraggedPages(const QMimeData* data) const;
 
     /// Returns generated key for page index
     QString getKey(int pageIndex) const;
@@ -332,6 +368,7 @@ private:
     int m_pageCount;
     const PDFDocument* m_document;
     QPixmapCache m_thumbnailCache;
+    bool m_pageOrganizingEnabled = false;
 };
 
 }   // namespace pdf

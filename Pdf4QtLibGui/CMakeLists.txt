@@ -49,6 +49,8 @@ add_library(Pdf4QtLibGui SHARED
     pdftoolbarslots.h
     pdfsidebarwidget.cpp
     pdfsidebarwidget.h
+    pdfpageorganizerui.cpp
+    pdfpageorganizerui.h
     pdftexttospeech.cpp
     pdftexttospeech.h
     pdfundoredomanager.cpp
