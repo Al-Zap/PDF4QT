@@ -60,6 +60,7 @@ public:
     inline int getTextLength() const { return m_editText.length(); }
     inline int getMaxTextLength() const { return m_maxTextLength; }
     inline int getSelectionLength() const { return m_selectionEnd - m_selectionStart; }
+    inline int getSelectionStart() const { return m_selectionStart; }
 
     inline int getPositionCursor() const { return m_positionCursor; }
     inline int getPositionStart() const { return 0; }

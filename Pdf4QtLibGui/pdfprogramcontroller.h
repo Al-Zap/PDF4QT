@@ -509,6 +509,19 @@ private:
     /// \param fileName File name of the document
     void removeRecoveryCopy(const QString& fileName);
 
+    /// Writes the value being typed into the focused form field into the document
+    void commitPendingFormChanges();
+
+    /// Asks the user, where the recovered copy should be saved
+    /// \param originalFileName File name of the original document
+    QString getSaveRecoveredCopyFileName(const QString& originalFileName);
+
+    /// Saves recovered copy as a new document (chosen by the user) and removes
+    /// the recovery copy. Returns true, if copy was saved.
+    /// \param item Recovery copy
+    /// \param openCopy Open the saved copy
+    bool saveRecoveredCopy(const PDFRecoveryManager::RecoveryItem& item, bool openCopy);
+
     /// Offers the recovery copy of just opened document, if it exists
     void offerRecoveryOfOpenedDocument();
 
