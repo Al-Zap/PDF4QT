@@ -130,6 +130,21 @@ public:
         m_variableBlock.clear();
     }
 
+    /// Adds an item to the end of the array and returns a reference to it. The item
+    /// has an unspecified valid value (an item of the flat block is used again without
+    /// being constructed), so the caller must set it.
+    T& addItem()
+    {
+        if (m_flatBlockItemCount < m_flatBlock.size())
+        {
+            return m_flatBlock[m_flatBlockItemCount++];
+        }
+        else
+        {
+            return m_variableBlock.emplace_back();
+        }
+    }
+
     void push_back(T object)
     {
         if (m_flatBlockItemCount < m_flatBlock.size())
