@@ -1152,7 +1152,7 @@ bool PDFDrawWidgetProxy::drawPageFromRasterCache(QPainter* painter,
 
     parameters.cropBox = page->getCropBox();
     parameters.pageSize = placedRect.size();
-    parameters.pageToLocal = createPagePointToDevicePointMatrix(page, QRectF(QPointF(0.0, 0.0), QSizeF(placedRect.size())));
+    parameters.pageToLocal = PDFAsynchronousPageRasterCache::createUniformScaleMatrix(createPagePointToDevicePointMatrix(page, QRectF(QPointF(0.0, 0.0), QSizeF(placedRect.size()))), placedRect.size());
     parameters.pageTopLeft = baseMatrix.map(QPointF(placedRect.topLeft()));
     parameters.visibleRegion = placedRect.intersected(rect).translated(-placedRect.topLeft());
     parameters.devicePixelRatio = painter->device()->devicePixelRatioF();

@@ -561,6 +561,13 @@ public:
     /// Returns true, if the path with given bounds can be visible in the cull rectangle
     static bool isPathVisible(const QRectF& bounds, bool isCosmeticPen, PDFReal cosmeticPenWidth, const QTransform& matrix, const QRectF& cullRect);
 
+    /// Creates a copy of the brush, which does not share the data with the original brush
+    /// (except gradients and textures)
+    static QBrush createIsolatedCopy(const QBrush& brush);
+
+    /// Creates a copy of the pen, which does not share the data with the original pen
+    static QPen createIsolatedCopy(const QPen& pen);
+
     /// Creates a copy of the path, which does not share any data with the original path
     static QPainterPath createIsolatedCopy(const QPainterPath& path);
 };
@@ -622,6 +629,53 @@ bool PDFPrecompiledPageHelper::isPathVisible(const QRectF& bounds, bool isCosmet
     const qreal margin = 1.0 + (isCosmeticPen ? cosmeticPenWidth : 0.0);
     deviceBounds.adjust(-margin, -margin, margin, margin);
     return deviceBounds.intersects(cullRect);
+}
+
+QBrush PDFPrecompiledPageHelper::createIsolatedCopy(const QBrush& brush)
+{
+    switch (brush.style())
+    {
+        case Qt::NoBrush:
+        {
+            // All brushes of this style share single global instance, the change
+            // of the style gives the copy its own data.
+            QBrush copy(Qt::SolidPattern);
+            copy.setStyle(Qt::NoBrush);
+            return copy;
+        }
+
+        case Qt::LinearGradientPattern:
+        case Qt::RadialGradientPattern:
+        case Qt::ConicalGradientPattern:
+        case Qt::TexturePattern:
+            // Rare brushes, the data are shared
+            return brush;
+
+        default:
+        {
+            QBrush copy(brush.color(), brush.style());
+            if (!brush.transform().isIdentity())
+            {
+                copy.setTransform(brush.transform());
+            }
+            return copy;
+        }
+    }
+}
+
+QPen PDFPrecompiledPageHelper::createIsolatedCopy(const QPen& pen)
+{
+    QPen copy(createIsolatedCopy(pen.brush()), pen.widthF(), pen.style(), pen.capStyle(), pen.joinStyle());
+    copy.setMiterLimit(pen.miterLimit());
+    copy.setCosmetic(pen.isCosmetic());
+
+    if (pen.style() == Qt::CustomDashLine)
+    {
+        copy.setDashPattern(pen.dashPattern());
+    }
+
+    copy.setDashOffset(pen.dashOffset());
+    return copy;
 }
 
 QPainterPath PDFPrecompiledPageHelper::createIsolatedCopy(const QPainterPath& path)
@@ -811,9 +865,22 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
     {
         if (cropBox.isValid())
         {
-            QPainterPath path;
-            path.addPolygon(pagePointToDevicePointMatrix.map(cropBox));
-            painter->setClipPath(path, Qt::IntersectClip);
+            const bool isRightAngle = (qFuzzyIsNull(pagePointToDevicePointMatrix.m12()) && qFuzzyIsNull(pagePointToDevicePointMatrix.m21())) ||
+                                      (qFuzzyIsNull(pagePointToDevicePointMatrix.m11()) && qFuzzyIsNull(pagePointToDevicePointMatrix.m22()));
+
+            if (pagePointToDevicePointMatrix.type() <= QTransform::TxRotate && isRightAngle)
+            {
+                // Crop box is a rectangle also on the device. Clip path is converted
+                // to the spans of the clip region by the raster engine, and each drawn
+                // shape is then intersected with them, which is slow - a rectangle is not.
+                painter->setClipRect(pagePointToDevicePointMatrix.mapRect(cropBox), Qt::IntersectClip);
+            }
+            else
+            {
+                QPainterPath path;
+                path.addPolygon(pagePointToDevicePointMatrix.map(cropBox));
+                painter->setClipPath(path, Qt::IntersectClip);
+            }
         }
     }
 
@@ -837,12 +904,46 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
     {
         QTransform matrix;
         QRectF visibleRect; ///< Visible area in device coordinates, null rectangle means nothing is visible
+        bool isPainterStateSaved = false; ///< State of the painter has been saved for this graphic state
     };
 
     CullState cullState;
     cullState.visibleRect = cullRect;
     std::vector<CullState> cullStateStack;
     const QTransform& currentMatrix = cullState.matrix;
+
+    // State of the painter is saved lazily. The pen, the brush and the antialiasing are set
+    // for each path, and the world matrix is mirrored here, so a graphic state must be saved
+    // by the painter only if it changes the clipping or the composition mode. Plan sheets
+    // enclose each object into its own graphic state, and saving of the painter copies its
+    // whole state - it is not cheap, and the bands drawn in parallel moreover compete
+    // for the reference counters of the data shared by these copies.
+    bool isPainterMatrixDirty = false;
+
+    auto updatePainterMatrix = [&]()
+    {
+        if (isPainterMatrixDirty)
+        {
+            painter->setWorldTransform(cullState.matrix);
+            isPainterMatrixDirty = false;
+        }
+    };
+
+    auto savePainterState = [&]()
+    {
+        if (!cullState.isPainterStateSaved && !cullStateStack.empty())
+        {
+            painter->save();
+            cullState.isPainterStateSaved = true;
+        }
+    };
+
+    // Pens and brushes of the page share their data (and the reference counters) across
+    // the paths, so the bands drawn in parallel use their own copies of them.
+    const QPen* lastPen = nullptr;
+    const QBrush* lastBrush = nullptr;
+    QPen isolatedPen;
+    QBrush isolatedBrush;
 
     // Process all instructions
     size_t instructionIndex = 0;
@@ -852,9 +953,17 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
         {
             // Drawing is cancelled in the middle of the page, states
             // of the painter saved by the page must be restored.
-            for (size_t i = 0; i < cullStateStack.size(); ++i)
+            if (cullState.isPainterStateSaved)
             {
                 painter->restore();
+            }
+
+            for (const CullState& savedCullState : cullStateStack)
+            {
+                if (savedCullState.isPainterStateSaved)
+                {
+                    painter->restore();
+                }
             }
             break;
         }
@@ -872,16 +981,31 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
 
                 // Set antialiasing
                 const bool antialiasing = (data.isText && features.testFlag(PDFRenderer::TextAntialiasing)) || (!data.isText && features.testFlag(PDFRenderer::Antialiasing));
+                updatePainterMatrix();
                 painter->setRenderHint(QPainter::Antialiasing, antialiasing);
-                painter->setPen(data.pen);
-                painter->setBrush(data.brush);
 
                 if (context.isolatePaths)
                 {
+                    if (!lastPen || !(*lastPen == data.pen))
+                    {
+                        isolatedPen = PDFPrecompiledPageHelper::createIsolatedCopy(data.pen);
+                        lastPen = &data.pen;
+                    }
+
+                    if (!lastBrush || !(*lastBrush == data.brush))
+                    {
+                        isolatedBrush = PDFPrecompiledPageHelper::createIsolatedCopy(data.brush);
+                        lastBrush = &data.brush;
+                    }
+
+                    painter->setPen(isolatedPen);
+                    painter->setBrush(isolatedBrush);
                     painter->drawPath(PDFPrecompiledPageHelper::createIsolatedCopy(data.path));
                 }
                 else
                 {
+                    painter->setPen(data.pen);
+                    painter->setBrush(data.brush);
                     painter->drawPath(data.path);
                 }
                 break;
@@ -896,6 +1020,7 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
                     break;
                 }
 
+                updatePainterMatrix();
                 painter->save();
 
                 // Jakub Melka: a precompiled page is independent on the zoom, so the images
@@ -988,6 +1113,9 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
                     }
                 }
 
+                updatePainterMatrix();
+                savePainterState();
+
                 if (clipData.isRectangle && isAxisAligned)
                 {
                     painter->setClipRect(clipData.bounds, Qt::IntersectClip);
@@ -1001,19 +1129,23 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
 
             case InstructionType::SaveGraphicState:
             {
-                painter->save();
                 cullStateStack.push_back(cullState);
+                cullState.isPainterStateSaved = false;
                 break;
             }
 
             case InstructionType::RestoreGraphicState:
             {
-                painter->restore();
-
                 if (!cullStateStack.empty())
                 {
+                    if (cullState.isPainterStateSaved)
+                    {
+                        painter->restore();
+                    }
+
                     cullState = cullStateStack.back();
                     cullStateStack.pop_back();
+                    isPainterMatrixDirty = true;
                 }
                 break;
             }
@@ -1021,12 +1153,13 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
             case InstructionType::SetWorldMatrix:
             {
                 cullState.matrix = QTransform(m_matrices[instruction.dataIndex] * pagePointToDevicePointMatrix);
-                painter->setWorldTransform(cullState.matrix);
+                isPainterMatrixDirty = true;
                 break;
             }
 
             case InstructionType::SetCompositionMode:
             {
+                savePainterState();
                 painter->setCompositionMode(m_compositionModes[instruction.dataIndex]);
                 break;
             }
