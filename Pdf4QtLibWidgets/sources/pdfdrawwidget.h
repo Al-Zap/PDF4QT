@@ -100,8 +100,8 @@ public:
     /// \param enabled True to enable smooth wheel scrolling, false for immediate scrolling
     void setSmoothWheelScrolling(bool enabled);
 
-    /// Enables/disables navigation of the CAD viewers: the mouse wheel zooms at the cursor
-    /// (Ctrl + wheel scrolls) and the pages are moved by dragging with the middle button.
+    /// Enables/disables navigation of the CAD viewers: the pages are moved by dragging with the middle button
+    /// (the wheel scrolls and Ctrl + wheel zooms at the cursor in both modes).
     /// \param enabled True for the navigation of the CAD viewers
     void setPlanNavigation(bool enabled);
 
@@ -176,8 +176,8 @@ public:
     /// \param enabled True to enable smooth wheel scrolling, false for immediate scrolling
     void setSmoothWheelScrolling(bool enabled);
 
-    /// Enables/disables navigation of the CAD viewers: the mouse wheel zooms at the cursor
-    /// (Ctrl + wheel scrolls) and the pages are moved by dragging with the middle button.
+    /// Enables/disables navigation of the CAD viewers: the pages are moved by dragging with the middle button
+    /// (the wheel scrolls and Ctrl + wheel zooms at the cursor in both modes).
     /// \param enabled True for the navigation of the CAD viewers
     void setPlanNavigation(bool enabled);
 

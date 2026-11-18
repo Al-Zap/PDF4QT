@@ -119,5 +119,38 @@
         <file>resources/bookmark-previous.svg</file>
         <file>resources/page.svg</file>
         <file>resources/bubble.svg</file>
+        <file>resources/ribbon-layout-single-page.svg</file>
+        <file>resources/ribbon-layout-continuous.svg</file>
+        <file>resources/ribbon-layout-two-pages.svg</file>
+        <file>resources/ribbon-layout-two-columns.svg</file>
+        <file>resources/ribbon-layout-first-page-right.svg</file>
+        <file>resources/ribbon-fullscreen.svg</file>
+        <file>resources/ribbon-export-word.svg</file>
+        <file>resources/ribbon-export-images.svg</file>
+        <file>resources/ribbon-stamp.svg</file>
+        <file>resources/ribbon-ocr-batch.svg</file>
+        <file>resources/ribbon-ocr-languages.svg</file>
+        <file>resources/ribbon-scan-prepare.svg</file>
+        <file>resources/ribbon-annot-delete.svg</file>
+        <file>resources/ribbon-typewriter.svg</file>
+        <file>resources/ribbon-link-remove.svg</file>
+        <file>resources/ribbon-navigation-pane.svg</file>
+        <file>resources/ribbon-auto-refresh.svg</file>
+        <file>resources/ribbon-reset-settings.svg</file>
+        <file>resources/ribbon-page-insert-file.svg</file>
+        <file>resources/ribbon-page-blank.svg</file>
+        <file>resources/ribbon-page-extract.svg</file>
+        <file>resources/ribbon-snap.svg</file>
+        <file>resources/ribbon-scale-sheet.svg</file>
+        <file>resources/ribbon-ribbon-collapse.svg</file>
+        <file>resources/ribbon-ribbon-expand.svg</file>
+        <file>resources/ribbon-text-blocks.svg</file>
+        <file>resources/ribbon-comments-list.svg</file>
+        <file>resources/ribbon-first-page.svg</file>
+        <file>resources/ribbon-last-page.svg</file>
+        <file>resources/ribbon-prev-page.svg</file>
+        <file>resources/ribbon-next-page-arrow.svg</file>
+        <file>resources/ribbon-zoom-minus.svg</file>
+        <file>resources/ribbon-zoom-plus.svg</file>
     </qresource>
 </RCC>
