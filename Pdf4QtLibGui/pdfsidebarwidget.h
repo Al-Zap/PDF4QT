@@ -158,6 +158,7 @@ signals:
     void sidebarVisibilityRequested();
 
 private:
+    void setNavigationIcon(QToolButton* button, Page page);
     void updateGUI(Page preferredPage);
     void updateButtons();
     void updatePageButtonIconSize();

@@ -911,6 +911,10 @@ QString PDFRibbon::createStyleSheet(bool isDarkTheme)
         "QToolButton[sidebarNavigation=\"true\"] { background: transparent; border: none; border-left: 3px solid transparent; border-radius: 0px; padding: 7px 6px 7px 3px; }"
         "QToolButton[sidebarNavigation=\"true\"]:hover { background: @hover; }"
         "QToolButton[sidebarNavigation=\"true\"]:checked { background: @page; border-left: 3px solid @accent; }"
+        // Pages of the navigation pane have the colors of the ribbon (the dark palette
+        // of the application is much darker than the ribbon)
+        "QDockWidget#SidebarDockWidget QStackedWidget, QDockWidget#SidebarDockWidget QStackedWidget > QWidget { background: @page; color: @text; }"
+        "QDockWidget#SidebarDockWidget QAbstractItemView { background: @page; color: @text; border: none; }"
         "QLabel#sidebarHeaderLabel { background: @page; color: @text; font-weight: 600; padding: 7px 8px; border-bottom: 1px solid @border; }"
         "QMainWindow::separator { background: @border; width: 1px; height: 1px; }"
         "QMainWindow::separator:hover { background: @accent; }");

@@ -26,6 +26,7 @@
 #include <map>
 #include <set>
 #include <optional>
+#include <vector>
 
 #include <QMenu>
 #include <QAction>
@@ -290,22 +291,36 @@ void PDFWidgetUtils::convertActionForDarkTheme(QAction* action, QSize iconSize, 
 
 QIcon PDFWidgetUtils::convertIconForDarkTheme(QIcon icon, QSize iconSize, qreal devicePixelRatioF)
 {
-    QPixmap pixmap(iconSize * devicePixelRatioF);
-    pixmap.setDevicePixelRatio(devicePixelRatioF);
-    pixmap.fill(Qt::transparent);
-
-    QPainter painter(&pixmap);
-    icon.paint(&painter, QRect(0, 0, iconSize.width(), iconSize.height()));
-    painter.end();
-
     PDFColorConvertor convertor;
     convertor.setMode(PDFColorConvertor::Mode::InvertedColors);
 
-    QImage image = pixmap.toImage();
-    image = convertor.convert(image);
-    pixmap = QPixmap::fromImage(image);
+    QIcon result;
 
-    return QIcon(pixmap);
+    // The icon is converted also in a large size, so it stays sharp on the large
+    // buttons (for example of the ribbon), not only in the size of the toolbars.
+    const QSize largeIconSize(64, 64);
+    std::vector<QSize> sizes = { iconSize };
+    if (iconSize.width() < largeIconSize.width() || iconSize.height() < largeIconSize.height())
+    {
+        sizes.push_back(largeIconSize);
+    }
+
+    for (const QSize& size : sizes)
+    {
+        QPixmap pixmap(size * devicePixelRatioF);
+        pixmap.setDevicePixelRatio(devicePixelRatioF);
+        pixmap.fill(Qt::transparent);
+
+        QPainter painter(&pixmap);
+        icon.paint(&painter, QRect(0, 0, size.width(), size.height()));
+        painter.end();
+
+        QImage image = pixmap.toImage();
+        image = convertor.convert(image);
+        result.addPixmap(QPixmap::fromImage(image));
+    }
+
+    return result;
 }
 
 void PDFWidgetUtils::checkMenuAccessibility(QWidget* widget)

@@ -561,6 +561,7 @@ void PDFSidebarWidget::setCompactNavigation(bool compact)
             if (QToolButton* button = pageInfo.second.button)
             {
                 button->setProperty("sidebarNavigation", true);
+                setNavigationIcon(button, pageInfo.first);
                 button->setToolTip(button->text());
                 button->setFocusPolicy(Qt::NoFocus);
             }
@@ -574,6 +575,49 @@ void PDFSidebarWidget::setCompactNavigation(bool compact)
 
     updatePageButtonIconSize();
     selectPage(m_currentPage);
+}
+
+void PDFSidebarWidget::setNavigationIcon(QToolButton* button, Page page)
+{
+    QString name;
+    switch (page)
+    {
+        case OptionalContent:
+            name = QStringLiteral("layers");
+            break;
+        case Outline:
+            name = QStringLiteral("outline");
+            break;
+        case Thumbnails:
+            name = QStringLiteral("thumbnails");
+            break;
+        case Attachments:
+            name = QStringLiteral("attachments");
+            break;
+        case Speech:
+            name = QStringLiteral("speech");
+            break;
+        case Signatures:
+            name = QStringLiteral("signatures");
+            break;
+        case Bookmarks:
+            name = QStringLiteral("bookmarks");
+            break;
+        case Notes:
+            name = QStringLiteral("notes");
+            break;
+        default:
+            return;
+    }
+
+    // Icons of the navigation strip are drawn in the line style of the ribbon
+    QIcon icon(QString(":/resources/nav-%1.svg").arg(name));
+    if (pdf::PDFWidgetUtils::isDarkTheme())
+    {
+        const int iconSize = pdf::PDFWidgetUtils::scaleDPI_x(this, 24);
+        icon = pdf::PDFWidgetUtils::convertIconForDarkTheme(icon, QSize(iconSize, iconSize), button->devicePixelRatioF());
+    }
+    button->setIcon(icon);
 }
 
 void PDFSidebarWidget::setNavigationCollapsed(bool collapsed)

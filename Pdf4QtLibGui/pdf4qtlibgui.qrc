@@ -146,6 +146,14 @@
         <file>resources/ribbon-ribbon-expand.svg</file>
         <file>resources/ribbon-text-blocks.svg</file>
         <file>resources/ribbon-comments-list.svg</file>
+        <file>resources/nav-outline.svg</file>
+        <file>resources/nav-thumbnails.svg</file>
+        <file>resources/nav-layers.svg</file>
+        <file>resources/nav-attachments.svg</file>
+        <file>resources/nav-speech.svg</file>
+        <file>resources/nav-signatures.svg</file>
+        <file>resources/nav-bookmarks.svg</file>
+        <file>resources/nav-notes.svg</file>
         <file>resources/ribbon-first-page.svg</file>
         <file>resources/ribbon-last-page.svg</file>
         <file>resources/ribbon-prev-page.svg</file>

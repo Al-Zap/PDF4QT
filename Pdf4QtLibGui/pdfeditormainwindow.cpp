@@ -767,6 +767,10 @@ void PDFEditorMainWindow::createRibbon()
     Helper::setActionIcon(ui->actionShow_Text_Blocks, QStringLiteral("ribbon-text-blocks"));
     Helper::setActionIcon(ui->actionShow_Text_Lines, QStringLiteral("ribbon-text-blocks"));
     Helper::replaceActionIcon(ui->actionCreateTypewriter, QStringLiteral("ribbon-typewriter"));
+    Helper::replaceActionIcon(ui->actionGoToDocumentStart, QStringLiteral("ribbon-first-page"));
+    Helper::replaceActionIcon(ui->actionGoToPreviousPage, QStringLiteral("ribbon-prev-page"));
+    Helper::replaceActionIcon(ui->actionGoToNextPage, QStringLiteral("ribbon-next-page-arrow"));
+    Helper::replaceActionIcon(ui->actionGoToDocumentEnd, QStringLiteral("ribbon-last-page"));
 
     // Icons of the sticky notes are drawn from the characters of the font, which
     // are not available everywhere. The kinds of the notes are told apart by their names.
