@@ -29,10 +29,16 @@
 #include "pdfstreamfilters.h"
 
 #include <QScopeGuard>
+#include <QMutex>
+#include <QWaitCondition>
+#include <QRunnable>
 #include <QPainterPathStroker>
 #include <QtMath>
 
 #include <array>
+#include <deque>
+#include <memory>
+#include <exception>
 
 #include "pdfdbgheap.h"
 
@@ -679,8 +685,651 @@ void PDFPageContentProcessor::performInterceptInstruction(Operator currentOperat
     Q_UNUSED(operatorAsText);
 }
 
+void PDFPageContentProcessor::processInlineImage(const QByteArray& content, PDFLexicalAnalyzer& parser)
+{
+    // Strategy: We will try to find position of BI/ID/EI in the stream. If we can determine
+    // length of the stream explicitly, then we use explicit length. We also create a PDFObject
+    // from the inline image dictionary/image content stream and then process it like XObject.
+    PDFInteger operatorBIPosition = parser.pos();
+    PDFInteger operatorIDPosition = parser.findSubstring("ID", operatorBIPosition);
+    PDFInteger operatorEIPosition = parser.findSubstring("EI", operatorIDPosition);
+
+    // According the PDF 1.7 specification, single white space characters is after ID, then the byte
+    // immediately after it is interpreted as first byte of image data.
+    PDFInteger startDataPosition = operatorIDPosition + 3;
+
+    if (operatorIDPosition == -1 || operatorEIPosition == -1)
+    {
+        throw PDFException(PDFTranslationContext::tr("Invalid inline image dictionary, ID operator is missing."));
+    }
+
+    Q_ASSERT(operatorBIPosition < content.size());
+    Q_ASSERT(operatorIDPosition < content.size());
+    Q_ASSERT(operatorBIPosition <= operatorIDPosition);
+
+    PDFLexicalAnalyzer inlineImageLexicalAnalyzer(content.constBegin() + operatorBIPosition, content.constBegin() + operatorIDPosition);
+    PDFParser inlineImageParser([&inlineImageLexicalAnalyzer]{ return inlineImageLexicalAnalyzer.fetch(); });
+
+    constexpr std::pair<const char*, const char*> replacements[] =
+    {
+        { "BPC", "BitsPerComponent" },
+        { "CS", "ColorSpace" },
+        { "D", "Decode" },
+        { "DP", "DecodeParms" },
+        { "F", "Filter" },
+        { "H", "Height" },
+        { "IM", "ImageMask" },
+        { "I", "Interpolate" },
+        { "W", "Width" },
+        { "L", "Length" },
+        { "G", "DeviceGray" },
+        { "RGB", "DeviceRGB" },
+        { "CMYK", "DeviceCMYK" }
+    };
+
+    PDFDictionaryBuilder inlineImageDictionary;
+    PDFDictionaryBuilder* dictionary = &inlineImageDictionary;
+
+    while (inlineImageParser.lookahead().type != PDFLexicalAnalyzer::TokenType::EndOfFile)
+    {
+        PDFObject nameObject = inlineImageParser.getObject();
+        PDFObject valueObject = inlineImageParser.getObject();
+
+        if (!nameObject.isName())
+        {
+            throw PDFException(PDFTranslationContext::tr("Expected name in the inline image dictionary stream."));
+        }
+
+        // Replace the name, if neccessary
+        QByteArray name = nameObject.getString();
+        for (auto [string, replacement] : replacements)
+        {
+            if (name == string)
+            {
+                name = replacement;
+                break;
+            }
+        }
+
+        dictionary->addEntry(PDFInplaceOrMemoryString(qMove(name)), qMove(valueObject));
+    }
+
+    PDFDocumentDataLoaderDecorator loader(m_document);
+    PDFInteger dataLength = 0;
+
+    if (dictionary->hasKey("Length"))
+    {
+        dataLength = loader.readIntegerFromDictionary(dictionary->getDictionary(), "Length", 0);
+    }
+    else if (dictionary->hasKey("Filter"))
+    {
+        dataLength = -1;
+
+        // We will try to use stream filter hint
+        QByteArray filterName = loader.readNameFromDictionary(dictionary->getDictionary(), "Filter");
+        if (!filterName.isEmpty())
+        {
+            dataLength = PDFStreamFilterStorage::getStreamDataLength(content, filterName, startDataPosition);
+        }
+
+        if (dataLength == -1)
+        {
+            // We will use EI operator position to determine stream length
+            dataLength = operatorEIPosition - startDataPosition;
+        }
+    }
+    else
+    {
+        // We will calculate stream size from the with/height and bit per component
+        const bool isImageMask = loader.readBooleanFromDictionary(dictionary->getDictionary(), "ImageMask", false);
+        const PDFInteger width = loader.readIntegerFromDictionary(dictionary->getDictionary(), "Width", 0);
+        const PDFInteger height = loader.readIntegerFromDictionary(dictionary->getDictionary(), "Height", 0);
+        const PDFInteger bpc = isImageMask ? 1 : loader.readIntegerFromDictionary(dictionary->getDictionary(), "BitsPerComponent", 8);
+
+        if (width <= 0 || height <= 0 || bpc <= 0)
+        {
+            throw PDFException(PDFTranslationContext::tr("Expected name in the inline image dictionary stream."));
+        }
+
+        // Each sample consists of one value per color component, so the size
+        // of the image data depends on the color space of the image. Stencil
+        // masks have a single component.
+        PDFInteger componentCount = 1;
+        if (!isImageMask && dictionary->hasKey("ColorSpace"))
+        {
+            try
+            {
+                PDFColorSpacePointer colorSpace = PDFAbstractColorSpace::createColorSpace(m_colorSpaceDictionary, m_document, m_iccProfileCache, m_document->getObject(dictionary->get("ColorSpace")));
+                if (colorSpace)
+                {
+                    componentCount = qMax<PDFInteger>(1, PDFInteger(colorSpace->getColorComponentCount()));
+                }
+            }
+            catch (const std::exception&)
+            {
+                // Color space is invalid, we will use a single component
+                // and the image itself will report the error later.
+            }
+        }
+
+        const PDFInteger stride = (width * componentCount * bpc + 7) / 8;
+        dataLength = stride * height;
+    }
+
+    // We will once more find the "EI" operator, due to recomputed dataLength.
+    operatorEIPosition = parser.findSubstring("EI", startDataPosition + dataLength);
+    if (operatorEIPosition == -1)
+    {
+        throw PDFException(PDFTranslationContext::tr("Invalid inline image stream."));
+    }
+
+    // We must seek after EI operator. Then we will paint the image. Because painting of image can throw exception,
+    // then we will paint the image AFTER we seek the position.
+    parser.seek(operatorEIPosition + 2);
+
+    QByteArray buffer = content.mid(startDataPosition, dataLength);
+    PDFStream imageStream(std::move(*dictionary), std::move(buffer));
+    paintXObjectImage(&imageStream, PDFObjectReference());
+}
+
+/// Reads the tokens of a content stream in a thread of the thread pool, while the
+/// thread of the content processor processes the commands. The tokens are passed
+/// in batches through a queue of a limited size. Position of an inline image can
+/// be determined only by the content processor (it depends on the color spaces
+/// of the resources), so the tokenizer stops at the operator BI and waits for
+/// the position, where the reading continues. The state is shared by the task
+/// and by the content processor, so it lives as long as any of them needs it.
+class PDFPageContentProcessorTokenizer
+{
+public:
+    explicit PDFPageContentProcessorTokenizer(const QByteArray& content) :
+        m_begin(content.constBegin()),
+        m_end(content.constEnd())
+    {
+
+    }
+
+    enum class ItemType : uint8_t
+    {
+        Boolean,            ///< Operand, value is in the item
+        Integer,            ///< Operand, value is in the item
+        Real,               ///< Operand, value is in the item
+        Operand,            ///< Other operand, the token is in the array of the tokens of the batch
+        Operator,           ///< Known operator, value is index of the operator
+        Command,            ///< Unknown command, the token (which owns its data) is in the array of the tokens
+        Error               ///< Token, which can't be read, the error message is in the array of the messages
+    };
+
+    /// Token in a compact form. Tens of millions of tokens are passed between
+    /// the threads, so the numbers and the operators (almost all tokens of a drawing)
+    /// are passed as plain data of 16 bytes.
+    struct Item
+    {
+        union
+        {
+            bool boolean;
+            PDFInteger integer;
+            PDFReal real;
+            size_t index;
+        };
+
+        ItemType type;
+    };
+
+    struct Batch
+    {
+        std::vector<Item> items;
+        std::vector<PDFLexicalAnalyzer::Token> tokens;
+        std::vector<QString> errors;
+        PDFInteger inlineImagePosition = -1; ///< Position after the operator BI, which follows the items
+    };
+
+    static constexpr size_t BATCH_SIZE = 4096;
+    static constexpr size_t MAXIMAL_BATCH_COUNT = 16;
+    static constexpr qsizetype MINIMAL_CONTENT_SIZE = 256 * 1024;
+
+    class Task : public QRunnable
+    {
+    public:
+        explicit Task(std::shared_ptr<PDFPageContentProcessorTokenizer> tokenizer) :
+            m_tokenizer(std::move(tokenizer))
+        {
+            setAutoDelete(true);
+        }
+
+        virtual void run() override { m_tokenizer->run(); }
+
+    private:
+        std::shared_ptr<PDFPageContentProcessorTokenizer> m_tokenizer;
+    };
+
+    /// Reads all tokens (function of the task)
+    void run()
+    {
+        std::exception_ptr exception;
+
+        try
+        {
+            tokenize();
+        }
+        catch (...)
+        {
+            exception = std::current_exception();
+        }
+
+        QMutexLocker lock(&m_mutex);
+        m_exception = exception;
+        m_isFinished = true;
+        m_batchAvailable.wakeAll();
+        m_finished.wakeAll();
+    }
+
+    /// Returns next batch of tokens. Returns false, if all tokens were returned.
+    /// Exception of the tokenizer is thrown, when all tokens before it were returned.
+    /// The batch passed to the function is used again by the tokenizer (so the
+    /// memory of the batches is not allocated again and again).
+    bool fetch(Batch& batch)
+    {
+        batch.items.clear();
+        batch.tokens.clear();
+        batch.errors.clear();
+        batch.inlineImagePosition = -1;
+
+        QMutexLocker lock(&m_mutex);
+        if (batch.items.capacity() > 0 && m_freeBatches.size() < MAXIMAL_BATCH_COUNT)
+        {
+            m_freeBatches.push_back(std::move(batch));
+            batch = Batch();
+        }
+
+        while (m_batches.empty() && !m_isFinished)
+        {
+            m_batchAvailable.wait(&m_mutex);
+        }
+
+        if (!m_batches.empty())
+        {
+            batch = std::move(m_batches.front());
+            m_batches.pop_front();
+            m_spaceAvailable.wakeOne();
+            return true;
+        }
+
+        if (m_exception)
+        {
+            std::rethrow_exception(m_exception);
+        }
+
+        return false;
+    }
+
+    /// Continues the reading at the position (after an inline image)
+    void resume(PDFInteger position)
+    {
+        QMutexLocker lock(&m_mutex);
+        m_resumePosition = position;
+        m_resumed.wakeAll();
+    }
+
+    /// Stops the reading and waits, until the task does not use the content
+    void stop()
+    {
+        QMutexLocker lock(&m_mutex);
+        m_isStopped = true;
+        m_spaceAvailable.wakeAll();
+        m_resumed.wakeAll();
+
+        while (!m_isFinished)
+        {
+            m_finished.wait(&m_mutex);
+        }
+    }
+
+private:
+    void tokenize()
+    {
+        PDFLexicalAnalyzer parser(m_begin, m_end);
+        parser.setCommandsReferenceInput();
+
+        const PDFInteger contentSize = std::distance(m_begin, m_end);
+
+        Batch batch;
+        batch.items.reserve(BATCH_SIZE);
+
+        while (!parser.isAtEnd())
+        {
+            const PDFInteger oldParserPosition = parser.pos();
+
+            try
+            {
+                PDFLexicalAnalyzer::Token token = parser.fetch();
+
+                Item item;
+                item.integer = 0;
+
+                switch (token.type)
+                {
+                    case PDFLexicalAnalyzer::TokenType::EndOfFile:
+                        continue;
+
+                    case PDFLexicalAnalyzer::TokenType::Boolean:
+                        item.type = ItemType::Boolean;
+                        item.boolean = token.data.toBool();
+                        break;
+
+                    case PDFLexicalAnalyzer::TokenType::Integer:
+                        item.type = ItemType::Integer;
+                        item.integer = token.data.toLongLong();
+                        break;
+
+                    case PDFLexicalAnalyzer::TokenType::Real:
+                        item.type = ItemType::Real;
+                        item.real = token.data.toDouble();
+                        break;
+
+                    case PDFLexicalAnalyzer::TokenType::Command:
+                    {
+                        const QByteArray& command = token.data.getByteArray();
+                        if (command.size() == 2 && command[0] == 'B' && command[1] == 'I')
+                        {
+                            batch.inlineImagePosition = parser.pos();
+                            if (!push(batch))
+                            {
+                                return;
+                            }
+
+                            const PDFInteger position = waitForResume();
+                            if (position < 0)
+                            {
+                                return;
+                            }
+
+                            parser.seek(position);
+                            continue;
+                        }
+
+                        const size_t operatorIndex = PDFPageContentProcessorOperatorHelper::findIndex(command);
+                        if (operatorIndex < PDFPageContentProcessorOperatorHelper::OPERATOR_COUNT)
+                        {
+                            item.type = ItemType::Operator;
+                            item.index = operatorIndex;
+                        }
+                        else
+                        {
+                            // Unknown command, it must own its data
+                            item.type = ItemType::Command;
+                            item.index = batch.tokens.size();
+                            batch.tokens.push_back(PDFLexicalAnalyzer::Token(PDFLexicalAnalyzer::TokenType::Command, QByteArray(command.constData(), command.size())));
+                        }
+                        break;
+                    }
+
+                    default:
+                        item.type = ItemType::Operand;
+                        item.index = batch.tokens.size();
+                        batch.tokens.push_back(std::move(token));
+                        break;
+                }
+
+                batch.items.push_back(item);
+            }
+            catch (const PDFException& exception)
+            {
+                // The token can't be read, see the same case in the function processContent
+                PDFInteger position = parser.pos();
+                while (position < contentSize && PDFLexicalAnalyzer::isRegular(m_begin[position]))
+                {
+                    ++position;
+                }
+
+                if (position == oldParserPosition && position < contentSize)
+                {
+                    ++position;
+                }
+
+                parser.seek(position);
+
+                Item item;
+                item.type = ItemType::Error;
+                item.index = batch.errors.size();
+                batch.errors.push_back(exception.getMessage());
+                batch.items.push_back(item);
+            }
+
+            if (batch.items.size() >= BATCH_SIZE && !push(batch))
+            {
+                return;
+            }
+        }
+
+        if (!batch.items.empty())
+        {
+            push(batch);
+        }
+    }
+
+    /// Adds the batch to the queue and clears it. Returns false, if the reading is stopped.
+    bool push(Batch& batch)
+    {
+        QMutexLocker lock(&m_mutex);
+        while (m_batches.size() >= MAXIMAL_BATCH_COUNT && !m_isStopped)
+        {
+            m_spaceAvailable.wait(&m_mutex);
+        }
+
+        if (m_isStopped)
+        {
+            return false;
+        }
+
+        m_batches.push_back(std::move(batch));
+        m_batchAvailable.wakeOne();
+
+        if (!m_freeBatches.empty())
+        {
+            batch = std::move(m_freeBatches.back());
+            m_freeBatches.pop_back();
+            return true;
+        }
+
+        lock.unlock();
+
+        batch = Batch();
+        batch.items.reserve(BATCH_SIZE);
+        return true;
+    }
+
+    /// Waits for the position, where the reading continues. Returns -1, if the reading is stopped.
+    PDFInteger waitForResume()
+    {
+        QMutexLocker lock(&m_mutex);
+        while (m_resumePosition < 0 && !m_isStopped)
+        {
+            m_resumed.wait(&m_mutex);
+        }
+
+        if (m_isStopped)
+        {
+            return -1;
+        }
+
+        const PDFInteger position = m_resumePosition;
+        m_resumePosition = -1;
+        return position;
+    }
+
+    const char* m_begin;
+    const char* m_end;
+    QMutex m_mutex;
+    QWaitCondition m_batchAvailable;
+    QWaitCondition m_spaceAvailable;
+    QWaitCondition m_resumed;
+    QWaitCondition m_finished;
+    std::deque<Batch> m_batches;
+    std::vector<Batch> m_freeBatches;
+    std::exception_ptr m_exception;
+    PDFInteger m_resumePosition = -1;
+    bool m_isStopped = false;
+    bool m_isFinished = false;
+};
+
+bool PDFPageContentProcessor::processContentWithTokenizer(const QByteArray& content)
+{
+    using Tokenizer = PDFPageContentProcessorTokenizer;
+
+    if (content.size() < Tokenizer::MINIMAL_CONTENT_SIZE)
+    {
+        return false;
+    }
+
+    std::shared_ptr<Tokenizer> tokenizer = std::make_shared<Tokenizer>(content);
+    Tokenizer::Task* task = new Tokenizer::Task(tokenizer);
+    if (!PDFExecutionPolicy::tryStart(PDFExecutionPolicy::Scope::Content, task))
+    {
+        // No thread is free, the tokens are read by this thread
+        delete task;
+        return false;
+    }
+
+    // The task uses the content, it must be finished, when this function is left
+    auto stopGuard = qScopeGuard([&tokenizer]() { tokenizer->stop(); });
+
+    Tokenizer::Batch batch;
+    while (tokenizer->fetch(batch))
+    {
+        using TokenType = PDFLexicalAnalyzer::TokenType;
+
+        for (const Tokenizer::Item& item : batch.items)
+        {
+            if (isProcessingCancelled())
+            {
+                return true;
+            }
+
+            switch (item.type)
+            {
+                case Tokenizer::ItemType::Boolean:
+                {
+                    PDFLexicalAnalyzer::Token& operand = m_operands.addItem();
+                    operand.type = TokenType::Boolean;
+                    operand.data.setBoolean(item.boolean);
+                    break;
+                }
+
+                case Tokenizer::ItemType::Integer:
+                {
+                    PDFLexicalAnalyzer::Token& operand = m_operands.addItem();
+                    operand.type = TokenType::Integer;
+                    operand.data.setInteger(item.integer);
+                    break;
+                }
+
+                case Tokenizer::ItemType::Real:
+                {
+                    PDFLexicalAnalyzer::Token& operand = m_operands.addItem();
+                    operand.type = TokenType::Real;
+                    operand.data.setReal(item.real);
+                    break;
+                }
+
+                case Tokenizer::ItemType::Operand:
+                    m_operands.push_back(std::move(batch.tokens[item.index]));
+                    break;
+
+                case Tokenizer::ItemType::Error:
+                {
+                    // The token can't be read, it is replaced by an operand, which can't be read by any operator
+                    m_operands.push_back(PDFLexicalAnalyzer::Token(TokenType::Command, QByteArray()));
+                    m_errorList.append(PDFRenderError(RenderErrorType::Error, batch.errors[item.index]));
+                    break;
+                }
+
+                case Tokenizer::ItemType::Operator:
+                case Tokenizer::ItemType::Command:
+                {
+                    try
+                    {
+                        // Process the command, then clear the operand stack
+                        if (item.type == Tokenizer::ItemType::Operator)
+                        {
+                            processCommand(operators[item.index].second, PDFPageContentProcessorOperatorHelper::getText(item.index));
+                        }
+                        else
+                        {
+                            processCommand(Operator::Invalid, batch.tokens[item.index].data.getByteArray());
+                        }
+                    }
+                    catch (const PDFException& exception)
+                    {
+                        m_errorList.append(PDFRenderError(RenderErrorType::Error, exception.getMessage()));
+                    }
+                    catch (const PDFRendererException &exception)
+                    {
+                        m_errorList.append(exception.getError());
+                    }
+
+                    m_operands.clear();
+                    break;
+                }
+            }
+        }
+
+        if (batch.inlineImagePosition >= 0)
+        {
+            if (isProcessingCancelled())
+            {
+                return true;
+            }
+
+            // Inline image follows. Reading of the tokens continues after the image,
+            // or after the operator BI, if the image is invalid.
+            PDFLexicalAnalyzer parser(content.constBegin(), content.constEnd());
+            PDFInteger resumePosition = batch.inlineImagePosition;
+
+            try
+            {
+                parser.seek(batch.inlineImagePosition);
+                auto positionGuard = qScopeGuard([&parser, &resumePosition]() { resumePosition = parser.pos(); });
+                processInlineImage(content, parser);
+            }
+            catch (const PDFException& exception)
+            {
+                m_errorList.append(PDFRenderError(RenderErrorType::Error, exception.getMessage()));
+            }
+            catch (const PDFRendererException &exception)
+            {
+                m_errorList.append(exception.getError());
+            }
+
+            m_operands.clear();
+            tokenizer->resume(resumePosition);
+        }
+    }
+
+    return true;
+}
+
+void PDFPageContentProcessor::processContentCommand(const QByteArray& command)
+{
+    // The command can refer to the content, it is replaced by a byte array, which owns its data
+    const size_t operatorIndex = PDFPageContentProcessorOperatorHelper::findIndex(command);
+    if (operatorIndex < PDFPageContentProcessorOperatorHelper::OPERATOR_COUNT)
+    {
+        processCommand(operators[operatorIndex].second, PDFPageContentProcessorOperatorHelper::getText(operatorIndex));
+    }
+    else
+    {
+        processCommand(Operator::Invalid, QByteArray(command.constData(), command.size()));
+    }
+}
+
 void PDFPageContentProcessor::processContent(const QByteArray& content)
 {
+    if (processContentWithTokenizer(content))
+    {
+        return;
+    }
+
     PDFLexicalAnalyzer parser(content.constBegin(), content.constEnd());
 
     // The commands refer to the content, they are not copied. A command passed
@@ -705,162 +1354,12 @@ void PDFPageContentProcessor::processContent(const QByteArray& content)
 
                     if (command.size() == 2 && command[0] == 'B' && command[1] == 'I')
                     {
-                        // Strategy: We will try to find position of BI/ID/EI in the stream. If we can determine
-                        // length of the stream explicitly, then we use explicit length. We also create a PDFObject
-                        // from the inline image dictionary/image content stream and then process it like XObject.
-                        PDFInteger operatorBIPosition = parser.pos();
-                        PDFInteger operatorIDPosition = parser.findSubstring("ID", operatorBIPosition);
-                        PDFInteger operatorEIPosition = parser.findSubstring("EI", operatorIDPosition);
-
-                        // According the PDF 1.7 specification, single white space characters is after ID, then the byte
-                        // immediately after it is interpreted as first byte of image data.
-                        PDFInteger startDataPosition = operatorIDPosition + 3;
-
-                        if (operatorIDPosition == -1 || operatorEIPosition == -1)
-                        {
-                            throw PDFException(PDFTranslationContext::tr("Invalid inline image dictionary, ID operator is missing."));
-                        }
-
-                        Q_ASSERT(operatorBIPosition < content.size());
-                        Q_ASSERT(operatorIDPosition < content.size());
-                        Q_ASSERT(operatorBIPosition <= operatorIDPosition);
-
-                        PDFLexicalAnalyzer inlineImageLexicalAnalyzer(content.constBegin() + operatorBIPosition, content.constBegin() + operatorIDPosition);
-                        PDFParser inlineImageParser([&inlineImageLexicalAnalyzer]{ return inlineImageLexicalAnalyzer.fetch(); });
-
-                        constexpr std::pair<const char*, const char*> replacements[] =
-                        {
-                            { "BPC", "BitsPerComponent" },
-                            { "CS", "ColorSpace" },
-                            { "D", "Decode" },
-                            { "DP", "DecodeParms" },
-                            { "F", "Filter" },
-                            { "H", "Height" },
-                            { "IM", "ImageMask" },
-                            { "I", "Interpolate" },
-                            { "W", "Width" },
-                            { "L", "Length" },
-                            { "G", "DeviceGray" },
-                            { "RGB", "DeviceRGB" },
-                            { "CMYK", "DeviceCMYK" }
-                        };
-
-                        PDFDictionaryBuilder inlineImageDictionary;
-                        PDFDictionaryBuilder* dictionary = &inlineImageDictionary;
-
-                        while (inlineImageParser.lookahead().type != PDFLexicalAnalyzer::TokenType::EndOfFile)
-                        {
-                            PDFObject nameObject = inlineImageParser.getObject();
-                            PDFObject valueObject = inlineImageParser.getObject();
-
-                            if (!nameObject.isName())
-                            {
-                                throw PDFException(PDFTranslationContext::tr("Expected name in the inline image dictionary stream."));
-                            }
-
-                            // Replace the name, if neccessary
-                            QByteArray name = nameObject.getString();
-                            for (auto [string, replacement] : replacements)
-                            {
-                                if (name == string)
-                                {
-                                    name = replacement;
-                                    break;
-                                }
-                            }
-
-                            dictionary->addEntry(PDFInplaceOrMemoryString(qMove(name)), qMove(valueObject));
-                        }
-
-                        PDFDocumentDataLoaderDecorator loader(m_document);
-                        PDFInteger dataLength = 0;
-
-                        if (dictionary->hasKey("Length"))
-                        {
-                            dataLength = loader.readIntegerFromDictionary(dictionary->getDictionary(), "Length", 0);
-                        }
-                        else if (dictionary->hasKey("Filter"))
-                        {
-                            dataLength = -1;
-
-                            // We will try to use stream filter hint
-                            QByteArray filterName = loader.readNameFromDictionary(dictionary->getDictionary(), "Filter");
-                            if (!filterName.isEmpty())
-                            {
-                                dataLength = PDFStreamFilterStorage::getStreamDataLength(content, filterName, startDataPosition);
-                            }
-
-                            if (dataLength == -1)
-                            {
-                                // We will use EI operator position to determine stream length
-                                dataLength = operatorEIPosition - startDataPosition;
-                            }
-                        }
-                        else
-                        {
-                            // We will calculate stream size from the with/height and bit per component
-                            const bool isImageMask = loader.readBooleanFromDictionary(dictionary->getDictionary(), "ImageMask", false);
-                            const PDFInteger width = loader.readIntegerFromDictionary(dictionary->getDictionary(), "Width", 0);
-                            const PDFInteger height = loader.readIntegerFromDictionary(dictionary->getDictionary(), "Height", 0);
-                            const PDFInteger bpc = isImageMask ? 1 : loader.readIntegerFromDictionary(dictionary->getDictionary(), "BitsPerComponent", 8);
-
-                            if (width <= 0 || height <= 0 || bpc <= 0)
-                            {
-                                throw PDFException(PDFTranslationContext::tr("Expected name in the inline image dictionary stream."));
-                            }
-
-                            // Each sample consists of one value per color component, so the size
-                            // of the image data depends on the color space of the image. Stencil
-                            // masks have a single component.
-                            PDFInteger componentCount = 1;
-                            if (!isImageMask && dictionary->hasKey("ColorSpace"))
-                            {
-                                try
-                                {
-                                    PDFColorSpacePointer colorSpace = PDFAbstractColorSpace::createColorSpace(m_colorSpaceDictionary, m_document, m_iccProfileCache, m_document->getObject(dictionary->get("ColorSpace")));
-                                    if (colorSpace)
-                                    {
-                                        componentCount = qMax<PDFInteger>(1, PDFInteger(colorSpace->getColorComponentCount()));
-                                    }
-                                }
-                                catch (const std::exception&)
-                                {
-                                    // Color space is invalid, we will use a single component
-                                    // and the image itself will report the error later.
-                                }
-                            }
-
-                            const PDFInteger stride = (width * componentCount * bpc + 7) / 8;
-                            dataLength = stride * height;
-                        }
-
-                        // We will once more find the "EI" operator, due to recomputed dataLength.
-                        operatorEIPosition = parser.findSubstring("EI", startDataPosition + dataLength);
-                        if (operatorEIPosition == -1)
-                        {
-                            throw PDFException(PDFTranslationContext::tr("Invalid inline image stream."));
-                        }
-
-                        // We must seek after EI operator. Then we will paint the image. Because painting of image can throw exception,
-                        // then we will paint the image AFTER we seek the position.
-                        parser.seek(operatorEIPosition + 2);
-
-                        QByteArray buffer = content.mid(startDataPosition, dataLength);
-                        PDFStream imageStream(std::move(*dictionary), std::move(buffer));
-                        paintXObjectImage(&imageStream, PDFObjectReference());
+                        processInlineImage(content, parser);
                     }
                     else
                     {
                         // Process the command, then clear the operand stack
-                        const size_t operatorIndex = PDFPageContentProcessorOperatorHelper::findIndex(command);
-                        if (operatorIndex < PDFPageContentProcessorOperatorHelper::OPERATOR_COUNT)
-                        {
-                            processCommand(operators[operatorIndex].second, PDFPageContentProcessorOperatorHelper::getText(operatorIndex));
-                        }
-                        else
-                        {
-                            processCommand(Operator::Invalid, QByteArray(command.constData(), command.size()));
-                        }
+                        processContentCommand(command);
                     }
 
                     m_operands.clear();

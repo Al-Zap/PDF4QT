@@ -190,6 +190,17 @@ public:
         std::sort(std::execution::seq, first, last, f);
     }
 
+    /// Tries to run a task in a free thread of the thread pool of the scope. The task
+    /// is not queued: if the strategy is single threaded, or no thread is free just
+    /// now, then false is returned, the task is not run (and it is not deleted), and
+    /// the caller does the work itself. So a task, on which the caller waits, can
+    /// never wait for a thread occupied by the caller. Unlike the function execute,
+    /// a single task is run also for the content scope, when only the pages are
+    /// processed in parallel (number of the threads of the pool is still the limit).
+    /// \param scope Scope
+    /// \param runnable Task
+    static bool tryStart(Scope scope, QRunnable* runnable);
+
     /// Returns number of active threads for given scope
     static int getActiveThreadCount(Scope scope);
 
