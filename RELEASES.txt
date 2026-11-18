@@ -1,4 +1,5 @@
 CURRENT:
+ - Ribbon user interface of the editor (tabs Home, Edit, Comment, Measure, Pages, Forms, Convert, Protect, View, Advanced, Help), navigation pane, status bar with page and zoom controls; mouse wheel scrolls, Ctrl+wheel zooms
 
 V: 1.7.0.0 8.11.2026
  - Issue #431: Blend2D is crashing on some cropped images

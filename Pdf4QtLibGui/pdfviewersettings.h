@@ -65,6 +65,12 @@ public:
         DarkScheme
     };
 
+    enum MouseWheelMode
+    {
+        MouseWheelScrolls,  ///< The wheel scrolls, Ctrl + wheel zooms (default)
+        MouseWheelZooms     ///< The wheel zooms at the cursor, Ctrl + wheel scrolls
+    };
+
     enum SidebarButtonIconSize
     {
         SidebarButtonIconSizeSmall,
@@ -150,6 +156,7 @@ public:
 
         // UI scrolling settings
         bool m_smoothWheelScrolling;
+        MouseWheelMode m_mouseWheelMode;
         int m_wheelScrollHorizontalSpeedPercent;
         int m_wheelScrollVerticalSpeedPercent;
 

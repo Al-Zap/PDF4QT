@@ -47,7 +47,6 @@
 #include "pdfadvancedtools.h"
 #include "pdfwidgetutils.h"
 #include "pdfactioncombobox.h"
-#include "pdftoolbarslots.h"
 
 #include <QPainter>
 #include <QFileDialog>
@@ -76,7 +75,11 @@
 #include <QSettings>
 #include <QMenuBar>
 
+#include <QSlider>
+#include <QStatusBar>
+
 #include <algorithm>
+#include <cmath>
 
 #include "pdfdbgheap.h"
 
@@ -86,6 +89,194 @@
 
 namespace pdfviewer
 {
+
+/// Helper functions of the ribbon layout of the main window
+class PDFEditorMainWindowHelper
+{
+public:
+    PDFEditorMainWindowHelper() = delete;
+
+    static constexpr int ZOOM_SLIDER_STEPS = 1000;
+
+    static QIcon getIcon(const QString& name)
+    {
+        return QIcon(QString(":/resources/%1.svg").arg(name));
+    }
+
+    /// Returns the icon converted for the dark theme, if it is active. It is used
+    /// for the buttons without actions (icons of the actions are converted with the actions).
+    static QIcon getThemedIcon(const QString& name)
+    {
+        QIcon icon = getIcon(name);
+        if (pdf::PDFWidgetUtils::isDarkTheme())
+        {
+            icon = pdf::PDFWidgetUtils::convertIconForDarkTheme(icon, QSize(32, 32), qGuiApp->devicePixelRatio());
+        }
+        return icon;
+    }
+
+    /// Sets the icon of the action, if the action has no icon
+    static void setActionIcon(QAction* action, const QString& name)
+    {
+        if (action && action->icon().isNull())
+        {
+            action->setIcon(getIcon(name));
+        }
+    }
+
+    static void replaceActionIcon(QAction* action, const QString& name)
+    {
+        if (action)
+        {
+            action->setIcon(getIcon(name));
+        }
+    }
+
+    static QAction* findAction(const std::vector<QAction*>& actions, const char* objectName)
+    {
+        for (QAction* action : actions)
+        {
+            if (action && action->objectName() == QLatin1String(objectName))
+            {
+                return action;
+            }
+        }
+
+        return nullptr;
+    }
+
+    /// Places the actions with given names into the group as large and small buttons,
+    /// placed actions are removed from the list of the actions.
+    static void placeActions(PDFRibbonGroup* group,
+                             std::vector<QAction*>& actions,
+                             const QStringList& largeNames,
+                             const QStringList& smallNames,
+                             const QHash<QString, QString>& texts = QHash<QString, QString>())
+    {
+        auto takeAction = [&actions](const QString& name) -> QAction*
+        {
+            auto it = std::find_if(actions.begin(), actions.end(), [&name](QAction* action) { return action && action->objectName() == name; });
+            if (it == actions.end())
+            {
+                return nullptr;
+            }
+
+            QAction* action = *it;
+            actions.erase(it);
+            return action;
+        };
+
+        for (const QString& name : largeNames)
+        {
+            group->addLargeAction(takeAction(name), texts.value(name));
+        }
+
+        group->breakColumn();
+        for (const QString& name : smallNames)
+        {
+            QAction* action = takeAction(name);
+            setActionIcon(action, QStringLiteral("placeholder"));
+            group->addSmallAction(action, texts.value(name));
+        }
+    }
+
+    /// Places all actions, which were not placed yet (except the actions with the names
+    /// in \p keptNames): a few actions as large buttons, more actions as a drop down list.
+    static void placeRemainingActions(PDFRibbonGroup* group,
+                                      std::vector<QAction*>& actions,
+                                      const QString& menuText,
+                                      const QIcon& menuIcon,
+                                      const QStringList& keptNames = QStringList())
+    {
+        QList<QAction*> remainingActions;
+        std::vector<QAction*> keptActions;
+
+        for (QAction* action : actions)
+        {
+            if (action && keptNames.contains(action->objectName()))
+            {
+                keptActions.push_back(action);
+            }
+            else if (action || (!remainingActions.isEmpty() && remainingActions.back()))
+            {
+                // Separators are kept, but not the leading and doubled ones
+                remainingActions.push_back(action);
+            }
+        }
+
+        while (!remainingActions.isEmpty() && !remainingActions.back())
+        {
+            remainingActions.pop_back();
+        }
+
+        actions = std::move(keptActions);
+
+        const auto actionCount = std::count_if(remainingActions.cbegin(), remainingActions.cend(), [](QAction* action) { return action != nullptr; });
+        if (actionCount == 0)
+        {
+            return;
+        }
+
+        if (actionCount <= 3)
+        {
+            for (QAction* action : remainingActions)
+            {
+                group->addLargeAction(action);
+            }
+        }
+        else if (actionCount <= 6)
+        {
+            group->breakColumn();
+            for (QAction* action : remainingActions)
+            {
+                setActionIcon(action, QStringLiteral("placeholder"));
+                group->addSmallAction(action);
+            }
+        }
+        else
+        {
+            group->addMenu(PDFRibbonButton::Size::Large, menuText, menuIcon, remainingActions);
+        }
+    }
+
+    static QToolButton* createStatusBarButton(QAction* action, QWidget* parent)
+    {
+        QToolButton* button = new QToolButton(parent);
+        const int iconSize = pdf::PDFWidgetUtils::scaleDPI_x(parent, 18);
+        button->setDefaultAction(action);
+        button->setAutoRaise(true);
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setIconSize(QSize(iconSize, iconSize));
+        button->setFocusPolicy(Qt::NoFocus);
+        return button;
+    }
+
+    static QFrame* createStatusBarSeparator(QWidget* parent)
+    {
+        QFrame* separator = new QFrame(parent);
+        separator->setProperty("statusBarSeparator", true);
+        separator->setFrameShape(QFrame::NoFrame);
+        separator->setFixedWidth(pdf::PDFWidgetUtils::scaleDPI_x(parent, 9));
+        return separator;
+    }
+
+    /// The slider of the zoom is logarithmic, so each step is the same change of the zoom
+    static int getSliderFromZoom(pdf::PDFReal zoom)
+    {
+        const pdf::PDFReal minZoom = pdf::PDFDrawWidgetProxy::getMinZoom();
+        const pdf::PDFReal maxZoom = pdf::PDFDrawWidgetProxy::getMaxZoom();
+        const pdf::PDFReal position = std::log(qBound(minZoom, zoom, maxZoom) / minZoom) / std::log(maxZoom / minZoom);
+        return qRound(position * ZOOM_SLIDER_STEPS);
+    }
+
+    static pdf::PDFReal getZoomFromSlider(int value)
+    {
+        const pdf::PDFReal minZoom = pdf::PDFDrawWidgetProxy::getMinZoom();
+        const pdf::PDFReal maxZoom = pdf::PDFDrawWidgetProxy::getMaxZoom();
+        const pdf::PDFReal position = pdf::PDFReal(qBound(0, value, ZOOM_SLIDER_STEPS)) / pdf::PDFReal(ZOOM_SLIDER_STEPS);
+        return minZoom * std::pow(maxZoom / minZoom, position);
+    }
+};
 
 PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     QMainWindow(parent),
@@ -106,14 +297,34 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_progressBarLeftLabelOnStatusBar(nullptr),
     m_isChangingProgressStep(false),
     m_isClassicLayout(isClassicLayoutEnabled()),
-    m_toolbarSlots(nullptr),
-    m_advancedMenu(nullptr),
+    m_ribbon(nullptr),
+    m_developerGroup(nullptr),
+    m_zoomSlider(nullptr),
     m_handToolAction(nullptr),
-    m_measureShortcutAction(nullptr)
+    m_measureShortcutAction(nullptr),
+    m_navigationPaneAction(nullptr),
+    m_collapseRibbonAction(nullptr),
+    m_sidebarWidth(0)
 {
     ui->setupUi(this);
 
     setAcceptDrops(true);
+
+    if (!m_isClassicLayout)
+    {
+        // The ribbon replaces the menu bar and the toolbar. The menus are kept (the File
+        // menu and the drop down lists of the ribbon), so they must not be deleted
+        // together with the menu bar.
+        const QList<QMenu*> menus = menuBar()->findChildren<QMenu*>(QString(), Qt::FindDirectChildrenOnly);
+        for (QMenu* menu : menus)
+        {
+            menu->setParent(this, menu->windowFlags());
+        }
+
+        removeToolBar(ui->mainToolBar);
+        ui->mainToolBar->setObjectName("classicToolBar");
+        ui->mainToolBar->hide();
+    }
 
     // Initialize toolbar icon size
     adjustToolbar(ui->mainToolBar);
@@ -286,7 +497,7 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     }
     else
     {
-        createSimpleToolbar();
+        createRibbon();
     }
 
     // Switch between the simplified and the classic layout
@@ -298,6 +509,10 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     connect(classicLayoutAction, &QAction::toggled, this, &PDFEditorMainWindow::onClassicLayoutToggled);
     ui->menuView->addSeparator();
     ui->menuView->addAction(classicLayoutAction);
+    if (m_ribbon)
+    {
+        m_ribbon->getGroup("view", "window", tr("Window"))->addSmallAction(classicLayoutAction, tr("Classic Menus"));
+    }
 
     m_programController->initialize(PDFProgramController::AllFeatures, this, this, m_actionManager, m_progress);
     setCentralWidget(m_programController->getPdfWidget());
@@ -316,6 +531,20 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_sidebarDockWidget->setWidget(m_sidebarWidget);
     addDockWidget(Qt::LeftDockWidgetArea, m_sidebarDockWidget);
     m_sidebarDockWidget->hide();
+    if (m_ribbon)
+    {
+        // Navigation pane: a strip of icons, which is always visible, the pages are opened by the icons
+        m_sidebarWidget->setCompactNavigation(true);
+        m_sidebarWidget->setNavigationCollapsed(true);
+        m_sidebarDockWidget->setFeatures(QDockWidget::NoDockWidgetFeatures);
+        m_sidebarDockWidget->setTitleBarWidget(new QWidget(m_sidebarDockWidget));
+        m_sidebarDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea);
+        connect(m_sidebarWidget, &PDFSidebarWidget::navigationCollapsedChanged, this, &PDFEditorMainWindow::onNavigationCollapsedChanged);
+        connect(m_navigationPaneAction, &QAction::triggered, this, [this](bool checked) { m_sidebarWidget->setNavigationCollapsed(!checked); });
+        connect(m_commentsListAction, &QAction::triggered, this, &PDFEditorMainWindow::onCommentsListTriggered);
+        onNavigationCollapsedChanged(true);
+        m_sidebarDockWidget->show();
+    }
     connect(m_sidebarWidget, &PDFSidebarWidget::actionTriggered, m_programController, &PDFProgramController::onActionTriggered);
     connect(m_sidebarWidget, &PDFSidebarWidget::documentModified, m_programController, &PDFProgramController::onDocumentModified);
     connect(m_sidebarWidget, &PDFSidebarWidget::sidebarVisibilityRequested, this, &PDFEditorMainWindow::onSidebarVisibilityRequested);
@@ -330,6 +559,12 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     {
         ui->menuInsert->addSeparator();
         ui->menuInsert->addAction(outlineNewItemAction);
+
+        if (m_ribbon)
+        {
+            PDFEditorMainWindowHelper::setActionIcon(outlineNewItemAction, QStringLiteral("bookmark"));
+            m_ribbon->getGroup("view", "bookmarks", tr("Bookmarks"))->addSmallAction(outlineNewItemAction);
+        }
     }
 
     // Organizing of the pages (rotate, delete, insert, extract, split) works on the selected
@@ -350,15 +585,32 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
             pagesMenu->addAction(action);
             m_actionManager->addAdditionalAction(action);
         }
-        menuBar()->insertMenu(ui->menuInsert->menuAction(), pagesMenu);
-
-        // Simplified toolbar: rotation as buttons, other page actions in a drop-down
-        if (m_toolbarSlots && pageActions.size() >= 2)
+        if (m_ribbon)
         {
-            using Section = PDFToolbarSlots::Section;
-            m_toolbarSlots->addAction(Section::Organize, pageActions[0]);
-            m_toolbarSlots->addAction(Section::Organize, pageActions[1]);
-            m_toolbarSlots->addActionGroup(Section::Organize, "pages", tr("Pages"), QList<QAction*>(std::next(pageActions.cbegin(), 2), pageActions.cend()), false);
+            PDFRibbonGroup* organizeGroup = m_ribbon->getGroup("pages", "organize", tr("Organize"));
+            PDFRibbonGroup* rotateGroup = m_ribbon->getGroup("pages", "rotate", tr("Rotate"));
+
+            auto findPageAction = [&pageActions](const char* name) -> QAction*
+            {
+                auto it = std::find_if(pageActions.cbegin(), pageActions.cend(), [name](QAction* action) { return action && action->objectName() == QLatin1String(name); });
+                return it != pageActions.cend() ? *it : nullptr;
+            };
+
+            PDFEditorMainWindowHelper::replaceActionIcon(findPageAction("actionPagesInsertFromFile"), QStringLiteral("ribbon-page-insert-file"));
+            PDFEditorMainWindowHelper::replaceActionIcon(findPageAction("actionPagesInsertBlankPage"), QStringLiteral("ribbon-page-blank"));
+            PDFEditorMainWindowHelper::replaceActionIcon(findPageAction("actionPagesExtract"), QStringLiteral("ribbon-page-extract"));
+
+            organizeGroup->addLargeAction(findPageAction("actionPagesInsertFromFile"), tr("Insert from File"));
+            organizeGroup->addLargeAction(findPageAction("actionPagesInsertBlankPage"), tr("Blank Page"));
+            organizeGroup->addLargeAction(findPageAction("actionPagesDelete"), tr("Delete"));
+            organizeGroup->addLargeAction(findPageAction("actionPagesExtract"), tr("Extract"));
+            organizeGroup->addLargeAction(findPageAction("actionPagesSplit"), tr("Split"));
+            rotateGroup->addLargeAction(findPageAction("actionPagesRotateLeft"), tr("Rotate Left"));
+            rotateGroup->addLargeAction(findPageAction("actionPagesRotateRight"), tr("Rotate Right"));
+        }
+        else
+        {
+            menuBar()->insertMenu(ui->menuInsert->menuAction(), pagesMenu);
         }
     }
 
@@ -376,6 +628,10 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     toggleAdvancedFindAction->setIcon(QIcon(":/resources/find-advanced.svg"));
     ui->menuEdit->insertAction(nullptr, toggleAdvancedFindAction);
     m_actionManager->addAdditionalAction(m_advancedFindDockWidget->toggleViewAction());
+    if (m_ribbon)
+    {
+        m_ribbon->getGroup("home", "find", tr("Find"))->addSmallAction(toggleAdvancedFindAction, tr("Advanced Find"));
+    }
 
     ui->menuView->addSeparator();
     ui->menuView->addAction(m_sidebarDockWidget->toggleViewAction());
@@ -387,7 +643,20 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     connect(m_progress, &pdf::PDFProgress::progressFinished, this, &PDFEditorMainWindow::onProgressFinished);
 
     PDFActionComboBox* actionComboBox = new PDFActionComboBox(this);
-    menuBar()->setCornerWidget(actionComboBox);
+    if (m_ribbon)
+    {
+        actionComboBox->setObjectName("ribbonSearchBox");
+        actionComboBox->setPlaceholderText(tr("Tell me what you want to do..."));
+        m_ribbon->addCornerAction(ui->actionSave);
+        m_ribbon->addCornerAction(ui->actionUndo);
+        m_ribbon->addCornerAction(ui->actionRedo);
+        m_ribbon->addCornerWidget(actionComboBox, pdf::PDFWidgetUtils::scaleDPI_x(actionComboBox, 120));
+        m_ribbon->addCornerAction(m_collapseRibbonAction);
+    }
+    else
+    {
+        menuBar()->setCornerWidget(actionComboBox);
+    }
 
     // On the first start (no saved window geometry), plan sheets get the whole screen
     const bool isFirstStart = !QSettings(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::organizationName(), QCoreApplication::applicationName()).contains("geometry");
@@ -398,6 +667,14 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     if (!m_isClassicLayout && isFirstStart)
     {
         setWindowState(windowState() | Qt::WindowMaximized);
+    }
+
+    if (m_ribbon)
+    {
+        // Plugins have placed their widgets on the status bar, page and zoom controls are the last ones
+        createRibbonStatusBar();
+        m_ribbon->updateGroups();
+        finishRibbon();
     }
     updateDeveloperMenu();
 
@@ -466,172 +743,341 @@ void PDFEditorMainWindow::createClassicToolbar(QToolButton* insertStickyNoteButt
     ui->mainToolBar->addSeparator();
 }
 
-void PDFEditorMainWindow::createSimpleToolbar()
+void PDFEditorMainWindow::createRibbon()
 {
-    using Section = PDFToolbarSlots::Section;
+    using Size = PDFRibbonButton::Size;
+    using Helper = PDFEditorMainWindowHelper;
 
-    QToolBar* toolbar = ui->mainToolBar;
-    toolbar->clear();
-    toolbar->setObjectName("simpleToolBar");
-    toolbar->setWindowTitle(tr("Main"));
-    toolbar->setMovable(false);
-    toolbar->setFloatable(false);
-    toolbar->setContextMenuPolicy(Qt::PreventContextMenu);
+    // Icons of the actions, which had no icon in the menus
+    Helper::setActionIcon(ui->actionPageLayoutSinglePage, QStringLiteral("ribbon-layout-single-page"));
+    Helper::setActionIcon(ui->actionPageLayoutContinuous, QStringLiteral("ribbon-layout-continuous"));
+    Helper::setActionIcon(ui->actionPageLayoutTwoPages, QStringLiteral("ribbon-layout-two-pages"));
+    Helper::setActionIcon(ui->actionPageLayoutTwoColumns, QStringLiteral("ribbon-layout-two-columns"));
+    Helper::setActionIcon(ui->actionFirstPageOnRightSide, QStringLiteral("ribbon-layout-first-page-right"));
+    Helper::setActionIcon(ui->actionFullscreenMode, QStringLiteral("ribbon-fullscreen"));
+    Helper::setActionIcon(ui->actionExport_to_Word, QStringLiteral("ribbon-export-word"));
+    Helper::setActionIcon(ui->actionRender_to_Images, QStringLiteral("ribbon-export-images"));
+    Helper::setActionIcon(ui->actionBatchRecognizeText, QStringLiteral("ribbon-ocr-batch"));
+    Helper::setActionIcon(ui->actionManageOCRLanguages, QStringLiteral("ribbon-ocr-languages"));
+    Helper::setActionIcon(ui->actionPrepareScannedPages, QStringLiteral("ribbon-scan-prepare"));
+    Helper::setActionIcon(ui->actionDeleteAnnotation, QStringLiteral("ribbon-annot-delete"));
+    Helper::setActionIcon(ui->actionRemoveExternalLinks, QStringLiteral("ribbon-link-remove"));
+    Helper::setActionIcon(ui->actionAutomaticDocumentRefresh, QStringLiteral("ribbon-auto-refresh"));
+    Helper::setActionIcon(ui->actionResetToFactorySettings, QStringLiteral("ribbon-reset-settings"));
+    Helper::setActionIcon(ui->actionShow_Text_Blocks, QStringLiteral("ribbon-text-blocks"));
+    Helper::setActionIcon(ui->actionShow_Text_Lines, QStringLiteral("ribbon-text-blocks"));
+    Helper::replaceActionIcon(ui->actionCreateTypewriter, QStringLiteral("ribbon-typewriter"));
+    Helper::replaceActionIcon(ui->actionGoToDocumentStart, QStringLiteral("ribbon-first-page"));
+    Helper::replaceActionIcon(ui->actionGoToPreviousPage, QStringLiteral("ribbon-prev-page"));
+    Helper::replaceActionIcon(ui->actionGoToNextPage, QStringLiteral("ribbon-next-page-arrow"));
+    Helper::replaceActionIcon(ui->actionGoToDocumentEnd, QStringLiteral("ribbon-last-page"));
 
-    m_advancedMenu = new QMenu(tr("&Advanced"), this);
-    m_advancedMenu->setObjectName("menuAdvanced");
-    m_advancedMenu->setToolTipsVisible(true);
-    menuBar()->insertMenu(ui->menuHelp->menuAction(), m_advancedMenu);
+    // Icons of the sticky notes are drawn from the characters of the font, which
+    // are not available everywhere. The kinds of the notes are told apart by their names.
+    if (QActionGroup* stickyNoteGroup = m_actionManager->getActionGroup(PDFActionManager::CreateStickyNoteGroup))
+    {
+        for (QAction* action : stickyNoteGroup->actions())
+        {
+            Helper::replaceActionIcon(action, QStringLiteral("annot-sticky-note"));
+        }
+    }
 
-    m_toolbarSlots = new PDFToolbarSlots(toolbar, m_advancedMenu, this);
+    m_ribbon = new PDFRibbon(this);
 
-    // File: open, save, print, undo, redo
-    m_toolbarSlots->addAction(Section::File, ui->actionOpen);
-    m_toolbarSlots->addAction(Section::File, ui->actionSave);
-    m_toolbarSlots->addAction(Section::File, ui->actionPrint);
-    m_toolbarSlots->addAction(Section::File, ui->actionMakeSearchable);
-    m_toolbarSlots->addSeparator(Section::File);
-    m_toolbarSlots->addAction(Section::File, ui->actionUndo);
-    m_toolbarSlots->addAction(Section::File, ui->actionRedo);
+    // The menu bar is deleted, when it is replaced by the ribbon (the menus were moved to the window)
+    setMenuWidget(m_ribbon);
 
-    // View: hand, select text, page navigation, zoom
+    // File menu: the options and the settings are a part of it, as there is no Tools menu
+    ui->menuFile->insertAction(ui->actionQuit, ui->actionOptions);
+    ui->menuFile->insertSeparator(ui->actionQuit);
+    m_ribbon->setFileMenu(tr("&File"), ui->menuFile);
+
+    m_ribbon->addPage("home", tr("Home"));
+    m_ribbon->addPage("edit", tr("Edit"));
+    m_ribbon->addPage("comment", tr("Comment"));
+    m_ribbon->addPage("measure", tr("Measure"));
+    m_ribbon->addPage("pages", tr("Pages"));
+    m_ribbon->addPage("forms", tr("Forms"));
+    m_ribbon->addPage("convert", tr("Convert"));
+    m_ribbon->addPage("protect", tr("Protect"));
+    m_ribbon->addPage("view", tr("View"));
+    m_ribbon->addPage("advanced", tr("Advanced"));
+    m_ribbon->addPage("help", tr("Help"));
+
+    // Hand: the state without an active tool
     m_handToolAction = new QAction(QIcon(":/resources/hand-tool.svg"), tr("&Hand"), this);
     m_handToolAction->setObjectName("actionHandTool");
     m_handToolAction->setCheckable(true);
     m_handToolAction->setChecked(true);
-    m_handToolAction->setToolTip(tr("Hand: drag to pan, click to fill form fields and follow links (H)"));
+    m_handToolAction->setToolTip(tr("Hand: drag to pan, click to fill form fields and follow links"));
     connect(m_handToolAction, &QAction::triggered, this, &PDFEditorMainWindow::onHandToolTriggered);
     m_actionManager->addAdditionalAction(m_handToolAction);
-    ui->menuEdit->insertAction(ui->actionSelectText, m_handToolAction);
 
-    m_toolbarSlots->addAction(Section::View, m_handToolAction);
-    m_toolbarSlots->addAction(Section::View, ui->actionSelectText);
-    m_toolbarSlots->addSeparator(Section::View);
-    m_toolbarSlots->addAction(Section::View, ui->actionGoToPreviousPage);
-    m_toolbarSlots->addWidget(Section::View, m_pageNumberSpinBox);
-    m_toolbarSlots->addWidget(Section::View, m_pageNumberLabel);
-    m_toolbarSlots->addAction(Section::View, ui->actionGoToNextPage);
-    m_toolbarSlots->addSeparator(Section::View);
-    m_toolbarSlots->addAction(Section::View, ui->actionZoom_Out);
-    m_toolbarSlots->addWidget(Section::View, m_pageZoomSpinBox);
-    m_toolbarSlots->addAction(Section::View, ui->actionZoom_In);
-    m_toolbarSlots->addActionGroup(Section::View, "fit", tr("Fit"), { ui->actionFitPage, ui->actionFitWidth, ui->actionFitHeight });
+    m_navigationPaneAction = new QAction(Helper::getIcon(QStringLiteral("ribbon-navigation-pane")), tr("&Navigation Pane"), this);
+    m_navigationPaneAction->setObjectName("actionNavigationPane");
+    m_navigationPaneAction->setCheckable(true);
+    m_navigationPaneAction->setShortcut(QKeySequence(Qt::Key_F4));
+    m_navigationPaneAction->setToolTip(tr("Show or hide the pane with the page thumbnails, bookmarks and comments"));
+    m_actionManager->addAdditionalAction(m_navigationPaneAction);
 
-    // Forms
-    m_toolbarSlots->addAction(Section::Forms, ui->actionCreateTypewriter);
-    m_toolbarSlots->addAction(Section::Forms, ui->actionSaveFlattenedCopy);
+    m_commentsListAction = new QAction(Helper::getIcon(QStringLiteral("ribbon-comments-list")), tr("Comments &List"), this);
+    m_commentsListAction->setObjectName("actionCommentsList");
+    m_commentsListAction->setToolTip(tr("Show the list of all comments and markups in the navigation pane"));
+    m_actionManager->addAdditionalAction(m_commentsListAction);
 
-    // Measure, Count, Organize and further Forms items are filled by the features (plugins
-    // return the section by PDFPlugin::getToolbarSection, other code uses
-    // getToolbarSlots()). Empty sections are not displayed.
+    m_collapseRibbonAction = new QAction(Helper::getIcon(QStringLiteral("ribbon-ribbon-collapse")), tr("&Collapse the Ribbon"), this);
+    m_collapseRibbonAction->setObjectName("actionCollapseRibbon");
+    m_collapseRibbonAction->setCheckable(true);
+    m_collapseRibbonAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F1));
+    m_collapseRibbonAction->setToolTip(tr("Show only the names of the tabs (double click on a tab does the same)"));
+    connect(m_collapseRibbonAction, &QAction::triggered, m_ribbon, &PDFRibbon::setCollapsed);
+    connect(m_ribbon, &PDFRibbon::collapsedChanged, m_collapseRibbonAction, &QAction::setChecked);
+    m_actionManager->addAdditionalAction(m_collapseRibbonAction);
 
-    // Markup
-    m_toolbarSlots->addActionGroup(Section::Markup, "highlight", tr("Highlight"),
-                                   { ui->actionCreateTextHighlight, ui->actionCreateTextUnderline, ui->actionCreateTextStrikeout, ui->actionCreateTextSquiggly });
-    m_toolbarSlots->addAction(Section::Markup, ui->actionInlineText);
-    if (QActionGroup* stickyNoteGroup = m_actionManager->getActionGroup(PDFActionManager::CreateStickyNoteGroup))
-    {
-        m_toolbarSlots->addActionGroup(Section::Markup, "stickyNote", tr("Sticky Note"), stickyNoteGroup->actions());
-    }
-    m_toolbarSlots->addActionGroup(Section::Markup, "cloud", tr("Revision Cloud"),
-                                   { ui->actionCreateCloudRectangle, ui->actionCreateCloudPolygon });
-    m_toolbarSlots->addActionGroup(Section::Markup, "shapes", tr("Shapes"),
-                                   { ui->actionCreateStraightLine, ui->actionCreateArrow, ui->actionCreatePolyline, ui->actionCreateRectangle,
-                                     ui->actionCreatePolygon, ui->actionCreateEllipse, ui->actionCreateFreehandCurve });
-    // Stamps have no icons, they stay in the Markup menu only
-
-    // Shortcut for the measure tool used last (the button of the measure section)
+    // Shortcut for the measure tool used last
     m_measureShortcutAction = new QAction(tr("Measure (Last Used Tool)"), this);
     m_measureShortcutAction->setObjectName("actionMeasureLastUsed");
     connect(m_measureShortcutAction, &QAction::triggered, this, [this]()
     {
-        if (QToolButton* button = m_toolbarSlots->getActionGroup(PDFToolbarSlots::getSectionName(PDFToolbarSlots::Section::Measure)))
+        if (m_lastMeasureAction)
         {
-            if (QAction* action = button->defaultAction())
-            {
-                action->trigger();
-            }
+            m_lastMeasureAction->trigger();
         }
     });
-    addAction(m_measureShortcutAction);
     m_actionManager->addAdditionalAction(m_measureShortcutAction);
 
-    ui->menuInsert->setTitle(tr("&Markup"));
-
-    createAdvancedMenu();
-    setSimpleLayoutShortcuts();
-
-    toolbar->setStyleSheet(QStringLiteral(
-        "QToolBar#simpleToolBar { border: none; border-bottom: 1px solid palette(mid); padding: 2px 6px; spacing: 2px; }"
-        "QToolBar#simpleToolBar QToolButton { padding: 3px; border-radius: 4px; }"
-        "QToolBar#simpleToolBar QToolButton:checked { background: rgba(0, 120, 215, 40); border: 1px solid rgba(0, 120, 215, 140); }"));
-}
-
-void PDFEditorMainWindow::createAdvancedMenu()
-{
-    // Specialist functions are kept, but moved out of the everyday menus.
-    // Submenus are created in this order, plugins without a toolbar section
-    // are placed into the Plugins submenu.
-    const QString ocrMenu = tr("&OCR (Scanned Documents)");
-    const QString documentMenu = tr("&Document");
-    const QString linksMenu = tr("&Links");
-    const QString toolsMenu = tr("&Tools");
-    const QString displayMenu = tr("Di&splay");
-    const QString exportMenu = tr("&Export");
-
-    m_toolbarSlots->addToAdvancedMenu(ui->actionPrepareScannedPages, ocrMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionRecognizeText, ocrMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionBatchRecognizeText, ocrMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionManageOCRLanguages, ocrMenu);
-
-    // One click OCR stays in the File menu and on the toolbar, it is offered
-    // also at the top of the OCR submenu (not detached from the File menu)
-    ui->menuEdit->removeAction(ui->actionMakeSearchable);
-    if (QMenu* ocrSubmenu = m_toolbarSlots->getAdvancedSubmenu(ocrMenu))
+    const QList<QAction*> highlightActions = { ui->actionCreateTextHighlight, ui->actionCreateTextUnderline, ui->actionCreateTextStrikeout, ui->actionCreateTextSquiggly };
+    QList<QAction*> stickyNoteActions;
+    if (QActionGroup* stickyNoteGroup = m_actionManager->getActionGroup(PDFActionManager::CreateStickyNoteGroup))
     {
-        ocrSubmenu->insertAction(ui->actionPrepareScannedPages, ui->actionMakeSearchable);
+        stickyNoteActions = stickyNoteGroup->actions();
+    }
+    QList<QAction*> stampActions;
+    if (QActionGroup* stampGroup = m_actionManager->getActionGroup(PDFActionManager::CreateStampGroup))
+    {
+        stampActions = stampGroup->actions();
     }
 
-    m_toolbarSlots->addToAdvancedMenu(ui->actionEncryption, documentMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionOptimize, documentMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionOptimizeImages, documentMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionSanitize, documentMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionRemoveExternalLinks, documentMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionPageGeometry, documentMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionCreateBitonalDocument, documentMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionInsertPageNumbers, documentMenu);
+    // Home
+    PDFRibbonGroup* group = m_ribbon->getGroup("home", "file", tr("File"));
+    group->addLargeAction(ui->actionOpen);
+    group->addActionList(Size::Large, { ui->actionSave, ui->actionSave_As, ui->actionSaveFlattenedCopy }, false);
+    group->addLargeAction(ui->actionPrint);
+    group->addSmallAction(ui->actionSend_by_E_Mail, tr("E-Mail"));
+    group->addSmallAction(ui->actionProperties);
+    group->addSmallAction(ui->actionClose);
 
-    m_toolbarSlots->addToAdvancedMenu(ui->actionCreateHyperlink, linksMenu);
-    PDFToolbarSlots::detachAction(ui->menuHyperlinkToThisPDF->menuAction());
-    m_toolbarSlots->getAdvancedSubmenu(linksMenu)->addMenu(ui->menuHyperlinkToThisPDF);
+    group = m_ribbon->getGroup("home", "tools", tr("Tools"));
+    group->addLargeAction(m_handToolAction);
+    group->addLargeAction(ui->actionSelectText, tr("Select Text"));
+    group->addSmallAction(ui->actionSelectTable, tr("Select Table"));
+    group->addSmallAction(ui->actionScreenshot, tr("Snapshot"));
+    group->addSmallAction(ui->actionMagnifier);
 
-    m_toolbarSlots->addToAdvancedMenu(ui->actionSelectTable, toolsMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionMagnifier, toolsMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionScreenshot, toolsMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionExtractImage, toolsMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionCertificateManager, toolsMenu);
+    group = m_ribbon->getGroup("home", "find", tr("Find"));
+    group->addLargeAction(ui->actionFind);
+    group->addSmallAction(ui->actionFindNext);
+    group->addSmallAction(ui->actionFindPrevious);
 
-    PDFToolbarSlots::detachAction(ui->menuRendering_Options->menuAction());
-    m_toolbarSlots->getAdvancedSubmenu(displayMenu)->addMenu(ui->menuRendering_Options);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionColorInvert, displayMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionColorGrayscale, displayMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionColorHighContrast, displayMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionColorBitonal, displayMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionColorCustom, displayMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionRendering_Errors, displayMenu);
+    group = m_ribbon->getGroup("home", "zoom", tr("View"));
+    group->addLargeAction(ui->actionFitPage);
+    group->addLargeAction(ui->actionFitWidth);
+    group->addSmallAction(ui->actionFitHeight);
+    group->addSmallAction(ui->actionRotateLeft, tr("Rotate View Left"));
+    group->addSmallAction(ui->actionRotateRight, tr("Rotate View Right"));
 
-    m_toolbarSlots->addToAdvancedMenu(ui->actionRender_to_Images, exportMenu);
-    m_toolbarSlots->addToAdvancedMenu(ui->actionSend_by_E_Mail, exportMenu);
+    group = m_ribbon->getGroup("home", "comment", tr("Comment"));
+    group->addActionList(Size::Large, highlightActions);
+    group->addActionList(Size::Large, stickyNoteActions, true, tr("Sticky Note"));
+    group->addLargeAction(ui->actionInlineText, tr("Text Box"));
 
-    m_toolbarSlots->getAdvancedSubmenu(tr("&Plugins"));
+    group = m_ribbon->getGroup("home", "convert", tr("Convert"));
+    group->addLargeAction(ui->actionMakeSearchable, tr("Make Searchable"));
+    group->addLargeAction(ui->actionExport_to_Word, tr("To Word"));
+
+    // Edit
+    group = m_ribbon->getGroup("edit", "undo", tr("Undo"));
+    group->addLargeAction(ui->actionUndo);
+    group->addLargeAction(ui->actionRedo);
+
+    group = m_ribbon->getGroup("edit", "text", tr("Text"));
+    group->addLargeAction(ui->actionSelectText, tr("Select Text"));
+    group->addSmallAction(ui->actionCopyText, tr("Copy"));
+    group->addSmallAction(ui->actionSelectTextAll);
+    group->addSmallAction(ui->actionDeselectText);
+
+    group = m_ribbon->getGroup("edit", "insert", tr("Insert"));
+    group->addLargeAction(ui->actionCreateTypewriter);
+    group->addLargeAction(ui->actionInlineText, tr("Text Box"));
+    group->addLargeAction(ui->actionCreateHyperlink, tr("Web Link"));
+    group->addMenu(Size::Large, tr("Link to Page"), Helper::getThemedIcon(QStringLiteral("hyperlink")), ui->menuHyperlinkToThisPDF);
+    group->addLargeAction(ui->actionInsertPageNumbers, tr("Page Numbers"));
+
+    // Group of the page content editor (plugin) is in front of the document group
+    m_ribbon->getGroup("edit", "content", tr("Page Content"));
+
+    group = m_ribbon->getGroup("edit", "document", tr("Document"));
+    group->addLargeAction(ui->actionPageGeometry);
+    group->addLargeAction(ui->actionRemoveExternalLinks, tr("Remove Links"));
+
+    // Comment
+    group = m_ribbon->getGroup("comment", "markup", tr("Text Markup"));
+    group->addLargeAction(ui->actionCreateTextHighlight);
+    group->addSmallAction(ui->actionCreateTextUnderline);
+    group->addSmallAction(ui->actionCreateTextStrikeout);
+    group->addSmallAction(ui->actionCreateTextSquiggly);
+
+    group = m_ribbon->getGroup("comment", "notes", tr("Notes"));
+    group->addActionList(Size::Large, stickyNoteActions, true, tr("Sticky Note"));
+    group->addLargeAction(ui->actionInlineText, tr("Text Box"));
+    group->addLargeAction(ui->actionCreateTypewriter);
+
+    group = m_ribbon->getGroup("comment", "drawing", tr("Drawing"));
+    group->addActionList(Size::Large, { ui->actionCreateCloudRectangle, ui->actionCreateCloudPolygon });
+    group->addSmallAction(ui->actionCreateStraightLine, tr("Line"));
+    group->addSmallAction(ui->actionCreateArrow);
+    group->addSmallAction(ui->actionCreatePolyline);
+    group->addSmallAction(ui->actionCreateRectangle);
+    group->addSmallAction(ui->actionCreateEllipse);
+    group->addSmallAction(ui->actionCreatePolygon);
+    group->addSmallAction(ui->actionCreateFreehandCurve, tr("Freehand"));
+
+    group = m_ribbon->getGroup("comment", "stamps", tr("Stamps"));
+    group->addMenu(Size::Large, tr("Stamp"), Helper::getThemedIcon(QStringLiteral("ribbon-stamp")), stampActions);
+
+    group = m_ribbon->getGroup("comment", "manage", tr("Manage"));
+    group->addLargeAction(m_commentsListAction);
+    group->addLargeAction(ui->actionDeleteAnnotation, tr("Delete Comments"));
+
+    // Measure: filled by the plugins (measuring and fixture count)
+    m_ribbon->getGroup("measure", "scale", tr("Scale"));
+    m_ribbon->getGroup("measure", "measure", tr("Measure"));
+    m_ribbon->getGroup("measure", "results", tr("Measurements"));
+    m_ribbon->getGroup("measure", "count", tr("Fixture Count"));
+
+    // Pages: organizing actions are added, when the navigation pane is created
+    m_ribbon->getGroup("pages", "organize", tr("Organize"));
+    m_ribbon->getGroup("pages", "rotate", tr("Rotate"));
+
+    group = m_ribbon->getGroup("pages", "setup", tr("Page Setup"));
+    group->addLargeAction(ui->actionInsertPageNumbers, tr("Page Numbers"));
+    group->addLargeAction(ui->actionPageGeometry);
+
+    group = m_ribbon->getGroup("pages", "scan", tr("Scanned Pages"));
+    group->addLargeAction(ui->actionPrepareScannedPages, tr("Crop, Split and Deskew"));
+
+    // Forms
+    group = m_ribbon->getGroup("forms", "fill", tr("Fill In"));
+    group->addLargeAction(m_handToolAction, tr("Fill Form"));
+    group->addLargeAction(ui->actionCreateTypewriter);
+
+    group = m_ribbon->getGroup("forms", "finish", tr("Finish"));
+    group->addLargeAction(ui->actionSave);
+    group->addLargeAction(ui->actionSaveFlattenedCopy, tr("Save Flattened Copy"));
+    group->addLargeAction(ui->actionPrint);
+
+    // Convert
+    group = m_ribbon->getGroup("convert", "ocr", tr("Text Recognition (OCR)"));
+    group->addLargeAction(ui->actionMakeSearchable, tr("Make Searchable"));
+    group->addLargeAction(ui->actionRecognizeText, tr("Recognize and Review"));
+    group->addSmallAction(ui->actionBatchRecognizeText, tr("Batch of Files"));
+    group->addSmallAction(ui->actionPrepareScannedPages, tr("Prepare Scanned Pages"));
+    group->addSmallAction(ui->actionManageOCRLanguages, tr("Languages"));
+
+    group = m_ribbon->getGroup("convert", "export", tr("Export"));
+    group->addLargeAction(ui->actionExport_to_Word, tr("To Word"));
+    group->addLargeAction(ui->actionRender_to_Images, tr("To Images"));
+    group->addLargeAction(ui->actionSend_by_E_Mail, tr("E-Mail"));
+
+    // Scanner (plugin) is in front of the optimization
+    m_ribbon->getGroup("convert", "create", tr("Create"));
+
+    group = m_ribbon->getGroup("convert", "optimize", tr("Reduce Size"));
+    group->addLargeAction(ui->actionOptimize);
+    group->addLargeAction(ui->actionOptimizeImages);
+    group->addLargeAction(ui->actionCreateBitonalDocument, tr("Black and White"));
+
+    // Protect
+    group = m_ribbon->getGroup("protect", "security", tr("Security"));
+    group->addLargeAction(ui->actionEncryption, tr("Password"));
+    group->addLargeAction(ui->actionSanitize);
+    group->addLargeAction(ui->actionCertificateManager);
+
+    // View
+    group = m_ribbon->getGroup("view", "panes", tr("Show"));
+    group->addLargeAction(m_navigationPaneAction);
+    group->addLargeAction(ui->actionFullscreenMode, tr("Full Screen"));
+
+    group = m_ribbon->getGroup("view", "goto", tr("Go To"));
+    group->addSmallAction(ui->actionGoToDocumentStart, tr("First Page"));
+    group->addSmallAction(ui->actionGoToPreviousPage, tr("Previous Page"));
+    group->addSmallAction(ui->actionGoToNextPage, tr("Next Page"));
+    group->addSmallAction(ui->actionGoToDocumentEnd, tr("Last Page"));
+
+    group = m_ribbon->getGroup("view", "layout", tr("Page Layout"));
+    group->addSmallAction(ui->actionPageLayoutSinglePage);
+    group->addSmallAction(ui->actionPageLayoutContinuous);
+    group->addSmallAction(ui->actionPageLayoutTwoPages);
+    group->addSmallAction(ui->actionPageLayoutTwoColumns, tr("Two Columns"));
+    group->addSmallAction(ui->actionFirstPageOnRightSide, tr("First Page on Right"));
+
+    group = m_ribbon->getGroup("view", "zoom", tr("Zoom"));
+    group->addSmallAction(ui->actionZoom_In);
+    group->addSmallAction(ui->actionZoom_Out);
+    group->addSmallAction(ui->actionFitPage);
+    group->addSmallAction(ui->actionFitWidth);
+    group->addSmallAction(ui->actionFitHeight);
+
+    group = m_ribbon->getGroup("view", "bookmarks", tr("Bookmarks"));
+    group->addLargeAction(ui->actionBookmarkPage);
+    group->addSmallAction(ui->actionGotoNextBookmark, tr("Next Bookmark"));
+    group->addSmallAction(ui->actionGotoPreviousBookmark, tr("Previous Bookmark"));
+    group->addMenu(Size::Small, tr("Settings"), Helper::getThemedIcon(QStringLiteral("settings")), ui->menuBookmarkSettings);
+
+    group = m_ribbon->getGroup("view", "display", tr("Display"));
+    group->addSmallAction(ui->actionColorInvert, tr("Inverted Colors"));
+    group->addSmallAction(ui->actionColorGrayscale, tr("Grayscale"));
+    group->addSmallAction(ui->actionColorHighContrast, tr("High Contrast"));
+    group->addSmallAction(ui->actionColorBitonal, tr("Monochromatic"));
+    group->addSmallAction(ui->actionColorCustom, tr("Custom Colors"));
+    group->addMenu(Size::Small, tr("Rendering"), Helper::getThemedIcon(QStringLiteral("rendering")), ui->menuRendering_Options);
+
+    m_ribbon->getGroup("view", "window", tr("Window"));
+
+    // Advanced
+    group = m_ribbon->getGroup("advanced", "tools", tr("Tools"));
+    group->addLargeAction(ui->actionExtractImage);
+    group->addLargeAction(ui->actionScreenshot, tr("Snapshot"));
+    group->addLargeAction(ui->actionMagnifier);
+
+    group = m_ribbon->getGroup("advanced", "document", tr("Document"));
+    group->addLargeAction(ui->actionProperties);
+    group->addLargeAction(ui->actionRendering_Errors);
+    group->addLargeAction(ui->actionAutomaticDocumentRefresh, tr("Automatic Refresh"));
+
+    m_developerGroup = m_ribbon->getGroup("advanced", "developer", tr("Developer"));
+    m_developerGroup->addSmallAction(ui->actionShow_Text_Blocks);
+    m_developerGroup->addSmallAction(ui->actionShow_Text_Lines);
+
+    // Help
+    group = m_ribbon->getGroup("help", "settings", tr("Settings"));
+    group->addLargeAction(ui->actionOptions);
+    group->addLargeAction(ui->actionResetToFactorySettings, tr("Factory Settings"));
+
+    group = m_ribbon->getGroup("help", "about", tr("About"));
+    group->addLargeAction(ui->actionAbout);
+    group->addLargeAction(ui->actionGetSource);
+    group->addLargeAction(ui->actionBecomeASponsor, tr("Sponsor"));
+
+    setRibbonShortcuts();
 }
 
-void PDFEditorMainWindow::setSimpleLayoutShortcuts()
+void PDFEditorMainWindow::setRibbonShortcuts()
 {
-    // Shortcuts follow the common conventions of PDF viewers (Acrobat, Bluebeam,
-    // Power PDF), so habits carry over. Single letter shortcuts do not interfere
-    // with typing into form fields, the form editor overrides them. Shortcuts
-    // changed by the user (Tools > Options) are restored after this.
+    // Shortcuts follow the common conventions of PDF applications, so habits carry
+    // over. Single letter shortcuts do not interfere with typing into form fields,
+    // the form editor overrides them. Shortcuts changed by the user (Options) are
+    // restored after this.
     ui->actionZoom_In->setShortcuts({ QKeySequence::ZoomIn, QKeySequence(Qt::CTRL | Qt::Key_Equal) });
     ui->actionZoom_Out->setShortcuts({ QKeySequence::ZoomOut });
     ui->actionFitPage->setShortcuts({ QKeySequence(Qt::CTRL | Qt::Key_0) });
@@ -639,7 +1085,7 @@ void PDFEditorMainWindow::setSimpleLayoutShortcuts()
     ui->actionFitHeight->setShortcuts({ QKeySequence(Qt::CTRL | Qt::Key_3) });
 
     // Ctrl+1..5 are used by the zoom commands above, the page layout is
-    // changed rarely, it stays available in the View menu.
+    // changed by the buttons of the status bar.
     ui->actionPageLayoutSinglePage->setShortcut(QKeySequence());
     ui->actionPageLayoutContinuous->setShortcut(QKeySequence());
     ui->actionPageLayoutTwoPages->setShortcut(QKeySequence());
@@ -659,6 +1105,142 @@ void PDFEditorMainWindow::setSimpleLayoutShortcuts()
     ui->actionCreateEllipse->setShortcut(QKeySequence(Qt::Key_E));
     ui->actionCreateFreehandCurve->setShortcut(QKeySequence(Qt::Key_F));
     ui->actionCreatePolyline->setShortcut(QKeySequence(Qt::Key_P));
+}
+
+void PDFEditorMainWindow::createRibbonStatusBar()
+{
+    using Helper = PDFEditorMainWindowHelper;
+
+    QStatusBar* bar = statusBar();
+    bar->setObjectName("ribbonStatusBar");
+
+    // Page navigation
+    bar->addPermanentWidget(Helper::createStatusBarSeparator(bar));
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionGoToDocumentStart, bar));
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionGoToPreviousPage, bar));
+    bar->addPermanentWidget(m_pageNumberSpinBox);
+    bar->addPermanentWidget(m_pageNumberLabel);
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionGoToNextPage, bar));
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionGoToDocumentEnd, bar));
+    m_pageNumberSpinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_pageNumberSpinBox->setFixedWidth(pdf::PDFWidgetUtils::scaleDPI_x(m_pageNumberSpinBox, 52));
+    m_pageNumberSpinBox->setToolTip(tr("Current page"));
+
+    // Page layout
+    bar->addPermanentWidget(Helper::createStatusBarSeparator(bar));
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionPageLayoutSinglePage, bar));
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionPageLayoutContinuous, bar));
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionPageLayoutTwoPages, bar));
+
+    // Zoom
+    bar->addPermanentWidget(Helper::createStatusBarSeparator(bar));
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionFitPage, bar));
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionFitWidth, bar));
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionZoom_Out, bar));
+
+    m_zoomSlider = new QSlider(Qt::Horizontal, bar);
+    m_zoomSlider->setObjectName("zoomSlider");
+    m_zoomSlider->setRange(0, Helper::ZOOM_SLIDER_STEPS);
+    m_zoomSlider->setFixedWidth(pdf::PDFWidgetUtils::scaleDPI_x(m_zoomSlider, 110));
+    m_zoomSlider->setFocusPolicy(Qt::NoFocus);
+    m_zoomSlider->setToolTip(tr("Zoom"));
+    connect(m_zoomSlider, &QSlider::valueChanged, this, &PDFEditorMainWindow::onZoomSliderValueChanged);
+    bar->addPermanentWidget(m_zoomSlider);
+
+    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionZoom_In, bar));
+    bar->addPermanentWidget(m_pageZoomSpinBox);
+    m_pageZoomSpinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_pageZoomSpinBox->setDecimals(0);
+    m_pageZoomSpinBox->setFixedWidth(pdf::PDFWidgetUtils::scaleDPI_x(m_pageZoomSpinBox, 58));
+    m_pageZoomSpinBox->setToolTip(tr("Zoom"));
+
+    updateZoomSlider();
+}
+
+void PDFEditorMainWindow::finishRibbon()
+{
+    // The toolbar of the classic layout can be shown by the restored state of the window
+    ui->mainToolBar->hide();
+
+    // There is no menu bar, so the shortcuts of the actions work only, if the actions
+    // belong to the window. Shortcuts limited to a widget stay with their widgets.
+    for (QAction* action : m_actionManager->getActions())
+    {
+        if (action && action->shortcutContext() == Qt::WindowShortcut && !actions().contains(action))
+        {
+            addAction(action);
+        }
+    }
+
+    m_navigationPaneAction->setEnabled(false);
+    m_sidebarDockWidget->show();
+    onNavigationCollapsedChanged(m_sidebarWidget->isNavigationCollapsed());
+
+    setStyleSheet(PDFRibbon::createStyleSheet(pdf::PDFWidgetUtils::isDarkTheme()));
+}
+
+void PDFEditorMainWindow::onNavigationCollapsedChanged(bool collapsed)
+{
+    if (!m_sidebarDockWidget || !m_sidebarWidget)
+    {
+        return;
+    }
+
+    const int stripWidth = m_sidebarWidget->getNavigationStripWidth();
+
+    if (collapsed)
+    {
+        if (m_sidebarDockWidget->width() > stripWidth)
+        {
+            m_sidebarWidth = m_sidebarDockWidget->width();
+        }
+
+        m_sidebarDockWidget->setFixedWidth(stripWidth);
+    }
+    else
+    {
+        m_sidebarDockWidget->setMinimumWidth(stripWidth + pdf::PDFWidgetUtils::scaleDPI_x(this, 120));
+        m_sidebarDockWidget->setMaximumWidth(QWIDGETSIZE_MAX);
+
+        const int defaultWidth = stripWidth + pdf::PDFWidgetUtils::scaleDPI_x(this, 220);
+        resizeDocks({ m_sidebarDockWidget }, { qMax(m_sidebarWidth, defaultWidth) }, Qt::Horizontal);
+    }
+
+    if (m_navigationPaneAction)
+    {
+        m_navigationPaneAction->setChecked(!collapsed);
+    }
+}
+
+void PDFEditorMainWindow::onCommentsListTriggered()
+{
+    if (m_sidebarWidget->isEmpty(PDFSidebarWidget::Notes))
+    {
+        statusBar()->showMessage(tr("The document has no comments."), 5000);
+        return;
+    }
+
+    m_sidebarWidget->setNavigationCollapsed(false);
+    m_sidebarWidget->selectPage(PDFSidebarWidget::Notes);
+}
+
+void PDFEditorMainWindow::onZoomSliderValueChanged(int value)
+{
+    if (m_isLoadingUI)
+    {
+        return;
+    }
+
+    m_programController->getPdfWidget()->getDrawWidgetProxy()->zoom(PDFEditorMainWindowHelper::getZoomFromSlider(value));
+}
+
+void PDFEditorMainWindow::updateZoomSlider()
+{
+    if (m_zoomSlider && m_programController->getPdfWidget())
+    {
+        QSignalBlocker blocker(m_zoomSlider);
+        m_zoomSlider->setValue(PDFEditorMainWindowHelper::getSliderFromZoom(m_programController->getPdfWidget()->getDrawWidgetProxy()->getZoom()));
+    }
 }
 
 void PDFEditorMainWindow::updateHandToolAction()
@@ -708,105 +1290,127 @@ QMenu* PDFEditorMainWindow::addPluginUserInterface(pdf::PDFPlugin* plugin,
                                                    const std::vector<QAction*>& toolbarActions,
                                                    bool& toolbarActionsPlaced)
 {
-    if (m_isClassicLayout || !m_toolbarSlots)
+    if (m_isClassicLayout || !m_ribbon)
     {
         return IMainWindow::addPluginUserInterface(plugin, pluginName, toolbarActions, toolbarActionsPlaced);
     }
 
-    // In the simplified layout, plugins never get a toolbar of their own
+    using Helper = PDFEditorMainWindowHelper;
+
+    // Plugins have no toolbars and no menus of their own, their actions are on the ribbon
     toolbarActionsPlaced = true;
 
-    std::optional<PDFToolbarSlots::Section> section = PDFToolbarSlots::getSectionFromName(plugin->getToolbarSection());
-    if (!section)
-    {
-        // Advanced plugin: menu only, in the Advanced menu
-        return m_toolbarSlots->getAdvancedSubmenu(tr("&Plugins"))->addMenu(plugin->getPluginMenuName());
-    }
+    const std::vector<QAction*> actions = plugin->getActions();
+    const QString pluginTitle = PDFRibbonButton::getCleanText(plugin->getPluginMenuName());
+    const QIcon moreIcon = Helper::getThemedIcon(QStringLiteral("ribbon-comments-list"));
 
-    // Toolbar actions without leading, trailing and doubled separators
-    QList<QAction*> actions;
-    for (QAction* action : toolbarActions)
+    if (pluginName == QLatin1String("Dimensions"))
     {
-        if (!action && (actions.isEmpty() || !actions.back()))
+        Helper::setActionIcon(Helper::findAction(actions, "dimensiontool_ScalePerSheetAction"), QStringLiteral("ribbon-scale-sheet"));
+        Helper::setActionIcon(Helper::findAction(actions, "dimensiontool_SnapToDrawingAction"), QStringLiteral("ribbon-snap"));
+
+        const QStringList measureTools = { "dimensiontool_LinearAction", "dimensiontool_PolylineAction", "dimensiontool_AreaAction",
+                                           "dimensiontool_LinearHorizontalAction", "dimensiontool_LinearVerticalAction", "dimensiontool_AngleAction",
+                                           "dimensiontool_PerimeterAction", "dimensiontool_RectanglePerimeterAction", "dimensiontool_RectangleAreaAction" };
+
+        std::vector<QAction*> remainingActions = actions;
+        const QHash<QString, QString> texts = { { "dimensiontool_CalibrateAction", tr("Calibrate") },
+                                                { "dimensiontool_ScaleAction", tr("Drawing Scale") },
+                                                { "dimensiontool_ScalePerSheetAction", tr("This Sheet Only") },
+                                                { "dimensiontool_LinearAction", tr("Length") },
+                                                { "dimensiontool_PolylineAction", tr("Polyline") },
+                                                { "dimensiontool_LinearHorizontalAction", tr("Horizontal") },
+                                                { "dimensiontool_LinearVerticalAction", tr("Vertical") },
+                                                { "dimensiontool_RectanglePerimeterAction", tr("Rect. Perimeter") },
+                                                { "dimensiontool_RectangleAreaAction", tr("Rect. Area") },
+                                                { "dimensiontool_ShowDimensionsAction", tr("Show") },
+                                                { "dimensiontool_ExportAction", tr("Export") },
+                                                { "dimensiontool_ConvertToAnnotationsAction", tr("Save as Markups") },
+                                                { "dimensiontool_ClearDimensionsAction", tr("Clear") } };
+
+        Helper::placeActions(m_ribbon->getGroup("measure", "scale", tr("Scale")), remainingActions,
+                             { "dimensiontool_CalibrateAction", "dimensiontool_ScaleAction" },
+                             { "dimensiontool_ScalePerSheetAction", "dimensiontool_SnapToDrawingAction" }, texts);
+        Helper::placeActions(m_ribbon->getGroup("measure", "measure", tr("Measure")), remainingActions, measureTools.mid(0, 3), measureTools.mid(3), texts);
+        Helper::placeActions(m_ribbon->getGroup("measure", "results", tr("Measurements")), remainingActions,
+                             { "dimensiontool_ShowDimensionsAction", "dimensiontool_ExportAction" },
+                             { "dimensiontool_ConvertToAnnotationsAction", "dimensiontool_ClearDimensionsAction", "dimensiontool_SettingsAction" }, texts);
+        Helper::placeRemainingActions(m_ribbon->getGroup("measure", "results", tr("Measurements")), remainingActions, tr("More"), moreIcon);
+
+        // Measure tool used last is activated by the shortcut
+        for (const QString& name : measureTools)
         {
-            continue;
+            if (QAction* action = Helper::findAction(actions, name.toLatin1().constData()))
+            {
+                if (!m_lastMeasureAction)
+                {
+                    m_lastMeasureAction = action;
+                }
+
+                connect(action, &QAction::triggered, this, [this, action]() { m_lastMeasureAction = action; });
+            }
         }
-
-        actions.push_back(action);
     }
-    while (!actions.isEmpty() && !actions.back())
+    else if (pluginName == QLatin1String("FixtureCount"))
     {
-        actions.pop_back();
+        std::vector<QAction*> remainingActions = actions;
+        PDFRibbonGroup* group = m_ribbon->getGroup("measure", "count", tr("Fixture Count"));
+        Helper::placeActions(group, remainingActions,
+                             { "fixturecount_CountAction", "fixturecount_FindSimilarAction", "fixturecount_ShowPanelAction", "fixturecount_ExportAction" }, { },
+                             { { "fixturecount_CountAction", tr("Count") }, { "fixturecount_ShowPanelAction", tr("Count Panel") }, { "fixturecount_ExportAction", tr("Export") } });
+        Helper::placeRemainingActions(group, remainingActions, tr("More"), moreIcon);
     }
-
-    const auto actionCount = std::count_if(actions.cbegin(), actions.cend(), [](QAction* action) { return action != nullptr; });
-    if (actionCount > 3)
+    else if (pluginName == QLatin1String("Editor"))
     {
-        // Many actions: one drop down button, which remembers the last used tool.
-        // The first plugin of a section names the group after the section, so the
-        // measure tools can be triggered by the measure shortcut.
-        const QString sectionName = PDFToolbarSlots::getSectionName(*section);
-        const QString groupId = m_toolbarSlots->getActionGroup(sectionName) ? pluginName : sectionName;
-        QString text = plugin->getPluginMenuName();
-        text.remove(QChar('&'));
-        m_toolbarSlots->addActionGroup(*section, groupId, text, actions);
+        std::vector<QAction*> remainingActions = actions;
+        PDFRibbonGroup* group = m_ribbon->getGroup("edit", "content", tr("Page Content"));
+        Helper::placeActions(group, remainingActions, { "editortool_activateAction", "editortool_createTextAction" }, { });
+        Helper::placeRemainingActions(group, remainingActions, tr("Insert"), Helper::getThemedIcon(QStringLiteral("annot-polygon")), { "editortool_undoAction", "editortool_redoAction", "editortool_clearAction" });
+        Helper::placeActions(group, remainingActions, { }, { "editortool_undoAction", "editortool_redoAction", "editortool_clearAction" });
+    }
+    else if (pluginName == QLatin1String("Signature"))
+    {
+        std::vector<QAction*> remainingActions = actions;
+        PDFRibbonGroup* group = m_ribbon->getGroup("protect", "sign", tr("Sign"));
+        Helper::placeActions(group, remainingActions,
+                             { "signaturetool_signDigitallyAction", "signaturetool_signElectronicallyAction", "signaturetool_activateAction" },
+                             { });
+        Helper::placeRemainingActions(group, remainingActions, tr("Draw Signature"), Helper::getThemedIcon(QStringLiteral("signature")), { "signaturetool_certificatesAction" });
+        Helper::placeActions(group, remainingActions, { }, { "signaturetool_certificatesAction" });
+    }
+    else if (pluginName == QLatin1String("Redact"))
+    {
+        std::vector<QAction*> remainingActions = actions;
+        PDFRibbonGroup* group = m_ribbon->getGroup("protect", "redact", tr("Redact"));
+        Helper::placeActions(group, remainingActions,
+                             { "redactplugin_RedactRectangle", "redactplugin_RedactText" },
+                             { "redactplugin_RedactTextSelection", "redactplugin_RedactPage" });
+        Helper::placeActions(group, remainingActions, { "redactplugin_CreateRedactedDocument" }, { });
+        Helper::placeRemainingActions(group, remainingActions, tr("More"), moreIcon);
+    }
+    else if (pluginName == QLatin1String("Scanner"))
+    {
+        std::vector<QAction*> remainingActions = actions;
+        Helper::placeRemainingActions(m_ribbon->getGroup("convert", "create", tr("Create")), remainingActions, tr("More"), moreIcon);
+    }
+    else if (pluginName == QLatin1String("AudioBook"))
+    {
+        std::vector<QAction*> remainingActions = actions;
+        PDFRibbonGroup* group = m_ribbon->getGroup("advanced", "plugin_" + pluginName, pluginTitle);
+        Helper::placeActions(group, remainingActions, { "actionAudioBook_CreateTextStream", "actionAudioBook_CreateAudioBook" }, { });
+        Helper::placeRemainingActions(group, remainingActions, tr("Text Stream"), moreIcon);
     }
     else
     {
-        for (QAction* action : actions)
-        {
-            m_toolbarSlots->addAction(*section, action);
-        }
+        // Other plugins have their own groups on the Advanced tab
+        std::vector<QAction*> remainingActions = actions;
+        Helper::placeRemainingActions(m_ribbon->getGroup("advanced", "plugin_" + pluginName, pluginTitle), remainingActions, tr("More"), moreIcon);
     }
 
-    // Menu of the plugin: View and Markup sections use the existing menus,
-    // other sections get a top level menu named after the section.
-    switch (*section)
-    {
-        case PDFToolbarSlots::Section::View:
-            return ui->menuView->addMenu(plugin->getPluginMenuName());
-
-        case PDFToolbarSlots::Section::Markup:
-            return ui->menuInsert->addMenu(plugin->getPluginMenuName());
-
-        default:
-            break;
-    }
-
-    QMenu*& sectionMenu = m_sectionMenus[*section];
-    if (!sectionMenu)
-    {
-        QString title;
-        switch (*section)
-        {
-            case PDFToolbarSlots::Section::Measure:
-                title = tr("Mea&sure");
-                break;
-            case PDFToolbarSlots::Section::Count:
-                title = tr("&Count");
-                break;
-            case PDFToolbarSlots::Section::Forms:
-                title = tr("Fo&rms");
-                break;
-            case PDFToolbarSlots::Section::Organize:
-                title = tr("&Organize");
-                break;
-            default:
-                title = plugin->getPluginMenuName();
-                break;
-        }
-
-        sectionMenu = new QMenu(title, this);
-        sectionMenu->setObjectName(QString("menuSection_%1").arg(PDFToolbarSlots::getSectionName(*section)));
-        sectionMenu->setToolTipsVisible(true);
-        menuBar()->insertMenu(ui->menuTools->menuAction(), sectionMenu);
-    }
-    else
-    {
-        sectionMenu->addSeparator();
-    }
-
-    return sectionMenu;
+    // The program controller fills a menu of the plugin, which is not displayed
+    QMenu* pluginMenu = new QMenu(plugin->getPluginMenuName(), this);
+    pluginMenu->setObjectName(QString("menuPlugin_%1").arg(pluginName));
+    return pluginMenu;
 }
 
 void PDFEditorMainWindow::onSidebarVisibilityRequested()
@@ -816,6 +1420,7 @@ void PDFEditorMainWindow::onSidebarVisibilityRequested()
         m_sidebarDockWidget->show();
     }
 
+    m_sidebarWidget->setNavigationCollapsed(false);
     m_sidebarDockWidget->raise();
 }
 
@@ -897,6 +1502,11 @@ void PDFEditorMainWindow::updateDeveloperMenu()
 {
     bool isDeveloperMode = m_programController->getSettings()->getSettings().m_allowDeveloperMode;
     ui->menuDeveloper->menuAction()->setVisible(isDeveloperMode);
+
+    if (m_developerGroup)
+    {
+        m_developerGroup->setVisible(isDeveloperMode);
+    }
 }
 
 void PDFEditorMainWindow::updateUI(bool fullUpdate)
@@ -937,6 +1547,7 @@ void PDFEditorMainWindow::updateUI(bool fullUpdate)
     }
 
     m_pageZoomSpinBox->setValue(m_programController->getPdfWidget()->getDrawWidgetProxy()->getZoom() * 100);
+    updateZoomSlider();
 }
 
 QMenu* PDFEditorMainWindow::addToolMenu(QString name, pdf::PDFPlugin::PluginMenuLocation location)
@@ -962,7 +1573,23 @@ void PDFEditorMainWindow::setDocument(const pdf::PDFModifiedDocument& document)
         m_advancedFindWidget->setDocument(document);
     }
 
-    if (m_sidebarWidget)
+    if (m_sidebarWidget && m_ribbon)
+    {
+        // The strip of the navigation pane is always visible, the pane is opened with a new document
+        if (!document || m_sidebarWidget->isEmpty())
+        {
+            m_sidebarWidget->setNavigationCollapsed(true);
+        }
+        else if (document.hasReset() && !document.hasPreserveUndoRedo())
+        {
+            const bool showSidebar = m_programController->getSettings()->getSettings().m_showSidebarOnDocumentOpen;
+            m_sidebarWidget->setNavigationCollapsed(!showSidebar);
+        }
+
+        m_navigationPaneAction->setEnabled(document && !m_sidebarWidget->isEmpty());
+        m_sidebarDockWidget->show();
+    }
+    else if (m_sidebarWidget)
     {
         if (!document || m_sidebarWidget->isEmpty())
         {

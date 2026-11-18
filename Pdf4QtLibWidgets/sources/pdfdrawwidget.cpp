@@ -155,6 +155,14 @@ void PDFWidget::setPlanNavigation(bool enabled)
     }
 }
 
+void PDFWidget::setWheelZooms(bool wheelZooms)
+{
+    if (PDFDrawWidget* drawWidget = dynamic_cast<PDFDrawWidget*>(m_drawWidget))
+    {
+        drawWidget->setWheelZooms(wheelZooms);
+    }
+}
+
 void PDFWidget::setWheelScrollSpeed(int horizontalPercent, int verticalPercent)
 {
     if (PDFDrawWidget* drawWidget = dynamic_cast<PDFDrawWidget*>(m_drawWidget))
@@ -309,6 +317,11 @@ void PDFDrawWidget::setSmoothWheelScrolling(bool enabled)
 void PDFDrawWidget::setPlanNavigation(bool enabled)
 {
     m_planNavigation = enabled;
+}
+
+void PDFDrawWidget::setWheelZooms(bool wheelZooms)
+{
+    m_wheelZooms = wheelZooms;
 }
 
 void PDFDrawWidget::setWheelScrollSpeed(int horizontalPercent, int verticalPercent)
@@ -755,14 +768,17 @@ void PDFDrawWidget::wheelEvent(QWheelEvent* event)
         return;
     }
 
-    Qt::KeyboardModifiers keyboardModifiers = QApplication::keyboardModifiers();
+    // Modifiers of the event itself (not the current state of the keyboard), so the wheel
+    // events, which were queued before a key was pressed, are not reinterpreted
+    const Qt::KeyboardModifiers keyboardModifiers = event->modifiers();
     const bool shiftModifier = keyboardModifiers.testFlag(Qt::ShiftModifier);
 
     PDFDrawWidgetProxy* proxy = m_widget->getDrawWidgetProxy();
-    // Navigation of the CAD viewers: the wheel of the mouse zooms and Ctrl + wheel scrolls.
-    // Pixel deltas come from the touchpads, which scroll in both modes.
+    // By default, the wheel scrolls the pages and Ctrl + wheel zooms at the cursor, as in the
+    // common PDF applications. When the wheel zooms (as in the CAD viewers), Ctrl + wheel scrolls.
+    // Shift + wheel scrolls horizontally and the touchpads (pixel deltas) scroll in both modes.
     const bool isControlPressed = keyboardModifiers.testFlag(Qt::ControlModifier);
-    const bool isZoom = (m_planNavigation && event->pixelDelta().isNull() && !shiftModifier) ? !isControlPressed : isControlPressed;
+    const bool isZoom = (m_wheelZooms && event->pixelDelta().isNull() && !shiftModifier) ? !isControlPressed : isControlPressed;
 
     if (isZoom)
     {
@@ -814,13 +830,13 @@ void PDFDrawWidget::wheelEvent(QWheelEvent* event)
                     boundingBox = this->rect();
                 }
 
-                stepVertical = shiftModifier ? qMax(boundingBox.height(), 1) : qMax(boundingBox.height() / 10, 1);
-                stepHorizontal = shiftModifier ? qMax(boundingBox.width(), 1) : qMax(boundingBox.width() / 10, 1);
+                stepVertical = qMax(boundingBox.height() / 10, 1);
+                stepHorizontal = qMax(boundingBox.width() / 10, 1);
             }
             else
             {
-                stepVertical = shiftModifier ? m_widget->getVerticalScrollbar()->pageStep() : m_widget->getVerticalScrollbar()->singleStep();
-                stepHorizontal = shiftModifier ? m_widget->getHorizontalScrollbar()->pageStep() : m_widget->getHorizontalScrollbar()->singleStep();
+                stepVertical = m_widget->getVerticalScrollbar()->singleStep();
+                stepHorizontal = m_widget->getHorizontalScrollbar()->singleStep();
             }
 
             const int scrollVertical = stepVertical * static_cast<PDFReal>(angleDelta.y()) / static_cast<PDFReal>(QWheelEvent::DefaultDeltasPerStep);

@@ -107,12 +107,11 @@ public:
     /// the other ones in the Tools menu.
     virtual PluginMenuLocation getPluginMenuLocation() const;
 
-    /// Returns the section of the simplified main toolbar, in which the toolbar
-    /// actions of the plugin are placed, so the plugin does not need a toolbar
-    /// of its own. Recognized sections are "view", "measure", "count", "forms",
-    /// "organize" and "markup". An empty string (the default) means the plugin
-    /// is an advanced one: its toolbar is not shown in the simplified layout and
-    /// its menu is placed in the Advanced menu. The classic layout ignores it.
+    /// Returns the area of the user interface, where the plugin belongs ("view",
+    /// "measure", "count", "forms", "organize", "markup"). The ribbon of the editor
+    /// places the actions of the known plugins into the groups of its tabs, other
+    /// plugins get a group of their own on the Advanced tab. An empty string (the
+    /// default) means the plugin is an advanced one. The classic layout ignores it.
     virtual QString getToolbarSection() const;
 
     /// Returns true, if the plugin holds changes, which were not written into

@@ -1162,6 +1162,16 @@ li.checked::marker { content: &quot;\2612&quot;; }
                 </property>
                </widget>
               </item>
+              <item row="14" column="0">
+               <widget class="QLabel" name="mouseWheelModeLabel">
+                <property name="text">
+                 <string>Mouse wheel</string>
+                </property>
+               </widget>
+              </item>
+              <item row="14" column="1">
+               <widget class="QComboBox" name="mouseWheelModeComboBox"/>
+              </item>
               <item row="11" column="0">
                <widget class="QLabel" name="horizontalMouseWheelScrollSpeedLabel">
                 <property name="text">

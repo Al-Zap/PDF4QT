@@ -41,7 +41,7 @@
 #include "pdfplugin.h"
 #include "pdfprogramcontroller.h"
 #include "pdfwintaskbarprogress.h"
-#include "pdftoolbarslots.h"
+#include "pdfribbon.h"
 
 #include <QFuture>
 #include <QTreeView>
@@ -49,6 +49,7 @@
 #include <QFutureWatcher>
 #include <QLabel>
 #include <QProgressBar>
+#include <QPointer>
 
 #include <map>
 
@@ -57,6 +58,7 @@ class QSpinBox;
 class QSettings;
 class QDoubleSpinBox;
 class QToolButton;
+class QSlider;
 
 namespace Ui
 {
@@ -100,12 +102,12 @@ public:
                                           const std::vector<QAction*>& toolbarActions,
                                           bool& toolbarActionsPlaced) override;
 
-    /// Returns the sections of the simplified main toolbar, into which the features
-    /// place their actions. Returns nullptr, if the classic layout is used.
-    PDFToolbarSlots* getToolbarSlots() const { return m_toolbarSlots; }
+    /// Returns the ribbon, on which the features place their actions (see
+    /// PDFRibbon::getGroup). Returns nullptr, if the classic layout is used.
+    PDFRibbon* getRibbon() const { return m_ribbon; }
 
     /// Returns true, if the classic layout (all toolbars and menus of PDF4QT)
-    /// is used instead of the simplified one. The setting takes effect after
+    /// is used instead of the ribbon. The setting takes effect after
     /// the application is restarted.
     static bool isClassicLayoutEnabled();
 
@@ -131,9 +133,14 @@ private:
     void updateDeveloperMenu();
 
     void createClassicToolbar(QToolButton* insertStickyNoteButton);
-    void createSimpleToolbar();
-    void createAdvancedMenu();
-    void setSimpleLayoutShortcuts();
+    void createRibbon();
+    void createRibbonStatusBar();
+    void finishRibbon();
+    void setRibbonShortcuts();
+    void onNavigationCollapsedChanged(bool collapsed);
+    void onCommentsListTriggered();
+    void onZoomSliderValueChanged(int value);
+    void updateZoomSlider();
     void updateHandToolAction();
     void onHandToolTriggered();
     void onClassicLayoutToggled(bool checked);
@@ -160,11 +167,16 @@ private:
     bool m_isChangingProgressStep;
 
     bool m_isClassicLayout;
-    PDFToolbarSlots* m_toolbarSlots;
-    QMenu* m_advancedMenu;
+    PDFRibbon* m_ribbon;
+    PDFRibbonGroup* m_developerGroup;
+    QSlider* m_zoomSlider;
     QAction* m_handToolAction;
     QAction* m_measureShortcutAction;
-    std::map<PDFToolbarSlots::Section, QMenu*> m_sectionMenus;
+    QAction* m_navigationPaneAction;
+    QAction* m_commentsListAction = nullptr;
+    QAction* m_collapseRibbonAction;
+    QPointer<QAction> m_lastMeasureAction;
+    int m_sidebarWidth;
 };
 
 }   // namespace pdfviewer

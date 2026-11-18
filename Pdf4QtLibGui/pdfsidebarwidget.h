@@ -32,6 +32,7 @@
 
 class QAction;
 class QPushButton;
+class QLabel;
 class QToolButton;
 class QWidget;
 class QStandardItemModel;
@@ -128,7 +129,26 @@ public:
     /// available only when outline editing is enabled (editor), otherwise the list is empty.
     std::vector<QAction*> getPageActions() const;
 
+    /// Returns the current page of the sidebar
+    Page getCurrentPage() const { return m_currentPage; }
+
+    /// Switches the sidebar to the navigation pane with a narrow strip of the icons
+    /// at its side. A click on the icon of the displayed page collapses the pane
+    /// to the strip, a click on another icon opens the page.
+    void setCompactNavigation(bool compact);
+    bool isCompactNavigation() const { return m_isCompactNavigation; }
+
+    /// Collapses the navigation pane to the strip of the icons, or opens it again
+    void setNavigationCollapsed(bool collapsed);
+    bool isNavigationCollapsed() const { return m_isNavigationCollapsed; }
+
+    /// Returns the width of the strip of the icons of the navigation pane
+    int getNavigationStripWidth() const;
+
 signals:
+    /// Emitted, when the navigation pane is collapsed to the strip of the icons, or opened
+    void navigationCollapsedChanged(bool collapsed);
+
     void actionTriggered(const pdf::PDFAction* action);
     void documentModified(pdf::PDFModifiedDocument document);
 
@@ -138,6 +158,7 @@ signals:
     void sidebarVisibilityRequested();
 
 private:
+    void setNavigationIcon(QToolButton* button, Page page);
     void updateGUI(Page preferredPage);
     void updateButtons();
     void updatePageButtonIconSize();
@@ -250,6 +271,10 @@ private:
     std::vector<pdf::PDFCertificateInfo> m_certificateInfos;
     std::vector<std::pair<pdf::PDFObjectReference, pdf::PDFInteger>> m_markupAnnotations;
     Page m_currentPage = Invalid;
+    bool m_isCompactNavigation = false;
+    bool m_isNavigationCollapsed = false;
+    QWidget* m_navigationContentWidget = nullptr;
+    QLabel* m_navigationHeaderLabel = nullptr;
     bool m_bookmarkChangeInProgress = false;
     bool m_notesSelectionChangeInProgress = false;
 

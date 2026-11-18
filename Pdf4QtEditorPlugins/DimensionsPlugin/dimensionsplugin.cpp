@@ -330,9 +330,15 @@ void DimensionsPlugin::createStatusBarButton()
     m_statusBarScaleButton->setAutoRaise(true);
     m_statusBarScaleButton->setPopupMode(QToolButton::InstantPopup);
     m_statusBarScaleButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_statusBarScaleButton->setIcon(QIcon(":/pdfplugins/dimensiontool/scale.svg"));
+    QIcon scaleIcon(":/pdfplugins/dimensiontool/scale.svg");
+    if (pdf::PDFWidgetUtils::isDarkTheme())
+    {
+        scaleIcon = pdf::PDFWidgetUtils::convertIconForDarkTheme(scaleIcon, m_statusBarScaleButton->iconSize(), m_statusBarScaleButton->devicePixelRatioF());
+    }
+    m_statusBarScaleButton->setIcon(scaleIcon);
     m_statusBarScaleButton->setMenu(m_scaleMenu);
-    mainWindow->statusBar()->addPermanentWidget(m_statusBarScaleButton);
+    // The scale is in front of the other permanent widgets (page and zoom controls of the main window)
+    mainWindow->statusBar()->insertPermanentWidget(0, m_statusBarScaleButton);
 
     // The title of the main window changes, when the document is saved under
     // a new name, which is not announced to the plugins otherwise

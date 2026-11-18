@@ -212,6 +212,9 @@ PDFViewerSettingsDialog::PDFViewerSettingsDialog(const PDFViewerSettings::Settin
     ui->colorSchemeCombo->addItem(tr("Light scheme"), static_cast<int>(PDFViewerSettings::LightScheme));
     ui->colorSchemeCombo->addItem(tr("Dark scheme"), static_cast<int>(PDFViewerSettings::DarkScheme));
 
+    ui->mouseWheelModeComboBox->addItem(tr("Wheel scrolls, Ctrl + wheel zooms"), static_cast<int>(PDFViewerSettings::MouseWheelScrolls));
+    ui->mouseWheelModeComboBox->addItem(tr("Wheel zooms, Ctrl + wheel scrolls"), static_cast<int>(PDFViewerSettings::MouseWheelZooms));
+
     ui->sidebarButtonIconSizeComboBox->addItem(tr("Small"), static_cast<int>(PDFViewerSettings::SidebarButtonIconSizeSmall));
     ui->sidebarButtonIconSizeComboBox->addItem(tr("Medium"), static_cast<int>(PDFViewerSettings::SidebarButtonIconSizeMedium));
     ui->sidebarButtonIconSizeComboBox->addItem(tr("Large"), static_cast<int>(PDFViewerSettings::SidebarButtonIconSizeLarge));
@@ -419,6 +422,7 @@ void PDFViewerSettingsDialog::loadData()
     ui->sidebarButtonIconSizeComboBox->setCurrentIndex(ui->sidebarButtonIconSizeComboBox->findData(static_cast<int>(m_settings.m_sidebarButtonIconSize)));
     ui->showSidebarOnDocumentOpenCheckBox->setChecked(m_settings.m_showSidebarOnDocumentOpen);
     ui->smoothMiddleMouseScrollingCheckBox->setChecked(m_settings.m_smoothWheelScrolling);
+    ui->mouseWheelModeComboBox->setCurrentIndex(ui->mouseWheelModeComboBox->findData(static_cast<int>(m_settings.m_mouseWheelMode)));
     ui->horizontalMouseWheelScrollSpeedEdit->setValue(m_settings.m_wheelScrollHorizontalSpeedPercent);
     ui->verticalMouseWheelScrollSpeedEdit->setValue(m_settings.m_wheelScrollVerticalSpeedPercent);
     ui->languageCombo->setCurrentIndex(ui->languageCombo->findData(static_cast<int>(m_settings.m_language)));
@@ -560,6 +564,10 @@ void PDFViewerSettingsDialog::saveData()
     else if (sender == ui->colorSchemeCombo)
     {
         m_settings.m_colorScheme = static_cast<PDFViewerSettings::ColorScheme>(ui->colorSchemeCombo->currentData().toInt());
+    }
+    else if (sender == ui->mouseWheelModeComboBox)
+    {
+        m_settings.m_mouseWheelMode = static_cast<PDFViewerSettings::MouseWheelMode>(ui->mouseWheelModeComboBox->currentData().toInt());
     }
     else if (sender == ui->sidebarButtonIconSizeComboBox)
     {

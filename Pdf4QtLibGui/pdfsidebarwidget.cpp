@@ -42,6 +42,7 @@
 #include "pdfwidgetannotation.h"
 
 #include <QMenu>
+#include <QLabel>
 #include <QAction>
 #include <QFileDialog>
 #include <QStandardPaths>
@@ -408,16 +409,21 @@ void PDFSidebarWidget::selectPage(Page page)
         QToolButton* pushButton = pageInfo.second.button;
         if (pushButton)
         {
-            pushButton->setChecked(pageInfo.first == page);
+            pushButton->setChecked(pageInfo.first == page && !m_isNavigationCollapsed);
 
             QFont font = pushButton->font();
-            font.setBold(pageInfo.first == page);
+            font.setBold(pageInfo.first == page && !m_isCompactNavigation);
             pushButton->setFont(font);
         }
 
         if (pageInfo.first == page)
         {
             ui->stackedWidget->setCurrentWidget(pageInfo.second.page);
+
+            if (m_navigationHeaderLabel)
+            {
+                m_navigationHeaderLabel->setText(pushButton ? pushButton->text() : QString());
+            }
         }
     }
 
@@ -520,8 +526,152 @@ void PDFSidebarWidget::updateButtons()
     }
 }
 
+void PDFSidebarWidget::setCompactNavigation(bool compact)
+{
+    if (m_isCompactNavigation == compact)
+    {
+        return;
+    }
+
+    m_isCompactNavigation = compact;
+
+    if (compact && !m_navigationContentWidget)
+    {
+        // The pages get a header with the name of the displayed page
+        m_navigationContentWidget = new QWidget(this);
+        QVBoxLayout* contentLayout = new QVBoxLayout(m_navigationContentWidget);
+        contentLayout->setContentsMargins(0, 0, 0, 0);
+        contentLayout->setSpacing(0);
+
+        m_navigationHeaderLabel = new QLabel(m_navigationContentWidget);
+        m_navigationHeaderLabel->setObjectName("sidebarHeaderLabel");
+        contentLayout->addWidget(m_navigationHeaderLabel);
+
+        ui->sidebarLayout->removeWidget(ui->stackedWidget);
+        contentLayout->addWidget(ui->stackedWidget, 1);
+        ui->sidebarLayout->addWidget(m_navigationContentWidget, 1);
+
+        ui->scrollArea->setFrameShape(QFrame::NoFrame);
+        ui->scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        ui->scrollAreaWidgetContents->setObjectName("sidebarNavigationStrip");
+        ui->scrollAreaWidgetContents->setAttribute(Qt::WA_StyledBackground, true);
+
+        for (const auto& pageInfo : m_pageInfo)
+        {
+            if (QToolButton* button = pageInfo.second.button)
+            {
+                button->setProperty("sidebarNavigation", true);
+                setNavigationIcon(button, pageInfo.first);
+                button->setToolTip(button->text());
+                button->setFocusPolicy(Qt::NoFocus);
+            }
+        }
+    }
+
+    if (m_navigationHeaderLabel)
+    {
+        m_navigationHeaderLabel->setVisible(compact);
+    }
+
+    updatePageButtonIconSize();
+    selectPage(m_currentPage);
+}
+
+void PDFSidebarWidget::setNavigationIcon(QToolButton* button, Page page)
+{
+    QString name;
+    switch (page)
+    {
+        case OptionalContent:
+            name = QStringLiteral("layers");
+            break;
+        case Outline:
+            name = QStringLiteral("outline");
+            break;
+        case Thumbnails:
+            name = QStringLiteral("thumbnails");
+            break;
+        case Attachments:
+            name = QStringLiteral("attachments");
+            break;
+        case Speech:
+            name = QStringLiteral("speech");
+            break;
+        case Signatures:
+            name = QStringLiteral("signatures");
+            break;
+        case Bookmarks:
+            name = QStringLiteral("bookmarks");
+            break;
+        case Notes:
+            name = QStringLiteral("notes");
+            break;
+        default:
+            return;
+    }
+
+    // Icons of the navigation strip are drawn in the line style of the ribbon
+    QIcon icon(QString(":/resources/nav-%1.svg").arg(name));
+    if (pdf::PDFWidgetUtils::isDarkTheme())
+    {
+        const int iconSize = pdf::PDFWidgetUtils::scaleDPI_x(this, 24);
+        icon = pdf::PDFWidgetUtils::convertIconForDarkTheme(icon, QSize(iconSize, iconSize), button->devicePixelRatioF());
+    }
+    button->setIcon(icon);
+}
+
+void PDFSidebarWidget::setNavigationCollapsed(bool collapsed)
+{
+    if (!m_isCompactNavigation || m_isNavigationCollapsed == collapsed)
+    {
+        return;
+    }
+
+    m_isNavigationCollapsed = collapsed;
+    m_navigationContentWidget->setVisible(!collapsed);
+
+    for (const auto& pageInfo : m_pageInfo)
+    {
+        if (QToolButton* button = pageInfo.second.button)
+        {
+            button->setChecked(!collapsed && pageInfo.first == m_currentPage);
+        }
+    }
+
+    Q_EMIT navigationCollapsedChanged(collapsed);
+}
+
+int PDFSidebarWidget::getNavigationStripWidth() const
+{
+    return pdf::PDFWidgetUtils::scaleDPI_x(this, 42);
+}
+
 void PDFSidebarWidget::updatePageButtonIconSize()
 {
+    if (m_isCompactNavigation)
+    {
+        const int iconSize = pdf::PDFWidgetUtils::scaleDPI_x(this, 24);
+        const int stripWidth = getNavigationStripWidth();
+
+        ui->scrollArea->setWidgetResizable(true);
+        ui->scrollArea->setMinimumWidth(0);
+        ui->scrollArea->setFixedWidth(stripWidth);
+        ui->scrollAreaWidgetContents->setFixedWidth(stripWidth);
+
+        for (const auto& pageInfo : m_pageInfo)
+        {
+            if (QToolButton* button = pageInfo.second.button)
+            {
+                button->setIconSize(QSize(iconSize, iconSize));
+                button->setMinimumWidth(0);
+                button->setFixedWidth(stripWidth);
+                button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+            }
+        }
+
+        return;
+    }
+
     const QSize baseIconSize(64, 64);
     const int baseButtonWidth = 96;
 
@@ -959,6 +1109,15 @@ void PDFSidebarWidget::onPageButtonClicked()
         if (pageInfo.second.button == pushButton)
         {
             Q_ASSERT(!isEmpty(pageInfo.first));
+
+            if (m_isCompactNavigation)
+            {
+                // Icon of the displayed page closes the pane, other icons open their pages
+                const bool collapse = !m_isNavigationCollapsed && pageInfo.first == m_currentPage;
+                m_currentPage = pageInfo.first;
+                setNavigationCollapsed(collapse);
+            }
+
             selectPage(pageInfo.first);
             break;
         }
