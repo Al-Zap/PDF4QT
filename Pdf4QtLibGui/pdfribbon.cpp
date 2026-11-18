@@ -648,7 +648,10 @@ PDFRibbon::PDFRibbon(QWidget* parent) :
     BaseClass(parent),
     m_fileButton(nullptr),
     m_tabBar(nullptr),
+    m_tabRowLayout(nullptr),
     m_cornerLayout(nullptr),
+    m_shrinkableMinimumWidth(0),
+    m_shrinkablePreferredWidth(0),
     m_scrollArea(nullptr),
     m_stackedWidget(nullptr),
     m_scrollLeftButton(nullptr),
@@ -666,6 +669,7 @@ PDFRibbon::PDFRibbon(QWidget* parent) :
     tabRow->setObjectName("ribbonTabRow");
     tabRow->setAttribute(Qt::WA_StyledBackground, true);
     QHBoxLayout* tabRowLayout = new QHBoxLayout(tabRow);
+    m_tabRowLayout = tabRowLayout;
     tabRowLayout->setContentsMargins(0, 0, 6, 0);
     tabRowLayout->setSpacing(0);
 
@@ -684,6 +688,7 @@ PDFRibbon::PDFRibbon(QWidget* parent) :
     m_tabBar->setExpanding(false);
     m_tabBar->setDocumentMode(true);
     m_tabBar->setUsesScrollButtons(false);
+    m_tabBar->setElideMode(Qt::ElideNone);
     m_tabBar->setFocusPolicy(Qt::NoFocus);
     tabRowLayout->addWidget(m_tabBar);
     tabRowLayout->addStretch(1);
@@ -757,6 +762,7 @@ PDFRibbonPage* PDFRibbon::addPage(const QString& id, const QString& title)
     m_pages.push_back(page);
     m_stackedWidget->addWidget(page);
     m_tabBar->addTab(PDFRibbonButton::getCleanText(title));
+    updateTabRow();
 
     // Height of the pages is given by the height of an (empty) group
     PDFRibbonGroup* group = page->getGroup(QString(), QString());
@@ -790,10 +796,19 @@ PDFRibbonGroup* PDFRibbon::getGroup(const QString& pageId, const QString& groupI
     return nullptr;
 }
 
-void PDFRibbon::addCornerWidget(QWidget* widget)
+void PDFRibbon::addCornerWidget(QWidget* widget, int minimumWidth)
 {
     widget->setParent(this);
     m_cornerLayout->addWidget(widget, 0, Qt::AlignVCenter);
+
+    if (minimumWidth > 0)
+    {
+        m_shrinkableCornerWidget = widget;
+        m_shrinkableMinimumWidth = minimumWidth;
+        m_shrinkablePreferredWidth = qMax(widget->sizeHint().width(), minimumWidth);
+    }
+
+    updateTabRow();
 }
 
 PDFRibbonButton* PDFRibbon::addCornerAction(QAction* action)
@@ -801,6 +816,7 @@ PDFRibbonButton* PDFRibbon::addCornerAction(QAction* action)
     PDFRibbonButton* button = new PDFRibbonButton(PDFRibbonButton::Size::IconOnly, this);
     button->setAction(action);
     m_cornerLayout->addWidget(button, 0, Qt::AlignVCenter);
+    updateTabRow();
     return button;
 }
 
@@ -936,8 +952,57 @@ QString PDFRibbon::createStyleSheet(bool isDarkTheme)
 
 void PDFRibbon::resizeEvent(QResizeEvent* event)
 {
+    updateTabRow();
     BaseClass::resizeEvent(event);
     updateScrollButtons();
+}
+
+void PDFRibbon::updateTabRow()
+{
+    // The row of the tabs is filled in this order: the File button, the tabs, the corner
+    // widgets. When the window is narrow, the shrinkable corner widget (the search box)
+    // gets narrower first, then it is hidden, and at last the tabs get scroll buttons.
+    // The widgets never overlap.
+    const QMargins margins = m_tabRowLayout->contentsMargins();
+    const int spacing = qMax(m_cornerLayout->spacing(), 0);
+
+    int occupiedWidth = margins.left() + margins.right();
+
+    if (!m_fileButton->isHidden())
+    {
+        occupiedWidth += m_fileButton->sizeHint().width();
+    }
+
+    occupiedWidth += m_tabBar->sizeHint().width();
+
+    for (int i = 0; i < m_cornerLayout->count(); ++i)
+    {
+        QWidget* widget = m_cornerLayout->itemAt(i)->widget();
+        if (widget && widget != m_shrinkableCornerWidget && !widget->isHidden())
+        {
+            occupiedWidth += widget->sizeHint().width() + spacing;
+        }
+    }
+
+    int freeWidth = width() - occupiedWidth;
+
+    if (m_shrinkableCornerWidget)
+    {
+        const int shrinkableWidth = qMin(freeWidth - spacing, m_shrinkablePreferredWidth);
+
+        if (shrinkableWidth >= m_shrinkableMinimumWidth)
+        {
+            m_shrinkableCornerWidget->setFixedWidth(shrinkableWidth);
+            m_shrinkableCornerWidget->setVisible(true);
+            freeWidth -= shrinkableWidth + spacing;
+        }
+        else
+        {
+            m_shrinkableCornerWidget->setVisible(false);
+        }
+    }
+
+    m_tabBar->setUsesScrollButtons(freeWidth < 0);
 }
 
 bool PDFRibbon::eventFilter(QObject* watched, QEvent* event)

@@ -650,7 +650,7 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
         m_ribbon->addCornerAction(ui->actionSave);
         m_ribbon->addCornerAction(ui->actionUndo);
         m_ribbon->addCornerAction(ui->actionRedo);
-        m_ribbon->addCornerWidget(actionComboBox);
+        m_ribbon->addCornerWidget(actionComboBox, pdf::PDFWidgetUtils::scaleDPI_x(actionComboBox, 120));
         m_ribbon->addCornerAction(m_collapseRibbonAction);
     }
     else

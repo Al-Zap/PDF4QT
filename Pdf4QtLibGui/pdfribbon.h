@@ -227,8 +227,12 @@ public:
     /// Returns nullptr, if the page does not exist.
     PDFRibbonGroup* getGroup(const QString& pageId, const QString& groupId, const QString& title);
 
-    /// Adds a widget to the right side of the tabs
-    void addCornerWidget(QWidget* widget);
+    /// Adds a widget to the right side of the tabs. A widget with a positive minimum
+    /// width (for example a search box) is shrunk down to this width, when the window
+    /// is narrow, and hidden, if even this does not fit. Only one such widget is supported.
+    /// \param widget Widget
+    /// \param minimumWidth Minimum width of the shrinkable widget, 0 for a widget of a fixed size
+    void addCornerWidget(QWidget* widget, int minimumWidth = 0);
 
     /// Adds a small button of the action to the right side of the tabs
     PDFRibbonButton* addCornerAction(QAction* action);
@@ -261,11 +265,16 @@ protected:
 private:
     void onCurrentTabChanged(int index);
     void updateScrollButtons();
+    void updateTabRow();
     void scrollPage(int direction);
 
     QToolButton* m_fileButton;
     QTabBar* m_tabBar;
+    QHBoxLayout* m_tabRowLayout;
     QHBoxLayout* m_cornerLayout;
+    QPointer<QWidget> m_shrinkableCornerWidget;
+    int m_shrinkableMinimumWidth;
+    int m_shrinkablePreferredWidth;
     QScrollArea* m_scrollArea;
     QStackedWidget* m_stackedWidget;
     QToolButton* m_scrollLeftButton;

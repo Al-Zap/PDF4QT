@@ -2638,6 +2638,7 @@ void PDFProgramController::onViewerSettingsChanged()
     m_pdfWidget->updateRenderer(m_settings->getRendererEngine());
     m_pdfWidget->updateCacheLimits(qsizetype(m_settings->getCompiledPageCacheLimit() * 1024LL), m_settings->getThumbnailsCacheLimit(), m_settings->getFontCacheLimit(), m_settings->getInstancedFontCacheLimit());
     m_pdfWidget->setSmoothWheelScrolling(m_settings->getSettings().m_smoothWheelScrolling);
+    m_pdfWidget->setWheelZooms(m_settings->getSettings().m_mouseWheelMode == PDFViewerSettings::MouseWheelZooms);
     m_pdfWidget->setPlanNavigation(m_planNavigation);
     m_pdfWidget->setWheelScrollSpeed(m_settings->getSettings().m_wheelScrollHorizontalSpeedPercent, m_settings->getSettings().m_wheelScrollVerticalSpeedPercent);
     m_pdfWidget->getDrawWidgetProxy()->setFeatures(m_settings->getFeatures());
@@ -3187,6 +3188,7 @@ void PDFProgramController::enterFullscreenMode()
                                            m_settings->getFontCacheLimit(),
                                            m_settings->getInstancedFontCacheLimit());
     fullscreenPdfWidget->setSmoothWheelScrolling(m_settings->getSettings().m_smoothWheelScrolling);
+    fullscreenPdfWidget->setWheelZooms(m_settings->getSettings().m_mouseWheelMode == PDFViewerSettings::MouseWheelZooms);
     fullscreenPdfWidget->setPlanNavigation(m_planNavigation);
     fullscreenPdfWidget->setWheelScrollSpeed(m_settings->getSettings().m_wheelScrollHorizontalSpeedPercent, m_settings->getSettings().m_wheelScrollVerticalSpeedPercent);
     fullscreenPdfWidget->getDrawWidgetProxy()->setProgress(m_progress);

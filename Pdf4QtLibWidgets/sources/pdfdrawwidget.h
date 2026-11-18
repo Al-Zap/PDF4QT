@@ -100,10 +100,16 @@ public:
     /// \param enabled True to enable smooth wheel scrolling, false for immediate scrolling
     void setSmoothWheelScrolling(bool enabled);
 
-    /// Enables/disables navigation of the CAD viewers: the pages are moved by dragging with the middle button
-    /// (the wheel scrolls and Ctrl + wheel zooms at the cursor in both modes).
+    /// Enables/disables navigation of the CAD viewers: the pages are moved by dragging with the middle button.
     /// \param enabled True for the navigation of the CAD viewers
     void setPlanNavigation(bool enabled);
+
+    /// Sets the function of the mouse wheel. By default, the wheel scrolls and Ctrl + wheel
+    /// zooms at the cursor. When the wheel zooms, the wheel zooms at the cursor and Ctrl + wheel
+    /// scrolls. Shift + wheel scrolls horizontally and the touchpads (pixel deltas) scroll
+    /// in both modes.
+    /// \param wheelZooms True, if the wheel zooms
+    void setWheelZooms(bool wheelZooms);
 
     /// Sets mouse wheel scrolling speed multipliers in percent.
     /// The value 100 means default speed, values above 100 increase speed,
@@ -176,10 +182,19 @@ public:
     /// \param enabled True to enable smooth wheel scrolling, false for immediate scrolling
     void setSmoothWheelScrolling(bool enabled);
 
-    /// Enables/disables navigation of the CAD viewers: the pages are moved by dragging with the middle button
-    /// (the wheel scrolls and Ctrl + wheel zooms at the cursor in both modes).
+    /// Enables/disables navigation of the CAD viewers: the pages are moved by dragging with the middle button.
     /// \param enabled True for the navigation of the CAD viewers
     void setPlanNavigation(bool enabled);
+
+    /// Returns true, if the mouse wheel zooms (see setWheelZooms)
+    bool isWheelZooms() const { return m_wheelZooms; }
+
+    /// Sets the function of the mouse wheel. By default, the wheel scrolls and Ctrl + wheel
+    /// zooms at the cursor. When the wheel zooms, the wheel zooms at the cursor and Ctrl + wheel
+    /// scrolls. Shift + wheel scrolls horizontally and the touchpads (pixel deltas) scroll
+    /// in both modes.
+    /// \param wheelZooms True, if the wheel zooms
+    void setWheelZooms(bool wheelZooms);
 
     /// Sets mouse wheel scrolling speed multipliers in percent.
     /// The value 100 means default speed, values above 100 increase speed,
@@ -244,6 +259,7 @@ private:
     QImage m_blend2DframeBuffer;
     bool m_smoothWheelScrolling = true;
     bool m_planNavigation = false;
+    bool m_wheelZooms = false;
     PDFReal m_horizontalWheelScrollSpeed = 1.0;
     PDFReal m_verticalWheelScrollSpeed = 1.0;
 };
