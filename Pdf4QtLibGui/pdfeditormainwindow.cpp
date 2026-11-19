@@ -693,6 +693,15 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
 
 PDFEditorMainWindow::~PDFEditorMainWindow()
 {
+    // The sidebar uses objects of the program controller (bookmark manager, draw widget proxy,
+    // settings, ...), so it is destroyed first. Otherwise the QWidget destructor deletes it
+    // later, and the reparenting of the dock widget lays out the bookmarks of the deleted
+    // bookmark manager.
+    QDockWidget* sidebarDockWidget = m_sidebarDockWidget;
+    m_sidebarDockWidget = nullptr;
+    m_sidebarWidget = nullptr;
+    delete sidebarDockWidget;
+
     delete m_programController;
     m_programController = nullptr;
 
@@ -1543,7 +1552,10 @@ void PDFEditorMainWindow::updateUI(bool fullUpdate)
             }
         }
 
-        m_sidebarWidget->setCurrentPages(currentPages);
+        if (m_sidebarWidget)
+        {
+            m_sidebarWidget->setCurrentPages(currentPages);
+        }
     }
 
     m_pageZoomSpinBox->setValue(m_programController->getPdfWidget()->getDrawWidgetProxy()->getZoom() * 100);

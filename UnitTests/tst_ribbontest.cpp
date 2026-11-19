@@ -22,6 +22,9 @@
 
 #include "pdfeditormainwindow.h"
 #include "pdfprogramcontroller.h"
+#include "pdfbookmarkmanager.h"
+#include "pdfsidebarwidget.h"
+#include "pdftexttospeech.h"
 #include "pdfviewersettings.h"
 #include "pdfribbon.h"
 #include "pdfdocumentbuilder.h"
@@ -31,6 +34,7 @@
 
 #include <QtTest>
 #include <QAction>
+#include <QListView>
 #include <QSlider>
 #include <QTabBar>
 #include <QLineEdit>
@@ -76,6 +80,7 @@ private slots:
     void shortcutsBelongToWindow();
     void zoomShortcutWorksWithoutMenuBar();
     void tabRowFitsNarrowWindow();
+    void bookmarkListOutlivesBookmarkManager();
 
 private:
     pdfviewer::PDFProgramController* controller() const { return m_window->getProgramController(); }
@@ -134,6 +139,11 @@ void RibbonTest::init()
 
         controller()->openDocument(m_documentFileName);
         QTRY_VERIFY_WITH_TIMEOUT(controller()->getDocument() != nullptr, 10000);
+
+        // Bookmarks in the sidebar: the bookmark list must not touch the bookmark manager,
+        // when the window is destroyed (the manager is deleted by the program controller)
+        controller()->getBookmarkManager()->toggleBookmark(0);
+        controller()->getBookmarkManager()->toggleBookmark(3);
     }
 
     m_window->resize(1400, 900);
@@ -482,6 +492,43 @@ void RibbonTest::tabRowFitsNarrowWindow()
     QTest::qWait(20);
     QVERIFY(searchBox->isVisible());
     QVERIFY(!tabBar->usesScrollButtons());
+}
+
+void RibbonTest::bookmarkListOutlivesBookmarkManager()
+{
+    // The sidebar can outlive the bookmark manager (the window deletes the program controller
+    // first). A style change then lays out the bookmark list again, which must not read
+    // the bookmarks of the deleted manager.
+    pdfviewer::PDFBookmarkManager* bookmarkManager = new pdfviewer::PDFBookmarkManager(nullptr);
+    bookmarkManager->toggleBookmark(1);
+    bookmarkManager->toggleBookmark(2);
+    bookmarkManager->toggleBookmark(5);
+
+    // Own text to speech: the sidebar registers its widgets in it, and the sidebar is destroyed before the window
+    pdfviewer::PDFTextToSpeech textToSpeech(nullptr);
+    textToSpeech.setSettings(controller()->getSettings());
+    textToSpeech.setProxy(proxy());
+
+    pdfviewer::PDFSidebarWidget sidebar(proxy(), &textToSpeech, controller()->getCertificateStore(), bookmarkManager, controller()->getSettings(), true, nullptr);
+    sidebar.resize(300, 600);
+    sidebar.selectPage(pdfviewer::PDFSidebarWidget::Bookmarks);
+    sidebar.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&sidebar));
+
+    QListView* bookmarksView = sidebar.findChild<QListView*>("bookmarksView");
+    QVERIFY(bookmarksView);
+    QCOMPARE(bookmarksView->model()->rowCount(), 3);
+    QVERIFY(bookmarksView->sizeHintForRow(0) > 0);
+
+    delete bookmarkManager;
+    QCOMPARE(bookmarksView->model()->rowCount(), 0);
+
+    // Style change, as the reparenting of the dock widget in the destructor of the window
+    sidebar.setStyleSheet(QStringLiteral("QListView { padding: 1px; }"));
+    bookmarksView->doItemsLayout();
+    bookmarksView->repaint();
+    QCoreApplication::processEvents();
+    QCOMPARE(bookmarksView->model()->rowCount(), 0);
 }
 
 QTEST_MAIN(RibbonTest)
