@@ -188,6 +188,7 @@ private slots:
     void testCache();
     void testPrecompiledPageDrawing();
     void testPrecompiledPageTargets();
+    void testPrecompiledPageGraphicStates();
     void testHighDpiGeometry();
     void testHighDpiImageResolution();
     void testBlend2DImageClipping();
@@ -1007,6 +1008,157 @@ void ImageScalingTest::testPrecompiledPageDrawing()
 
         verifyStrokes(drawPage(&cache, pdf::PDFRenderer::None));
         QCOMPARE(cache.getImageCount(), size_t(1));
+    }
+}
+
+void ImageScalingTest::testPrecompiledPageGraphicStates()
+{
+    // The painter saves its state only for the graphic states, which change the clipping
+    // or the composition mode, and the world matrix is set only when something is drawn.
+    // The drawn page must be the same, as if each graphic state was saved by the painter.
+    const QSize size(100, 100);
+
+    auto createRectangle = [](qreal x, qreal y, qreal width, qreal height)
+    {
+        QPainterPath path;
+        path.addRect(QRectF(x, y, width, height));
+        return path;
+    };
+
+    QPainterPath triangle;
+    triangle.moveTo(0.0, 80.0);
+    triangle.lineTo(50.0, 80.0);
+    triangle.lineTo(0.0, 100.0);
+    triangle.closeSubpath();
+
+    const QPen noPen(Qt::NoPen);
+    pdf::PDFPrecompiledPage page;
+
+    page.addSetWorldMatrix(QTransform());
+
+    // Clip and matrix inside of a graphic state
+    page.addSaveGraphicState();
+    page.addSetWorldMatrix(QTransform::fromTranslate(50.0, 0.0));
+    page.addClip(createRectangle(0.0, 0.0, 20.0, 20.0));
+    page.addPath(noPen, QBrush(Qt::red), createRectangle(-200.0, -200.0, 400.0, 400.0), false);
+    page.addRestoreGraphicState();
+
+    // Matrix and clip are restored, the matrix is not set again by the page
+    page.addPath(noPen, QBrush(Qt::green), createRectangle(0.0, 60.0, 10.0, 10.0), false);
+
+    // Graphic state, which changes only the matrix
+    page.addSaveGraphicState();
+    page.addSetWorldMatrix(QTransform::fromTranslate(30.0, 30.0));
+    page.addSaveGraphicState();
+    page.addSetWorldMatrix(QTransform::fromTranslate(60.0, 30.0));
+    page.addPath(noPen, QBrush(Qt::cyan), createRectangle(0.0, 0.0, 5.0, 5.0), false);
+    page.addRestoreGraphicState();
+    page.addPath(noPen, QBrush(Qt::magenta), createRectangle(0.0, 0.0, 5.0, 5.0), false);
+    page.addRestoreGraphicState();
+    page.addPath(noPen, QBrush(Qt::blue), createRectangle(20.0, 60.0, 10.0, 10.0), false);
+
+    // Composition mode inside of a graphic state
+    page.addSaveGraphicState();
+    page.addSetCompositionMode(QPainter::CompositionMode_Destination);
+    page.addPath(noPen, QBrush(Qt::black), createRectangle(40.0, 60.0, 10.0, 10.0), false);
+    page.addRestoreGraphicState();
+    page.addPath(noPen, QBrush(Qt::black), createRectangle(60.0, 60.0, 10.0, 10.0), false);
+
+    // Clip by a general path with nested graphic states, which change nothing
+    page.addSaveGraphicState();
+    page.addClip(triangle);
+    page.addSaveGraphicState();
+    page.addSaveGraphicState();
+    page.addClip(createRectangle(0.0, 80.0, 30.0, 20.0));
+    page.addRestoreGraphicState();
+    page.addRestoreGraphicState();
+    page.addPath(QPen(Qt::darkRed, 2.0), QBrush(Qt::yellow), createRectangle(-10.0, 70.0, 80.0, 40.0), false);
+    page.addRestoreGraphicState();
+
+    // Restore without a save is ignored
+    page.addRestoreGraphicState();
+    page.addPath(noPen, QBrush(Qt::darkGreen), createRectangle(80.0, 80.0, 10.0, 10.0), false);
+    page.finalize(0, { });
+
+    // The same drawing by a painter, which saves each graphic state
+    QImage expected(size, QImage::Format_ARGB32_Premultiplied);
+    expected.fill(Qt::white);
+
+    {
+        QPainter painter(&expected);
+        painter.setPen(Qt::NoPen);
+
+        painter.save();
+        painter.setWorldTransform(QTransform::fromTranslate(50.0, 0.0));
+        painter.setClipRect(QRectF(0.0, 0.0, 20.0, 20.0), Qt::IntersectClip);
+        painter.fillRect(QRectF(-200.0, -200.0, 400.0, 400.0), Qt::red);
+        painter.restore();
+
+        painter.fillRect(QRectF(0.0, 60.0, 10.0, 10.0), Qt::green);
+        painter.fillRect(QRectF(60.0, 30.0, 5.0, 5.0), Qt::cyan);
+        painter.fillRect(QRectF(30.0, 30.0, 5.0, 5.0), Qt::magenta);
+        painter.fillRect(QRectF(20.0, 60.0, 10.0, 10.0), Qt::blue);
+        painter.fillRect(QRectF(60.0, 60.0, 10.0, 10.0), Qt::black);
+
+        painter.save();
+        painter.setClipPath(triangle, Qt::IntersectClip);
+        painter.setPen(QPen(Qt::darkRed, 2.0));
+        painter.setBrush(QBrush(Qt::yellow));
+        painter.drawPath(createRectangle(-10.0, 70.0, 80.0, 40.0));
+        painter.restore();
+
+        painter.fillRect(QRectF(80.0, 80.0, 10.0, 10.0), Qt::darkGreen);
+    }
+
+    QCOMPARE(expected.pixelColor(60, 10), QColor(Qt::red));
+    QCOMPARE(expected.pixelColor(45, 65), QColor(Qt::white));
+
+    QImage drawn(size, QImage::Format_ARGB32_Premultiplied);
+    drawn.fill(Qt::white);
+
+    {
+        QPainter painter(&drawn);
+        painter.setPen(QPen(Qt::darkCyan, 3.0));
+        page.draw(&painter, QRectF(), QTransform(), pdf::PDFRenderer::None, 1.0);
+
+        // State of the painter of the caller is kept
+        QCOMPARE(painter.pen(), QPen(Qt::darkCyan, 3.0));
+        QVERIFY(painter.worldTransform().isIdentity());
+        QVERIFY(!painter.hasClipping());
+        QCOMPARE(painter.compositionMode(), QPainter::CompositionMode_SourceOver);
+    }
+
+    QCOMPARE(drawn, expected);
+
+    // Bands drawn in parallel use their own copies of the pens and of the brushes
+    for (int bandCount : { 1, 2, 4, 6 })
+    {
+        QImage parallel(size, QImage::Format_ARGB32_Premultiplied);
+        parallel.fill(Qt::white);
+        page.drawParallel(&parallel, QRectF(), QTransform(), pdf::PDFRenderer::None, 1.0, bandCount);
+        QCOMPARE(parallel, expected);
+    }
+
+    // Crop box is clipped as a rectangle, also for a rotated page
+    for (const QTransform& matrix : { QTransform(), QTransform(0.0, 1.0, -1.0, 0.0, 100.0, 0.0) })
+    {
+        pdf::PDFPrecompiledPage cropPage;
+        cropPage.addPath(noPen, QBrush(Qt::black), createRectangle(0.0, 0.0, 100.0, 100.0), false);
+        cropPage.finalize(0, { });
+
+        QImage cropped(size, QImage::Format_ARGB32_Premultiplied);
+        cropped.fill(Qt::white);
+        cropPage.drawParallel(&cropped, QRectF(20.0, 30.0, 40.0, 50.0), matrix, pdf::PDFRenderer::ClipToCropBox, 1.0, 2);
+
+        const QRect deviceCropBox = matrix.mapRect(QRectF(20.0, 30.0, 40.0, 50.0)).toRect();
+        for (int y = 0; y < size.height(); ++y)
+        {
+            for (int x = 0; x < size.width(); ++x)
+            {
+                const QColor expectedColor = deviceCropBox.contains(x, y) ? QColor(Qt::black) : QColor(Qt::white);
+                QVERIFY2(cropped.pixelColor(x, y) == expectedColor, qPrintable(QString("pixel %1, %2").arg(x).arg(y)));
+            }
+        }
     }
 }
 

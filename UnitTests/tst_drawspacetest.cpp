@@ -24,6 +24,7 @@
 #include "pdfdocumentbuilder.h"
 #include "pdfdrawspacecontroller.h"
 #include "pdfdrawwidget.h"
+#include "pdfpagerastercache.h"
 #include "pdfprogress.h"
 
 #include <QtTest>
@@ -40,6 +41,7 @@ private slots:
     void fitPageFillsViewport();
     void fitIsIndependentOfLogicalSizeZooming();
     void fitDoesNotOscillate();
+    void rasterCacheMatrixHasUniformScale();
 };
 
 struct DrawSpaceFixture
@@ -212,6 +214,56 @@ void DrawSpaceTest::fitDoesNotOscillate()
         fixture.widget.getDrawWidgetProxy()->update();
         QCOMPARE(fixture.widget.getDrawWidgetProxy()->getZoom(), zoom);
     }
+}
+
+void DrawSpaceTest::rasterCacheMatrixHasUniformScale()
+{
+    using Cache = pdf::PDFAsynchronousPageRasterCache;
+
+    // Page of 2592 x 1728 points placed into 1618 x 1079 pixels - the size is rounded
+    // to whole pixels, so the scales differ a little. They are unified and the page is
+    // shrunk around the center of the placed page by less than a pixel.
+    const QSize pageSize(1618, 1079);
+    const QTransform matrix(1618.0 / 2592.0, 0.0, 0.0, -1079.0 / 1728.0, 0.0, 1079.0);
+    const QTransform uniform = Cache::createUniformScaleMatrix(matrix, pageSize);
+
+    QCOMPARE(uniform.type(), QTransform::TxScale);
+    QCOMPARE(uniform.m11(), -uniform.m22());
+    QCOMPARE(uniform.m11(), qMin(matrix.m11(), -matrix.m22()));
+
+    const QRectF placedPage(QPointF(0.0, 0.0), QSizeF(pageSize));
+    const QRectF mappedPage = uniform.mapRect(QRectF(0.0, 0.0, 2592.0, 1728.0));
+    QVERIFY(placedPage.adjusted(-1.0e-6, -1.0e-6, 1.0e-6, 1.0e-6).contains(mappedPage));
+    QVERIFY(placedPage.width() - mappedPage.width() < 1.0);
+    QVERIFY(placedPage.height() - mappedPage.height() < 1.0);
+    QVERIFY(qAbs(mappedPage.center().x() - placedPage.center().x()) < 1.0e-6);
+    QVERIFY(qAbs(mappedPage.center().y() - placedPage.center().y()) < 1.0e-6);
+
+    // Page rotated by a quarter turn
+    const QSize rotatedPageSize(1079, 1618);
+    const QTransform rotatedMatrix(0.0, 1618.0 / 2592.0, 1079.0 / 1728.0, 0.0, 0.0, 0.0);
+    const QTransform rotatedUniform = Cache::createUniformScaleMatrix(rotatedMatrix, rotatedPageSize);
+
+    QCOMPARE(rotatedUniform.m11(), 0.0);
+    QCOMPARE(rotatedUniform.m22(), 0.0);
+    QCOMPARE(rotatedUniform.m12(), rotatedUniform.m21());
+    QCOMPARE(rotatedUniform.m12(), qMin(rotatedMatrix.m12(), rotatedMatrix.m21()));
+
+    const QRectF rotatedPlacedPage(QPointF(0.0, 0.0), QSizeF(rotatedPageSize));
+    const QRectF rotatedMappedPage = rotatedUniform.mapRect(QRectF(0.0, 0.0, 2592.0, 1728.0));
+    QVERIFY(rotatedPlacedPage.adjusted(-1.0e-6, -1.0e-6, 1.0e-6, 1.0e-6).contains(rotatedMappedPage));
+    QVERIFY(rotatedPlacedPage.height() - rotatedMappedPage.height() < 1.0);
+
+    // Uniform matrix, really different scales and a general rotation are kept
+    const QTransform alreadyUniform(0.5, 0.0, 0.0, -0.5, 0.0, 864.0);
+    QCOMPARE(Cache::createUniformScaleMatrix(alreadyUniform, QSize(1296, 864)), alreadyUniform);
+
+    const QTransform stretched(0.5, 0.0, 0.0, -0.75, 0.0, 1296.0);
+    QCOMPARE(Cache::createUniformScaleMatrix(stretched, QSize(1296, 1296)), stretched);
+
+    QTransform rotated;
+    rotated.rotate(30.0);
+    QCOMPARE(Cache::createUniformScaleMatrix(rotated, QSize(1000, 1000)), rotated);
 }
 
 QTEST_MAIN(DrawSpaceTest)
