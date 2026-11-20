@@ -26,6 +26,7 @@
 #include "pdfviewerglobal.h"
 #include "pdfbookmarkmanager.h"
 
+#include <QPointer>
 #include <QStyledItemDelegate>
 #include <QAbstractItemModel>
 
@@ -49,7 +50,11 @@ public:
     virtual QVariant data(const QModelIndex& index, int role) const override;
 
 private:
-    PDFBookmarkManager* m_bookmarkManager = nullptr;
+    void onBookmarkManagerDestroyed();
+
+    // The bookmark manager is owned by the program controller, the views of the
+    // model can outlive it (for example when the main window is being destroyed)
+    QPointer<PDFBookmarkManager> m_bookmarkManager;
 };
 
 class PDFBookmarkItemDelegate : public QStyledItemDelegate
@@ -73,7 +78,10 @@ private:
 
     QString getPageText(const PDFBookmarkManager::Bookmark& bookmark) const;
 
-    PDFBookmarkManager* m_bookmarkManager = nullptr;
+    /// Returns true, if the bookmark of the index exists, and stores it into \p bookmark
+    bool getBookmark(const QModelIndex& index, PDFBookmarkManager::Bookmark& bookmark) const;
+
+    QPointer<PDFBookmarkManager> m_bookmarkManager;
 };
 
 }   // namespace pdfviewer

@@ -36,6 +36,15 @@ PDFBookmarkItemModel::PDFBookmarkItemModel(PDFBookmarkManager* bookmarkManager, 
 {
     connect(m_bookmarkManager, &PDFBookmarkManager::bookmarksAboutToBeChanged, this, &PDFBookmarkItemModel::beginResetModel);
     connect(m_bookmarkManager, &PDFBookmarkManager::bookmarksChanged, this, &PDFBookmarkItemModel::endResetModel);
+    connect(m_bookmarkManager, &QObject::destroyed, this, &PDFBookmarkItemModel::onBookmarkManagerDestroyed);
+}
+
+void PDFBookmarkItemModel::onBookmarkManagerDestroyed()
+{
+    // The views must not ask for the bookmarks of the destroyed manager
+    beginResetModel();
+    m_bookmarkManager = nullptr;
+    endResetModel();
 }
 
 QModelIndex PDFBookmarkItemModel::index(int row, int column, const QModelIndex& parent) const
@@ -76,7 +85,7 @@ int PDFBookmarkItemModel::columnCount(const QModelIndex& parent) const
 
 QVariant PDFBookmarkItemModel::data(const QModelIndex& index, int role) const
 {
-    if (role == Qt::DisplayRole)
+    if (role == Qt::DisplayRole && m_bookmarkManager && index.isValid() && index.row() < m_bookmarkManager->getBookmarkCount())
     {
         return m_bookmarkManager->getBookmark(index.row()).name;
     }
@@ -95,10 +104,15 @@ void PDFBookmarkItemDelegate::paint(QPainter* painter,
                                     const QStyleOptionViewItem& option,
                                     const QModelIndex& index) const
 {
+    PDFBookmarkManager::Bookmark bookmark;
+    if (!getBookmark(index, bookmark))
+    {
+        BaseClass::paint(painter, option, index);
+        return;
+    }
+
     QStyleOptionViewItem options = option;
     initStyleOption(&options, index);
-
-    PDFBookmarkManager::Bookmark bookmark = m_bookmarkManager->getBookmark(index.row());
 
     options.text = QString();
     options.widget->style()->drawControl(QStyle::CE_ItemViewItem, &options, painter);
@@ -142,7 +156,11 @@ void PDFBookmarkItemDelegate::paint(QPainter* painter,
 
 QSize PDFBookmarkItemDelegate::sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const
 {
-    PDFBookmarkManager::Bookmark bookmark = m_bookmarkManager->getBookmark(index.row());
+    PDFBookmarkManager::Bookmark bookmark;
+    if (!getBookmark(index, bookmark))
+    {
+        return BaseClass::sizeHint(option, index);
+    }
 
     const int textWidthLine1 = option.fontMetrics.horizontalAdvance(getPageText(bookmark));
     const int textWidthLine2 = option.fontMetrics.horizontalAdvance(option.text);
@@ -186,6 +204,17 @@ void PDFBookmarkItemDelegate::drawStar(QPainter& painter, const QPointF& center,
     }
     path.closeSubpath();
     painter.drawPath(path);
+}
+
+bool PDFBookmarkItemDelegate::getBookmark(const QModelIndex& index, PDFBookmarkManager::Bookmark& bookmark) const
+{
+    if (!m_bookmarkManager || !index.isValid() || index.row() >= m_bookmarkManager->getBookmarkCount())
+    {
+        return false;
+    }
+
+    bookmark = m_bookmarkManager->getBookmark(index.row());
+    return true;
 }
 
 QString PDFBookmarkItemDelegate::getPageText(const PDFBookmarkManager::Bookmark& bookmark) const
