@@ -236,6 +236,9 @@ void PDFRenderer::compile(PDFPrecompiledPage* precompiledPage, size_t pageIndex)
     generator.setOperationControl(m_operationControl);
     QList<PDFRenderError> errors = generator.processContents();
 
+    // Large JPEG images are decoded in parallel, at the resolution of the preview
+    precompiledPage->prepareDeferredImages(errors, m_operationControl);
+
     PDFColorConvertor colorConvertor = m_cms->getColorConvertor();
     PDFRenderer::applyFeaturesToColorConvertor(m_features, colorConvertor);
     precompiledPage->convertColors(colorConvertor);

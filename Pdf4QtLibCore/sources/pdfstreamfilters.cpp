@@ -96,11 +96,54 @@ QByteArray PDFAscii85DecodeFilter::apply(const QByteArray& data,
         return *it++;
     };
 
+    // Output is written directly into the buffer, which is enlarged only by
+    // the 'z' characters (a single character encodes four bytes)
     QByteArray result;
-    result.reserve(data.size() * 4 / 5);
+    result.resize(data.size() / 5 * 4 + 8);
+    char* output = result.data();
+    qsizetype outputPosition = 0;
+
+    auto ensureCapacity = [&result, &output, &outputPosition](qsizetype count)
+    {
+        if (outputPosition + count > result.size())
+        {
+            result.resize(qMax(result.size() * 2, outputPosition + count));
+            output = result.data();
+        }
+    };
+
+    auto writePacked = [&output, &outputPosition](uint32_t decodedBytesPacked, std::size_t validBytes)
+    {
+        const char decodedBytesUnpacked[4] = { static_cast<char>(decodedBytesPacked >> 24),
+                                               static_cast<char>(decodedBytesPacked >> 16),
+                                               static_cast<char>(decodedBytesPacked >> 8),
+                                               static_cast<char>(decodedBytesPacked) };
+        for (std::size_t i = 0; i < validBytes; ++i)
+        {
+            output[outputPosition++] = decodedBytesUnpacked[i];
+        }
+    };
 
     while (true)
     {
+        // Fast path - five characters of a group without whitespace
+        if (dataEnd - it >= 5)
+        {
+            const uint32_t c0 = uint32_t(it[0]) - 33;
+            const uint32_t c1 = uint32_t(it[1]) - 33;
+            const uint32_t c2 = uint32_t(it[2]) - 33;
+            const uint32_t c3 = uint32_t(it[3]) - 33;
+            const uint32_t c4 = uint32_t(it[4]) - 33;
+
+            if (c0 <= 84 && c1 <= 84 && c2 <= 84 && c3 <= 84 && c4 <= 84)
+            {
+                ensureCapacity(4);
+                writePacked((((c0 * 85 + c1) * 85 + c2) * 85 + c3) * 85 + c4, 4);
+                it += 5;
+                continue;
+            }
+        }
+
         const uint32_t scannedChar = getChar();
         if (scannedChar == STREAM_END)
         {
@@ -108,7 +151,8 @@ QByteArray PDFAscii85DecodeFilter::apply(const QByteArray& data,
         }
         else if (scannedChar == 'z')
         {
-            result.append(4, static_cast<char>(0));
+            ensureCapacity(4);
+            writePacked(0, 4);
         }
         else
         {
@@ -136,23 +180,13 @@ QByteArray PDFAscii85DecodeFilter::apply(const QByteArray& data,
                 decodedBytesPacked = decodedBytesPacked * 85 + value;
             }
 
-            // Decode bytes into byte array
-            std::array<char, 4> decodedBytesUnpacked;
-            decodedBytesUnpacked.fill(0);
-            for (auto byteIt = decodedBytesUnpacked.rbegin(); byteIt != decodedBytesUnpacked.rend(); ++byteIt)
-            {
-                *byteIt = static_cast<char>(decodedBytesPacked & 0xFF);
-                decodedBytesPacked = decodedBytesPacked >> 8;
-            }
-
-            Q_ASSERT(validBytes <= decodedBytesUnpacked.size());
-            for (std::size_t i = 0; i < validBytes; ++i)
-            {
-                result.push_back(decodedBytesUnpacked[i]);
-            }
+            Q_ASSERT(validBytes <= 4);
+            ensureCapacity(4);
+            writePacked(decodedBytesPacked, validBytes);
         }
     }
 
+    result.resize(outputPosition);
     return result;
 }
 

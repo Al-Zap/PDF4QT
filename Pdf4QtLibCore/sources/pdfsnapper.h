@@ -38,6 +38,7 @@ class QPainter;
 
 namespace pdf
 {
+class PDFDeferredImage;
 class PDFPrecompiledPage;
 struct PDFWidgetSnapshot;
 
@@ -84,6 +85,12 @@ public:
     {
         QPainterPath imagePath;
         QImage image;
+
+        /// Image decoded at the size, at which it is drawn (then \p image is null)
+        std::shared_ptr<const PDFDeferredImage> deferredImage;
+
+        /// Returns the image at its full resolution
+        QImage getImage() const;
     };
 
     /// Adds page media box. Media box must be in page coordinates.
@@ -95,7 +102,8 @@ public:
     /// \param points Four corner points in clockwise order, fifth point is center,
     ///        all in page coordinates.
     /// \param image Image
-    void addImage(const std::array<QPointF, 5>& points, const QImage& image);
+    /// \param deferredImage Image decoded at the size, at which it is drawn (then \p image is null)
+    void addImage(const std::array<QPointF, 5>& points, const QImage& image, std::shared_ptr<const PDFDeferredImage> deferredImage = nullptr);
 
     /// Adds line and line center points
     /// \param start Start point of line, in page coordinates

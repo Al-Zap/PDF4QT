@@ -30,6 +30,8 @@
 #include <QByteArray>
 #include <QSize>
 
+#include <optional>
+
 class QByteArray;
 
 namespace pdf
@@ -174,6 +176,30 @@ public:
     /// Returns true, if all pixels of the image are opaque and black or white, so the
     /// image can be converted to 1-bit monochrome image without a loss of information
     static bool canBeConvertedToMonochromatic(const QImage& image);
+
+    /// Samples of a decoded JPEG (DCT) image
+    struct DCTImage
+    {
+        unsigned int width = 0;
+        unsigned int height = 0;
+        unsigned int components = 0;
+        QByteArray data; ///< Samples, 8 bits per component, rows without padding
+    };
+
+    /// Decodes JPEG (DCT) image. The image can be decoded at a reduced size - the
+    /// decoder then computes only the scaled inverse DCT, which is much faster and the
+    /// result is the image averaged over blocks of \p scaleDenominator x \p scaleDenominator
+    /// pixels (its size is rounded up). Exception is thrown, if the image is damaged.
+    /// \param content JPEG data
+    /// \param colorTransform Value of ColorTransform entry of the image dictionary (-1 if not present)
+    /// \param scaleDenominator Scale denominator (1, 2, 4 or 8)
+    /// \param headerOnly Read the header only (the size and the number of components)
+    /// \param errorReporter Error reporter (can be nullptr)
+    static std::optional<DCTImage> decodeDCT(const QByteArray& content,
+                                             int colorTransform,
+                                             unsigned int scaleDenominator,
+                                             bool headerOnly,
+                                             PDFRenderErrorReporter* errorReporter);
 
 private:
     PDFImageData m_imageData;

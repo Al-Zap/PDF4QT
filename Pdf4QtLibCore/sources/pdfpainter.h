@@ -267,6 +267,16 @@ public:
     void addPath(QPen pen, QBrush brush, QPainterPath path, bool isText);
     void addClip(QPainterPath path);
     void addImage(QImage image);
+
+    /// Adds a large JPEG image, which is decoded at the size, at which it is drawn. Its
+    /// preview is decoded by \p prepareDeferredImages. \sa PDFDeferredImage
+    void addDeferredImage(PDFDeferredImagePointer image);
+
+    /// Decodes the previews of the deferred images (in parallel), see \p addDeferredImage.
+    /// Images, which can't be decoded, are removed and the errors are appended to \p errors.
+    /// \param errors Rendering errors
+    /// \param operationControl Operation control (cancellation)
+    void prepareDeferredImages(QList<PDFRenderError>& errors, const PDFOperationControl* operationControl);
     void addMesh(PDFMesh mesh, PDFReal alpha);
     void addSaveGraphicState() { m_instructions.emplace_back(InstructionType::SaveGraphicState, 0); }
     void addRestoreGraphicState() { m_instructions.emplace_back(InstructionType::RestoreGraphicState, 0); }
@@ -430,6 +440,13 @@ private:
 
         QImage image;
 
+        /// Deferred image (decoded at the size, at which it is drawn). If it is set,
+        /// then \p image is its preview. \sa PDFDeferredImage
+        PDFDeferredImagePointer deferredImage;
+
+        /// Returns the image at its full resolution
+        QImage getFullResolutionImage() const;
+
         /// Type of the image, which selects the downscaler used, when the image is drawn
         /// at a smaller size than its own. It is determined once, when the image is added
         /// to the page, because determining it is expensive. \sa PDFImageScaling
@@ -486,6 +503,8 @@ protected:
     virtual void performPathPainting(const QPainterPath& path, bool stroke, bool fill, bool text, Qt::FillRule fillRule) override;
     virtual void performClipping(const QPainterPath& path, Qt::FillRule fillRule) override;
     virtual void performImagePainting(const QImage& image) override;
+    virtual bool isDeferredImagePaintingSupported() const override;
+    virtual void performDeferredImagePainting(const std::shared_ptr<PDFDeferredImage>& image) override;
     virtual void performMeshPainting(const PDFMesh& mesh) override;
     virtual void performSaveGraphicState(ProcessOrder order) override;
     virtual void performRestoreGraphicState(ProcessOrder order) override;

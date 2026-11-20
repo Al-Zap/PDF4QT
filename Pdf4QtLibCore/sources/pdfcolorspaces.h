@@ -466,6 +466,23 @@ public:
                                const PDFCMS* cms,
                                PDFRenderErrorReporter* reporter) const;
 
+    /// Fills RGB buffer using 8-bit colors from \p colors (samples of an image with
+    /// 8 bits per component and the default decode array). The result is the same as the
+    /// result of \p fillRGBBuffer for the values divided by 255. The default implementation
+    /// converts the values to floats, the device color spaces convert them directly.
+    /// \param colors Input colors (getColorComponentCount() bytes per pixel)
+    /// \param pixelCount Number of pixels
+    /// \param outputBuffer 8-bit RGB output buffer
+    /// \param intent Rendering intent
+    /// \param cms Color management system
+    /// \param reporter Render error reporter
+    virtual void fillRGBBuffer8(const unsigned char* colors,
+                                size_t pixelCount,
+                                unsigned char* outputBuffer,
+                                RenderingIntent intent,
+                                const PDFCMS* cms,
+                                PDFRenderErrorReporter* reporter) const;
+
     /// If this class is pattern space, returns this, otherwise returns nullptr.
     virtual const PDFPatternColorSpace* asPatternColorSpace() const { return nullptr; }
 
@@ -480,6 +497,13 @@ public:
     /// Creates alpha mask from soft image data. Exception is thrown, if something fails.
     /// \param softMask Soft mask
     static QImage createAlphaMask(const PDFImageData& softMask);
+
+    /// Returns true, if samples of the image are bytes, which can be converted to colors
+    /// directly by \p fillRGBBuffer8 (8 bits per component, default decode array, all rows present)
+    /// \param imageData Image data
+    /// \param componentCount Number of color components
+    /// \param hasDecode Is the decode array specified?
+    static bool isFast8BitImageData(const PDFImageData& imageData, unsigned int componentCount, bool hasDecode);
 
     /// Parses the desired color space. If desired color space is not found, then exception is thrown.
     /// If everything is OK, then shared pointer to the new color space is returned.
@@ -654,6 +678,7 @@ public:
     virtual QColor getColor(const PDFColor& color, const PDFCMS* cms, RenderingIntent intent, PDFRenderErrorReporter* reporter, bool isRange01) const override;
     virtual size_t getColorComponentCount() const override;
     virtual void fillRGBBuffer(const std::vector<float>& colors,unsigned char* outputBuffer, RenderingIntent intent, const PDFCMS* cms, PDFRenderErrorReporter* reporter) const override;
+    virtual void fillRGBBuffer8(const unsigned char* colors, size_t pixelCount, unsigned char* outputBuffer, RenderingIntent intent, const PDFCMS* cms, PDFRenderErrorReporter* reporter) const override;
 };
 
 class PDFDeviceRGBColorSpace : public PDFAbstractColorSpace
@@ -667,6 +692,7 @@ public:
     virtual QColor getColor(const PDFColor& color, const PDFCMS* cms, RenderingIntent intent, PDFRenderErrorReporter* reporter, bool isRange01) const override;
     virtual size_t getColorComponentCount() const override;
     virtual void fillRGBBuffer(const std::vector<float>& colors,unsigned char* outputBuffer, RenderingIntent intent, const PDFCMS* cms, PDFRenderErrorReporter* reporter) const override;
+    virtual void fillRGBBuffer8(const unsigned char* colors, size_t pixelCount, unsigned char* outputBuffer, RenderingIntent intent, const PDFCMS* cms, PDFRenderErrorReporter* reporter) const override;
 };
 
 class PDFDeviceCMYKColorSpace : public PDFAbstractColorSpace
