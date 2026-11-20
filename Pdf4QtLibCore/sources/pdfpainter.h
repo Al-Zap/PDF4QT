@@ -428,7 +428,7 @@ private:
         bool isRectangle = false; ///< Clip path is an axis aligned rectangle equal to \p bounds
     };
 
-    struct ImageData
+    struct PDF4QTLIBCORESHARED_EXPORT ImageData
     {
         inline ImageData() = default;
         inline ImageData(QImage image, PDFImageScaling::ImageType imageType) :

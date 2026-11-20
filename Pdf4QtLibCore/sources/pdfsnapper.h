@@ -81,7 +81,7 @@ public:
         QPointF point;
     };
 
-    struct SnapImage
+    struct PDF4QTLIBCORESHARED_EXPORT SnapImage
     {
         QPainterPath imagePath;
         QImage image;
