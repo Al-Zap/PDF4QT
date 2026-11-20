@@ -482,7 +482,7 @@ QByteArray PDFDeferredImage::decodeSoftMask() const
     const qsizetype requiredSize = qsizetype(m_size.width()) * qsizetype(m_size.height());
     if (data.size() < requiredSize)
     {
-        data.append(requiredSize - data.size(), char(0xFF));
+        data.append(requiredSize - data.size(), '\xFF');
     }
 
     return data;
