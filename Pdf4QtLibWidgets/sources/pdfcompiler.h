@@ -112,6 +112,9 @@ public:
     /// Returns current state of compiler
     State getState() const { return m_state; }
 
+    /// Returns true, if some pages are being compiled or wait for the compilation
+    bool hasPendingTasks();
+
     /// Return proxy
     PDFDrawWidgetProxy* getProxy() const { return m_proxy; }
 
@@ -152,6 +155,13 @@ public:
     /// paths must not be used directly (see PDFPrecompiledPage::drawParallel).
     PDFPrecompiledPageConstPointer getCompiledPageShared(PDFInteger pageIndex, CompileMode mode);
 
+    /// Returns generation of the compiled pages. It changes, whenever the compiled
+    /// pages are thrown away because their content has changed (the cache is cleared).
+    /// A page compiled again in the same generation (for example, after it has been
+    /// removed from the cache to save memory) has the same content, so images derived
+    /// from the previous compiled page of the same generation are still valid.
+    quint64 getCacheGeneration() const { return m_cacheGeneration; }
+
     /// Performs smart cache clear. Too old pages are removed from the cache,
     /// but only if these pages are not in active pages. Use this function to
     /// clear cache to avoid huge memory consumption.
@@ -171,7 +181,10 @@ public:
     /// Sets the pages displayed by the page view. If the page view waits for them (they
     /// are being compiled or rasterized), then only these pages are compiled and the
     /// other pages (prefetched pages, thumbnails) wait, so the displayed pages get the
-    /// whole processor.
+    /// whole processor. Compiled displayed pages are held by the compiler, so they are
+    /// never removed from the cache by compilation of other pages (a page larger than
+    /// the whole cache would be removed by any other page). A prefetched page is not
+    /// kept, if it doesn't fit into the cache together with the displayed pages.
     /// \param displayedPages Displayed pages (sorted)
     /// \param isWaiting Page view waits for the displayed pages
     void setDisplayedPages(const std::vector<PDFInteger>& displayedPages, bool isWaiting);
@@ -190,6 +203,19 @@ private:
     friend class PDFPageCompilerOperationControl;
 
     void onPageCompiled();
+
+    using PDFPrecompiledPagePointer = std::shared_ptr<PDFPrecompiledPage>;
+
+    /// Returns compiled page from the cache or from the held displayed pages
+    PDFPrecompiledPagePointer findPage(PDFInteger pageIndex) const;
+
+    /// Returns memory consumption estimate of the held displayed pages
+    /// \param excludedPageIndex Page, which is not counted
+    qint64 getHeldPagesCost(PDFInteger excludedPageIndex) const;
+
+    /// Returns true, if the page should not be prefetched, because it is known
+    /// that it doesn't fit into the cache together with the displayed pages.
+    bool isPrefetchRejected(PDFInteger pageIndex) const;
 
     struct CompileTask
     {
@@ -240,8 +266,14 @@ private:
     PDFAsynchronousPageCompilerWorkerThread* m_thread = nullptr;
 
     PDFDrawWidgetProxy* m_proxy;
-    using PDFPrecompiledPagePointer = std::shared_ptr<PDFPrecompiledPage>;
     QCache<PDFInteger, PDFPrecompiledPagePointer>* m_cache;
+
+    /// Generation of the compiled pages, see \p getCacheGeneration
+    quint64 m_cacheGeneration = 1;
+
+    /// Compiled pages displayed by the page view. They are held here, so they stay
+    /// available even when they are removed from the cache by other pages. Main thread only.
+    std::map<PDFInteger, PDFPrecompiledPagePointer> m_heldDisplayedPages;
 
     /// This task is protected by mutex. Every access to this
     /// variable must be done with locked mutex.
@@ -250,9 +282,11 @@ private:
     /// Currently active (visible / prefetched) pages. Protected by mutex.
     std::vector<PDFInteger> m_activePages;
 
-    /// Pages, whose compiled form is larger than the whole cache. Such page is held
-    /// in the cache alone, when it is displayed, and it is not prefetched.
-    std::set<PDFInteger> m_oversizedPages;
+    /// Memory consumption estimates of the compiled pages (also of the pages, which have
+    /// been removed from the cache). Prefetch of a page, which doesn't fit into the cache
+    /// together with the displayed pages, is skipped, otherwise it would be compiled
+    /// again and again. Main thread only.
+    std::map<PDFInteger, qint64> m_compiledPageCosts;
 
     /// Pages displayed by the page view. Protected by mutex.
     std::vector<PDFInteger> m_displayedPages;
