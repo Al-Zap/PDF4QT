@@ -32,6 +32,7 @@
 #include "pdfblendfunction.h"
 #include "pdftextlayout.h"
 #include "pdfoperationcontrol.h"
+#include "pdfdeferredimage.h"
 
 #include <QVector>
 #include <QTransform>
@@ -649,6 +650,17 @@ protected:
     /// \param image Image to be painted
     virtual void performImagePainting(const QImage& image);
 
+    /// Returns true, if the processor can paint large JPEG images, which are decoded
+    /// later at the size, at which they are drawn (\sa PDFDeferredImage). Then
+    /// \p performDeferredImagePainting is called for such images instead of
+    /// \p performImagePainting. Default implementation returns false.
+    virtual bool isDeferredImagePaintingSupported() const;
+
+    /// Paints the image, which is decoded later at the size, at which it is drawn.
+    /// Called only, if \p isDeferredImagePaintingSupported returns true.
+    /// \param image Deferred image
+    virtual void performDeferredImagePainting(const std::shared_ptr<PDFDeferredImage>& image);
+
     /// This function has to be implemented in the client drawing implementation, it should
     /// draw the mesh. Mesh is in device space coordinates (so world transformation matrix
     /// is identity matrix).
@@ -1145,6 +1157,10 @@ private:
     const PDFCMS* m_CMS;
     const PDFOptionalContentActivity* m_optionalContentActivity;
     const PDFOperationControl* m_operationControl;
+
+    /// Color tables of the deferred images (indexed by the color space and the rendering intent)
+    std::map<std::pair<int, int>, std::shared_ptr<const PDFImageColorTable>> m_deferredImageColorTables;
+
     const PDFDictionary* m_colorSpaceDictionary;
     const PDFDictionary* m_fontDictionary;
     const PDFDictionary* m_xobjectDictionary;

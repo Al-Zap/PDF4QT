@@ -766,6 +766,170 @@ struct PDFJPEGDCTSource
     int startByte = 0;
 };
 
+std::optional<PDFImage::DCTImage> PDFImage::decodeDCT(const QByteArray& content,
+                                                      int colorTransform,
+                                                      unsigned int scaleDenominator,
+                                                      bool headerOnly,
+                                                      PDFRenderErrorReporter* errorReporter)
+{
+    std::optional<DCTImage> result;
+
+    jpeg_decompress_struct codec;
+    jpeg_error_mgr errorManager;
+    std::memset(&codec, 0, sizeof(jpeg_decompress_struct));
+    std::memset(&errorManager, 0, sizeof(errorManager));
+
+    PDFJPEGDCTSource source;
+    source.buffer = &content;
+    std::memset(&source.sourceManager, 0, sizeof(jpeg_source_mgr));
+
+    // Fix issue, that image doesn't start with FFD8 (start of image marker). If this
+    // occurs, try to find sequence FFD8, and if we can find it, then advance the buffer.
+    source.startByte = qMax(content.indexOf("\xFF\xD8"), 0);
+    if (source.startByte > 0 && errorReporter)
+    {
+        errorReporter->reportRenderError(RenderErrorType::Warning, PDFTranslationContext::tr("Malformed data while reading JPEG stream. %1 bytes skipped.").arg(source.startByte));
+    }
+
+    auto errorMethod = [](j_common_ptr ptr)
+    {
+        char buffer[JMSG_LENGTH_MAX] = { };
+        (ptr->err->format_message)(ptr, buffer);
+
+        jpeg_destroy(ptr);
+        throw PDFException(PDFTranslationContext::tr("Error reading JPEG (DCT) image: %1.").arg(QString::fromLatin1(buffer)));
+    };
+
+    auto fillInputBufferMethod = [](j_decompress_ptr decompress) -> boolean
+    {
+        PDFJPEGDCTSource* source = reinterpret_cast<PDFJPEGDCTSource*>(decompress->src);
+
+        if (!source->sourceManager.next_input_byte)
+        {
+            const QByteArray* buffer = source->buffer;
+            source->sourceManager.next_input_byte = reinterpret_cast<const JOCTET*>(buffer->constData());
+            source->sourceManager.bytes_in_buffer = buffer->size();
+            source->sourceManager.next_input_byte += source->startByte;
+            source->sourceManager.bytes_in_buffer -= source->startByte;
+            return TRUE;
+        }
+
+        return FALSE;
+    };
+
+    auto skipInputDataMethod = [](j_decompress_ptr decompress, long num_bytes)
+    {
+        PDFJPEGDCTSource* source = reinterpret_cast<PDFJPEGDCTSource*>(decompress->src);
+
+        const size_t skippedBytes = qMin(source->sourceManager.bytes_in_buffer, static_cast<size_t>(num_bytes));
+        source->sourceManager.next_input_byte += skippedBytes;
+        source->sourceManager.bytes_in_buffer -= skippedBytes;
+    };
+
+    source.sourceManager.bytes_in_buffer = 0;
+    source.sourceManager.next_input_byte = nullptr;
+    source.sourceManager.init_source = [](j_decompress_ptr) { };
+    source.sourceManager.fill_input_buffer = fillInputBufferMethod;
+    source.sourceManager.skip_input_data = skipInputDataMethod;
+    source.sourceManager.resync_to_restart = jpeg_resync_to_restart;
+    source.sourceManager.term_source = [](j_decompress_ptr) { };
+
+    jpeg_std_error(&errorManager);
+    errorManager.error_exit = errorMethod;
+    codec.err = &errorManager;
+
+    jpeg_create_decompress(&codec);
+    codec.src = reinterpret_cast<jpeg_source_mgr*>(&source);
+
+    if (jpeg_read_header(&codec, TRUE) == JPEG_HEADER_OK)
+    {
+        // Determine color transform
+        if (codec.saw_Adobe_marker)
+        {
+            colorTransform = codec.Adobe_transform;
+        }
+
+        // Set the input transform
+        if (colorTransform > -1)
+        {
+            switch (codec.num_components)
+            {
+                case 3:
+                {
+                    codec.jpeg_color_space = colorTransform ? JCS_YCbCr : JCS_RGB;
+                    break;
+                }
+
+                case 4:
+                {
+                    codec.jpeg_color_space = colorTransform ? JCS_YCCK : JCS_CMYK;
+                    break;
+                }
+
+                default:
+                    break;
+            }
+        }
+
+        if (scaleDenominator > 1)
+        {
+            codec.scale_num = 1;
+            codec.scale_denom = scaleDenominator;
+        }
+
+        if (headerOnly)
+        {
+            jpeg_calc_output_dimensions(&codec);
+
+            result = DCTImage();
+            result->width = codec.output_width;
+            result->height = codec.output_height;
+            result->components = codec.output_components;
+        }
+        else
+        {
+            jpeg_start_decompress(&codec);
+
+            const JDIMENSION rowStride = codec.output_width * codec.output_components;
+            const JDIMENSION height = codec.output_height;
+
+            DCTImage image;
+            image.width = codec.output_width;
+            image.height = height;
+            image.components = codec.output_components;
+            image.data.resize(qsizetype(rowStride) * qsizetype(height));
+
+            // Scan lines are decoded directly into the buffer
+            constexpr JDIMENSION MAXIMAL_ROW_COUNT = 16;
+            std::array<JSAMPROW, MAXIMAL_ROW_COUNT> rows = { };
+            unsigned char* data = reinterpret_cast<unsigned char*>(image.data.data());
+
+            while (codec.output_scanline < height)
+            {
+                const JDIMENSION rowCount = qMin(MAXIMAL_ROW_COUNT, height - codec.output_scanline);
+                for (JDIMENSION i = 0; i < rowCount; ++i)
+                {
+                    rows[i] = data + qsizetype(codec.output_scanline + i) * rowStride;
+                }
+
+                if (jpeg_read_scanlines(&codec, rows.data(), rowCount) == 0)
+                {
+                    // Suspension can't occur, all data are present. Just to be sure,
+                    // we fill the rest of the image by zeros.
+                    std::fill(data + qsizetype(codec.output_scanline) * rowStride, data + image.data.size(), 0);
+                    break;
+                }
+            }
+
+            jpeg_finish_decompress(&codec);
+            result = qMove(image);
+        }
+    }
+
+    jpeg_destroy_decompress(&codec);
+    return result;
+}
+
 PDFImage PDFImage::createImage(const PDFDocument* document,
                                const PDFStream* stream,
                                PDFColorSpacePointer colorSpace,
@@ -959,129 +1123,11 @@ PDFImage PDFImage::createImage(const PDFDocument* document,
     {
         int colorTransform = loader.readIntegerFromDictionary(dictionary, "ColorTransform", -1);
 
-        jpeg_decompress_struct codec;
-        jpeg_error_mgr errorManager;
-        std::memset(&codec, 0, sizeof(jpeg_decompress_struct));
-        std::memset(&errorManager, 0, sizeof(errorManager));
-
-        PDFJPEGDCTSource source;
-        source.buffer = &content;
-        std::memset(&source.sourceManager, 0, sizeof(jpeg_source_mgr));
-
-        // Fix issue, that image doesn't start with FFD8 (start of image marker). If this
-        // occurs, try to find sequence FFD8, and if we can find it, then advance the buffer.
-        source.startByte = qMax(content.indexOf("\xFF\xD8"), 0);
-        if (source.startByte > 0)
+        if (std::optional<DCTImage> dctImage = decodeDCT(content, colorTransform, 1, false, errorReporter))
         {
-            errorReporter->reportRenderError(RenderErrorType::Warning, PDFTranslationContext::tr("Malformed data while reading JPEG stream. %1 bytes skipped.").arg(source.startByte));
+            const unsigned int rowStride = dctImage->width * dctImage->components;
+            image.m_imageData = PDFImageData(dctImage->components, 8, dctImage->width, dctImage->height, rowStride, maskingType, qMove(dctImage->data), qMove(mask), qMove(decode), qMove(matte));
         }
-
-        auto errorMethod = [](j_common_ptr ptr)
-        {
-            char buffer[JMSG_LENGTH_MAX] = { };
-            (ptr->err->format_message)(ptr, buffer);
-
-            jpeg_destroy(ptr);
-            throw PDFException(PDFTranslationContext::tr("Error reading JPEG (DCT) image: %1.").arg(QString::fromLatin1(buffer)));
-        };
-
-        auto fillInputBufferMethod = [](j_decompress_ptr decompress) -> boolean
-        {
-            PDFJPEGDCTSource* source = reinterpret_cast<PDFJPEGDCTSource*>(decompress->src);
-
-            if (!source->sourceManager.next_input_byte)
-            {
-                const QByteArray* buffer = source->buffer;
-                source->sourceManager.next_input_byte = reinterpret_cast<const JOCTET*>(buffer->constData());
-                source->sourceManager.bytes_in_buffer = buffer->size();
-                source->sourceManager.next_input_byte += source->startByte;
-                source->sourceManager.bytes_in_buffer -= source->startByte;
-                return TRUE;
-            }
-
-            return FALSE;
-        };
-
-        auto skipInputDataMethod = [](j_decompress_ptr decompress, long num_bytes)
-        {
-            PDFJPEGDCTSource* source = reinterpret_cast<PDFJPEGDCTSource*>(decompress->src);
-
-            const size_t skippedBytes = qMin(source->sourceManager.bytes_in_buffer, static_cast<size_t>(num_bytes));
-            source->sourceManager.next_input_byte += skippedBytes;
-            source->sourceManager.bytes_in_buffer -= skippedBytes;
-        };
-
-        source.sourceManager.bytes_in_buffer = 0;
-        source.sourceManager.next_input_byte = nullptr;
-        source.sourceManager.init_source = [](j_decompress_ptr) { };
-        source.sourceManager.fill_input_buffer = fillInputBufferMethod;
-        source.sourceManager.skip_input_data = skipInputDataMethod;
-        source.sourceManager.resync_to_restart = jpeg_resync_to_restart;
-        source.sourceManager.term_source = [](j_decompress_ptr) { };
-
-        jpeg_std_error(&errorManager);
-        errorManager.error_exit = errorMethod;
-        codec.err = &errorManager;
-
-        jpeg_create_decompress(&codec);
-        codec.src = reinterpret_cast<jpeg_source_mgr*>(&source);
-
-        if (jpeg_read_header(&codec, TRUE) == JPEG_HEADER_OK)
-        {
-            // Determine color transform
-            if (codec.saw_Adobe_marker)
-            {
-                colorTransform = codec.Adobe_transform;
-            }
-
-            // Set the input transform
-            if (colorTransform > -1)
-            {
-                switch (codec.num_components)
-                {
-                    case 3:
-                    {
-                        codec.jpeg_color_space = colorTransform ? JCS_YCbCr : JCS_RGB;
-                        break;
-                    }
-
-                    case 4:
-                    {
-                        codec.jpeg_color_space = colorTransform ? JCS_YCCK : JCS_CMYK;
-                        break;
-                    }
-
-                    default:
-                        break;
-                }
-            }
-
-            jpeg_start_decompress(&codec);
-
-            const JDIMENSION rowStride = codec.output_width * codec.output_components;
-            JSAMPARRAY samples = codec.mem->alloc_sarray(reinterpret_cast<j_common_ptr>(&codec), JPOOL_IMAGE, rowStride, 1);
-            JDIMENSION scanLineCount = codec.output_height;
-
-            const unsigned int width = codec.output_width;
-            const unsigned int height = codec.output_height;
-            const unsigned int components = codec.output_components;
-            const unsigned int bitsPerComponent =  8;
-            QByteArray buffer(rowStride * height, 0);
-            JSAMPROW rowData = reinterpret_cast<JSAMPROW>(buffer.data());
-
-            while (scanLineCount)
-            {
-                JDIMENSION readCount = jpeg_read_scanlines(&codec, samples, 1);
-                std::memcpy(rowData, samples[0], rowStride);
-                scanLineCount -= readCount;
-                rowData += rowStride;
-            }
-
-            jpeg_finish_decompress(&codec);
-            image.m_imageData = PDFImageData(components, bitsPerComponent, width, height, rowStride, maskingType, qMove(buffer), qMove(mask), qMove(decode), qMove(matte));
-        }
-
-        jpeg_destroy_decompress(&codec);
     }
     else if (imageFilterName == "JPXDecode")
     {

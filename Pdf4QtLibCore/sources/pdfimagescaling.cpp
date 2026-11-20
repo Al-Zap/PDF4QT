@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 #include "pdfimagescaling.h"
+#include "pdfdeferredimage.h"
 #include "pdfdbgheap.h"
 
 #include <QtMath>
@@ -448,6 +449,11 @@ bool PDFImageScaling::isDownscalingEnabled(const QPaintDevice* paintDevice, Imag
     return isSmoothImagesEnabled || (isBitonal(imageType) && PDFImageScalingHelper::isRasterPaintDevice(paintDevice));
 }
 
+bool PDFImageScaling::isRasterPaintDevice(const QPaintDevice* paintDevice)
+{
+    return PDFImageScalingHelper::isRasterPaintDevice(paintDevice);
+}
+
 QSize PDFImageScaling::getDownscaledSize(QSize imageSize, const QTransform& deviceTransform)
 {
     if (imageSize.isEmpty() || !deviceTransform.isAffine())
@@ -746,6 +752,19 @@ void PDFScaledImageCache::endDrawingPass()
             ++it;
         }
     }
+
+    for (auto it = m_deferredEntries.begin(); it != m_deferredEntries.end();)
+    {
+        if (m_currentPassId - it->second.lastUsedPassId > MAXIMUM_PASS_AGE)
+        {
+            m_memoryConsumptionEstimate -= it->second.memoryConsumption;
+            it = m_deferredEntries.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
 }
 
 QImage PDFScaledImageCache::getScaledImage(const QImage& image, QSize targetSize, PDFImageScaling::ImageType imageType)
@@ -787,9 +806,41 @@ QImage PDFScaledImageCache::getScaledImage(const QImage& image, QSize targetSize
     return scaledImage;
 }
 
+QImage PDFScaledImageCache::getDeferredImage(const PDFDeferredImage& image, unsigned int scaleDenominator)
+{
+    if (m_passDepth == 0)
+    {
+        return image.getImage(scaleDenominator);
+    }
+
+    const std::pair<quint64, unsigned int> key(image.getId(), scaleDenominator);
+    auto it = m_deferredEntries.find(key);
+    if (it != m_deferredEntries.cend())
+    {
+        it->second.lastUsedPassId = m_currentPassId;
+        return it->second.image;
+    }
+
+    QImage decodedImage = image.getImage(scaleDenominator);
+    if (decodedImage.isNull())
+    {
+        return decodedImage;
+    }
+
+    Entry entry;
+    entry.image = decodedImage;
+    entry.lastUsedPassId = m_currentPassId;
+    entry.memoryConsumption = decodedImage.sizeInBytes();
+    m_memoryConsumptionEstimate += entry.memoryConsumption;
+    m_deferredEntries.emplace(key, qMove(entry));
+
+    return decodedImage;
+}
+
 void PDFScaledImageCache::clear()
 {
     m_entries.clear();
+    m_deferredEntries.clear();
     m_memoryConsumptionEstimate = 0;
 }
 

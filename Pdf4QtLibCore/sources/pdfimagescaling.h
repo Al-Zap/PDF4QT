@@ -34,6 +34,7 @@
 
 namespace pdf
 {
+class PDFDeferredImage;
 
 /// Downscaling of the images for the display. Raster paint engines resample an image
 /// from a 2x2 neighbourhood only, so when an image is shrunk more than twice, most of
@@ -92,6 +93,11 @@ public:
     /// \param imageType Type of the image \sa getImageType
     /// \param isSmoothImagesEnabled Are the smooth images requested? \sa PDFRenderer::SmoothImages
     static bool isDownscalingEnabled(const QPaintDevice* paintDevice, ImageType imageType, bool isSmoothImagesEnabled);
+
+    /// Returns true, if the paint device is a raster device (an image, a pixmap or a widget),
+    /// i.e. not a printer, a picture or a pdf writer
+    /// \param paintDevice Paint device
+    static bool isRasterPaintDevice(const QPaintDevice* paintDevice);
 
     /// Returns the size, to which an image of the given size should be downscaled before it
     /// is drawn using the given transform, or an invalid size, when the image should be
@@ -182,6 +188,13 @@ public:
     /// \param imageType Type of the source image \sa PDFImageScaling::getImageType
     QImage getScaledImage(const QImage& image, QSize targetSize, PDFImageScaling::ImageType imageType);
 
+    /// Returns the deferred image decoded at the scale denominator. The decoded image is
+    /// taken from the cache, if it is stored there; otherwise it is decoded and stored (with
+    /// the same rules as the scaled images). Returns null image, if it can't be decoded.
+    /// \param image Deferred image
+    /// \param scaleDenominator Scale denominator \sa PDFDeferredImage::getImage
+    QImage getDeferredImage(const PDFDeferredImage& image, unsigned int scaleDenominator);
+
     /// Discards all the stored images
     void clear();
 
@@ -191,7 +204,7 @@ public:
     qint64 getMemoryConsumptionEstimate() const { return m_memoryConsumptionEstimate; }
 
     /// Returns the number of the stored images
-    size_t getImageCount() const { return m_entries.size(); }
+    size_t getImageCount() const { return m_entries.size() + m_deferredEntries.size(); }
 
     /// Guard of the drawing pass \sa beginDrawingPass
     class DrawingPassGuard
@@ -247,6 +260,7 @@ private:
     };
 
     std::map<Key, Entry> m_entries;
+    std::map<std::pair<quint64, unsigned int>, Entry> m_deferredEntries; ///< Decoded deferred images (identifier, scale denominator)
     quint64 m_currentPassId = 0;
     int m_passDepth = 0;
     qint64 m_memoryConsumptionEstimate = 0;

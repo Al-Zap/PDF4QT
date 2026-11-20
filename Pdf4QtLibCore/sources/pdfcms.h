@@ -188,6 +188,41 @@ public:
                                             unsigned char* outputBuffer,
                                             PDFRenderErrorReporter* reporter) const = 0;
 
+    /// Fills 8-bit colors in Device Gray color space to the RGB buffer. Values are the
+    /// samples of an image with 8 bits per component and default decode array, so the
+    /// result is the same as the result of \p fillRGBBufferFromDeviceGray for the values
+    /// divided by 255. The default implementation does exactly this, the color management
+    /// systems convert the values without the floating point buffer. If error occurs,
+    /// then false is returned.
+    /// \param colors Gray values (one byte per pixel)
+    /// \param pixelCount Number of pixels
+    /// \param intent Rendering intent
+    /// \param outputBuffer Output buffer in format RGB_888 (8-bit RGB values)
+    /// \param reporter Render error reporter (used, when color transform fails)
+    virtual bool fillRGBBufferFromDeviceGray8(const unsigned char* colors,
+                                              size_t pixelCount,
+                                              RenderingIntent intent,
+                                              unsigned char* outputBuffer,
+                                              PDFRenderErrorReporter* reporter) const
+    {
+        return fillRGBBufferFromDeviceGray(convert8BitColors(colors, pixelCount), intent, outputBuffer, reporter);
+    }
+
+    /// Fills 8-bit colors in Device RGB color space to the RGB buffer, see \p fillRGBBufferFromDeviceGray8.
+    /// \param colors Buffer with three color channels, so it has pixels * tuple(R, G, B) size
+    /// \param pixelCount Number of pixels
+    /// \param intent Rendering intent
+    /// \param outputBuffer Output buffer in format RGB_888 (8-bit RGB values)
+    /// \param reporter Render error reporter (used, when color transform fails)
+    virtual bool fillRGBBufferFromDeviceRGB8(const unsigned char* colors,
+                                             size_t pixelCount,
+                                             RenderingIntent intent,
+                                             unsigned char* outputBuffer,
+                                             PDFRenderErrorReporter* reporter) const
+    {
+        return fillRGBBufferFromDeviceRGB(convert8BitColors(colors, pixelCount * 3), intent, outputBuffer, reporter);
+    }
+
     /// Fills colors in Device CMYK color space to the RGB buffer. If error occurs, then false is returned.
     /// Caller then should handle this - try to convert color as accurate as possible.
     /// \param colors FBuffer with four color channels (C,M,Y,K channel), so it has pixels * tuple(C, M, Y, K) size
@@ -263,6 +298,21 @@ public:
     /// it just transforms two float buffers from input color space to output color space.
     virtual bool transformColorSpace(const ColorSpaceTransformParams& params) const = 0;
 
+    /// Converts 8-bit color values to the range [0, 1], exactly as the generic
+    /// image decoding does (value multiplied by 1 / 255 in double precision)
+    /// \param colors Color values
+    /// \param count Number of the values
+    static std::vector<float> convert8BitColors(const unsigned char* colors, size_t count)
+    {
+        std::vector<float> result(count, 0.0f);
+        const double coefficient = 1.0 / 255.0;
+        for (size_t i = 0; i < count; ++i)
+        {
+            result[i] = static_cast<float>(colors[i] * coefficient);
+        }
+        return result;
+    }
+
     /// Get D50 white point for XYZ color space
     static PDFColor3 getDefaultXYZWhitepoint();
 };
@@ -284,6 +334,8 @@ public:
     virtual QColor getColorFromICC(const PDFColor& color, RenderingIntent renderingIntent,  const QByteArray& iccID, const QByteArray& iccData, PDFRenderErrorReporter* reporter) const override;
     virtual bool fillRGBBufferFromDeviceGray(const std::vector<float>& colors, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
     virtual bool fillRGBBufferFromDeviceRGB(const std::vector<float>& colors, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
+    virtual bool fillRGBBufferFromDeviceGray8(const unsigned char* colors, size_t pixelCount, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
+    virtual bool fillRGBBufferFromDeviceRGB8(const unsigned char* colors, size_t pixelCount, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
     virtual bool fillRGBBufferFromDeviceCMYK(const std::vector<float>& colors, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
     virtual bool fillRGBBufferFromXYZ(const PDFColor3& whitePoint, const std::vector<float>& colors, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
     virtual bool fillRGBBufferFromICC(const std::vector<float>& colors, RenderingIntent renderingIntent, unsigned char* outputBuffer, const QByteArray& iccID, const QByteArray& iccData, PDFRenderErrorReporter* reporter) const override;

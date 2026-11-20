@@ -1502,7 +1502,7 @@ void PDFPickTool::mousePressEvent(QWidget* widget, QMouseEvent* event)
                 // Try to perform pick image
                 if (const PDFSnapper::ViewportSnapImage* snappedImage = m_snapper.getSnappedImage())
                 {
-                    Q_EMIT imagePicked(snappedImage->image);
+                    Q_EMIT imagePicked(snappedImage->getImage());
                 }
                 break;
             }
