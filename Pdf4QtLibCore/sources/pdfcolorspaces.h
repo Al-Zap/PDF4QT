@@ -667,7 +667,7 @@ protected:
     }
 };
 
-class PDFDeviceGrayColorSpace : public PDFAbstractColorSpace
+class PDF4QTLIBCORESHARED_EXPORT PDFDeviceGrayColorSpace : public PDFAbstractColorSpace
 {
 public:
     explicit PDFDeviceGrayColorSpace() = default;
@@ -681,7 +681,7 @@ public:
     virtual void fillRGBBuffer8(const unsigned char* colors, size_t pixelCount, unsigned char* outputBuffer, RenderingIntent intent, const PDFCMS* cms, PDFRenderErrorReporter* reporter) const override;
 };
 
-class PDFDeviceRGBColorSpace : public PDFAbstractColorSpace
+class PDF4QTLIBCORESHARED_EXPORT PDFDeviceRGBColorSpace : public PDFAbstractColorSpace
 {
 public:
     explicit PDFDeviceRGBColorSpace() = default;
@@ -695,7 +695,7 @@ public:
     virtual void fillRGBBuffer8(const unsigned char* colors, size_t pixelCount, unsigned char* outputBuffer, RenderingIntent intent, const PDFCMS* cms, PDFRenderErrorReporter* reporter) const override;
 };
 
-class PDFDeviceCMYKColorSpace : public PDFAbstractColorSpace
+class PDF4QTLIBCORESHARED_EXPORT PDFDeviceCMYKColorSpace : public PDFAbstractColorSpace
 {
 public:
     explicit PDFDeviceCMYKColorSpace() = default;

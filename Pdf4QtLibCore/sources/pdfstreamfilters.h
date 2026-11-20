@@ -39,7 +39,7 @@ using PDFObjectFetcher = std::function<const PDFObject&(const PDFObject&)>;
 
 /// Storage for stream filters. Can retrieve stream filters by name. Using singleton
 /// design pattern. Use static methods to retrieve filters.
-class PDFStreamFilterStorage
+class PDF4QTLIBCORESHARED_EXPORT PDFStreamFilterStorage
 {
 public:
     /// Retrieves filter by filter name. If filter with that name doesn't exist,
