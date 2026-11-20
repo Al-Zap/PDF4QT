@@ -356,6 +356,7 @@ public:
     PDFRenderer::Features getFeatures() const;
     const PDFMeshQualitySettings& getMeshQualitySettings() const { return m_meshQualitySettings; }
     PDFAsynchronousPageCompiler* getCompiler() const { return m_compiler; }
+    PDFAsynchronousPageRasterCache* getPageRasterCache() const { return m_pageRasterCache; }
     const PDFCMSManager* getCMSManager() const;
     PDFProgress* getProgress() const { return m_progress; }
     void setProgress(PDFProgress* progress) { m_progress = progress; }

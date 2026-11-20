@@ -213,8 +213,12 @@ void PDFAsynchronousPageCompiler::stop(bool clearCache)
 
             if (clearCache)
             {
+                // Content of the pages has changed, images derived
+                // from the compiled pages are not valid anymore.
                 m_cache->clear();
-                m_oversizedPages.clear();
+                m_heldDisplayedPages.clear();
+                m_compiledPageCosts.clear();
+                ++m_cacheGeneration;
             }
 
             m_state = State::Inactive;
@@ -236,6 +240,12 @@ void PDFAsynchronousPageCompiler::reset()
     start();
 }
 
+bool PDFAsynchronousPageCompiler::hasPendingTasks()
+{
+    QMutexLocker locker(&m_mutex);
+    return !m_tasks.empty();
+}
+
 void PDFAsynchronousPageCompiler::setCacheLimit(qsizetype limit)
 {
     m_cache->setMaxCost(limit);
@@ -249,8 +259,7 @@ const PDFPrecompiledPage* PDFAsynchronousPageCompiler::getCompiledPage(PDFIntege
         return nullptr;
     }
 
-    PDFPrecompiledPagePointer* pagePointer = m_cache->object(pageIndex);
-    PDFPrecompiledPage* page = pagePointer ? pagePointer->get() : nullptr;
+    PDFPrecompiledPage* page = findPage(pageIndex).get();
 
     if (!page && mode != CompileMode::None)
     {
@@ -261,9 +270,9 @@ const PDFPrecompiledPage* PDFAsynchronousPageCompiler::getCompiledPage(PDFIntege
         auto it = m_tasks.find(pageIndex);
         if (it == m_tasks.cend())
         {
-            // Page larger than the whole cache is not prefetched, it would
-            // remove the displayed pages from the cache.
-            if (!isPrefetch || !m_oversizedPages.count(pageIndex))
+            // Page, which doesn't fit into the cache together with the displayed
+            // pages (for example, a page larger than the whole cache), is not prefetched.
+            if (!isPrefetch || !isPrefetchRejected(pageIndex))
             {
                 m_tasks.insert(std::make_pair(pageIndex, CompileTask(pageIndex, isCancellable, isPrefetch)));
                 m_waitCondition.wakeOne();
@@ -302,8 +311,50 @@ PDFAsynchronousPageCompiler::PDFPrecompiledPageConstPointer PDFAsynchronousPageC
         return nullptr;
     }
 
-    PDFPrecompiledPagePointer* pagePointer = m_cache->object(pageIndex);
-    return pagePointer ? PDFPrecompiledPageConstPointer(*pagePointer) : nullptr;
+    return findPage(pageIndex);
+}
+
+PDFAsynchronousPageCompiler::PDFPrecompiledPagePointer PDFAsynchronousPageCompiler::findPage(PDFInteger pageIndex) const
+{
+    if (PDFPrecompiledPagePointer* pagePointer = m_cache->object(pageIndex))
+    {
+        return *pagePointer;
+    }
+
+    auto it = m_heldDisplayedPages.find(pageIndex);
+    if (it != m_heldDisplayedPages.cend())
+    {
+        return it->second;
+    }
+
+    return nullptr;
+}
+
+qint64 PDFAsynchronousPageCompiler::getHeldPagesCost(PDFInteger excludedPageIndex) const
+{
+    qint64 cost = 0;
+
+    for (const auto& item : m_heldDisplayedPages)
+    {
+        if (item.first != excludedPageIndex)
+        {
+            cost += item.second->getMemoryConsumptionEstimate();
+        }
+    }
+
+    return cost;
+}
+
+bool PDFAsynchronousPageCompiler::isPrefetchRejected(PDFInteger pageIndex) const
+{
+    auto it = m_compiledPageCosts.find(pageIndex);
+    if (it == m_compiledPageCosts.cend())
+    {
+        // Size of the page is not known yet, it must be compiled first
+        return false;
+    }
+
+    return it->second + getHeldPagesCost(pageIndex) > m_cache->maxCost();
 }
 
 std::vector<PDFAsynchronousPageCompiler::CompileTask> PDFAsynchronousPageCompiler::pickTasksForCompilation()
@@ -369,14 +420,33 @@ void PDFAsynchronousPageCompiler::setDisplayedPages(const std::vector<PDFInteger
 {
     Q_ASSERT(std::is_sorted(displayedPages.cbegin(), displayedPages.cend()));
 
-    QMutexLocker locker(&m_mutex);
-
-    if (m_isWaitingForDisplayedPages != isWaiting || m_displayedPages != displayedPages)
     {
-        m_displayedPages = displayedPages;
-        m_isWaitingForDisplayedPages = isWaiting;
-        m_waitCondition.wakeAll();
+        QMutexLocker locker(&m_mutex);
+
+        if (m_isWaitingForDisplayedPages != isWaiting || m_displayedPages != displayedPages)
+        {
+            m_displayedPages = displayedPages;
+            m_isWaitingForDisplayedPages = isWaiting;
+            m_waitCondition.wakeAll();
+        }
     }
+
+    // Hold the compiled displayed pages, release pages, which are not displayed anymore.
+    // Released page stays in the cache, if it is still there.
+    std::map<PDFInteger, PDFPrecompiledPagePointer> heldDisplayedPages;
+
+    if (m_state == State::Active)
+    {
+        for (PDFInteger pageIndex : displayedPages)
+        {
+            if (PDFPrecompiledPagePointer page = findPage(pageIndex))
+            {
+                heldDisplayedPages[pageIndex] = std::move(page);
+            }
+        }
+    }
+
+    m_heldDisplayedPages = std::move(heldDisplayedPages);
 }
 
 void PDFAsynchronousPageCompiler::setActivePages(const std::vector<PDFInteger>& activePages)
@@ -459,17 +529,14 @@ void PDFAsynchronousPageCompiler::onPageCompiled()
                     auto compiledPage = std::make_shared<PDFPrecompiledPage>(std::move(task.precompiledPage));
                     compiledPage->markAccessed();
                     qint64 memoryConsumptionEstimate = compiledPage->getMemoryConsumptionEstimate();
-                    const bool isOversized = memoryConsumptionEstimate > m_cache->maxCost();
+                    m_compiledPageCosts[it->first] = memoryConsumptionEstimate;
 
-                    if (isOversized)
+                    const bool isDisplayed = std::binary_search(m_displayedPages.cbegin(), m_displayedPages.cend(), it->first);
+                    if (task.isPrefetch && !isDisplayed && isPrefetchRejected(it->first))
                     {
-                        m_oversizedPages.insert(it->first);
-                    }
-
-                    if (isOversized && task.isPrefetch)
-                    {
-                        // Nobody waits for this page and it is larger than the whole cache. It is
-                        // thrown away, it will be compiled again, when it is displayed.
+                        // Nobody waits for this page and it doesn't fit into the cache together with
+                        // the displayed pages (it would remove them from the cache). It is thrown
+                        // away, it will be compiled again, when it is displayed.
                         it = m_tasks.erase(it);
                         continue;
                     }
@@ -478,6 +545,13 @@ void PDFAsynchronousPageCompiler::onPageCompiled()
                     // have hundreds of megabytes). It is held in the cache alone - its cost is
                     // the size of the cache, so all other pages are removed.
                     const qint64 cost = qMin<qint64>(memoryConsumptionEstimate, m_cache->maxCost());
+
+                    if (isDisplayed)
+                    {
+                        // Displayed page is held, so it is never removed by the other pages
+                        m_heldDisplayedPages[it->first] = compiledPage;
+                    }
+
                     PDFPrecompiledPagePointer* page = new PDFPrecompiledPagePointer(std::move(compiledPage));
                     if (m_cache->insert(it->first, page, cost))
                     {

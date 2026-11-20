@@ -910,13 +910,17 @@ void PDFDrawWidgetProxy::drawPages(QPainter* painter, QRect rect, PDFRenderer::F
                 }
 
                 bool isContentDrawn = false;
-                if (isCompiledPageValid && !isPageContentDrawSuppressed)
+                if (!isPageContentDrawSuppressed && (isCompiledPageValid || !compiledPage))
                 {
+                    // The cache of the rasterized pages is used also when the compiled page is not
+                    // available (it has been removed from the cache of the compiler, or the document
+                    // is being updated) - an already finished image of the page is still valid and
+                    // it is much better than the rough preview of the page.
                     if (drawPageFromRasterCache(painter, item.pageIndex, page, placedRect, rect, baseMatrix, features, groupInfo, paperColor, &isContentDrawn))
                     {
                         rasterCachePages.push_back(item.pageIndex);
                     }
-                    else
+                    else if (isCompiledPageValid)
                     {
                         compiledPage->draw(painter, page->getCropBox(), matrix, features, groupInfo.transparency, &m_scaledImageCache);
                         isContentDrawn = true;
@@ -1144,9 +1148,11 @@ bool PDFDrawWidgetProxy::drawPageFromRasterCache(QPainter* painter,
     PDFAsynchronousPageRasterCache::PageDrawParameters parameters;
     parameters.pageIndex = pageIndex;
     parameters.page = m_compiler->getCompiledPageShared(pageIndex, PDFAsynchronousPageCompiler::CompileMode::None);
+    parameters.contentGeneration = m_compiler->getCacheGeneration();
 
-    if (!parameters.page)
+    if (!parameters.page && !m_pageRasterCache->containsPage(pageIndex))
     {
+        // Page is not compiled and the cache has nothing to draw
         return false;
     }
 

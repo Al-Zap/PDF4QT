@@ -52,6 +52,11 @@ namespace pdf
 /// When the zoom changes, the image of the previous zoom is drawn scaled as a
 /// preview, until the sharp image at the new zoom is ready.
 ///
+/// Images are identified by the generation of the compiled pages (see
+/// PDFAsynchronousPageCompiler::getCacheGeneration), not by the compiled page,
+/// so an image stays valid and is drawn, even when the compiled page has been
+/// removed from the cache of the compiler (or compiled again) meanwhile.
+///
 /// All functions except the worker thread are called from the main thread.
 class PDF4QTLIBWIDGETSSHARED_EXPORT PDFAsynchronousPageRasterCache : public QObject
 {
@@ -70,7 +75,8 @@ public:
     struct PageDrawParameters
     {
         PDFInteger pageIndex = -1;
-        PageConstPointer page;              ///< Compiled page
+        PageConstPointer page;              ///< Compiled page, can be nullptr - then only an existing image is drawn and nothing is rasterized
+        quint64 contentGeneration = 0;      ///< Generation of the content of the page (see PDFAsynchronousPageCompiler::getCacheGeneration)
         QRectF cropBox;                     ///< Crop box of the page
         QTransform pageToLocal;             ///< Maps page points to the logical pixels of the placed page (placed page starts at (0, 0))
         QSize pageSize;                     ///< Logical size of the placed page
@@ -96,6 +102,21 @@ public:
 
     /// Returns true, if an image of a page is being rasterized
     bool hasPendingRequests() const { return !m_pending.empty(); }
+
+    /// Returns true, if the cache contains an image of the page (of any zoom or
+    /// generation), or the image of the page is being rasterized.
+    bool containsPage(PDFInteger pageIndex) const { return m_entries.count(pageIndex) || m_pending.count(pageIndex); }
+
+    /// Result of the last call of \p drawPage (for diagnostics and tests)
+    enum class DrawResult
+    {
+        Nothing,        ///< Nothing has been drawn
+        Preview,        ///< Image of other zoom or other content, scaled to the current zoom
+        Exact           ///< Sharp image of the current zoom and content
+    };
+
+    /// Returns result of the last call of \p drawPage for the page
+    DrawResult getLastDrawResult(PDFInteger pageIndex) const;
 
     /// Removes all images and cancels all pending requests
     void clear();
@@ -144,6 +165,7 @@ private:
         quint64 id = 0;
         PDFInteger pageIndex = -1;
         PageConstPointer page;
+        quint64 contentGeneration = 0;
         QRectF cropBox;
         Key key;
         QRect region;                       ///< Rasterized region in the logical pixels of the placed page
@@ -153,7 +175,7 @@ private:
 
     struct Entry
     {
-        std::weak_ptr<const PDFPrecompiledPage> page;
+        quint64 contentGeneration = 0;
         Key key;
         QRect region;
         QTransform pageToImage;             ///< Maps page points to the pixels of the image
@@ -175,6 +197,7 @@ private:
 
     std::map<PDFInteger, Task> m_pending;   ///< Requested tasks (main thread only)
     std::map<PDFInteger, Entry> m_entries;  ///< Rasterized pages (main thread only)
+    std::map<PDFInteger, DrawResult> m_lastDrawResults; ///< Results of the last drawing of the pages (main thread only)
 };
 
 }   // namespace pdf

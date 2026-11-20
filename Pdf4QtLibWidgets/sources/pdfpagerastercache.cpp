@@ -187,7 +187,9 @@ bool PDFAsynchronousPageRasterCache::drawPage(QPainter* painter, const PageDrawP
 {
     Q_ASSERT(painter->worldTransform().type() == QTransform::TxNone);
 
-    if (!parameters.page || parameters.visibleRegion.isEmpty())
+    m_lastDrawResults[parameters.pageIndex] = DrawResult::Nothing;
+
+    if (parameters.visibleRegion.isEmpty())
     {
         return false;
     }
@@ -205,7 +207,7 @@ bool PDFAsynchronousPageRasterCache::drawPage(QPainter* painter, const PageDrawP
     if (it != m_entries.end())
     {
         const Entry& entry = it->second;
-        const bool isSameContent = entry.page.lock() == parameters.page;
+        const bool isSameContent = entry.contentGeneration == parameters.contentGeneration;
         const bool isSameGeometry = entry.key.isSameGeometry(key);
 
         painter->save();
@@ -219,6 +221,7 @@ bool PDFAsynchronousPageRasterCache::drawPage(QPainter* painter, const PageDrawP
             painter->setWorldTransform(QTransform::fromScale(1.0 / ratio, 1.0 / ratio));
             painter->drawImage(QPoint(qRound(physicalTopLeft.x()), qRound(physicalTopLeft.y())), entry.image);
             isExact = true;
+            m_lastDrawResults[parameters.pageIndex] = DrawResult::Exact;
         }
         else
         {
@@ -233,6 +236,7 @@ bool PDFAsynchronousPageRasterCache::drawPage(QPainter* painter, const PageDrawP
                 painter->setWorldTransform(imageToPage * pageToPainter);
                 painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
                 painter->drawImage(QPointF(0.0, 0.0), entry.image);
+                m_lastDrawResults[parameters.pageIndex] = DrawResult::Preview;
             }
         }
 
@@ -240,12 +244,20 @@ bool PDFAsynchronousPageRasterCache::drawPage(QPainter* painter, const PageDrawP
         isDrawn = true;
     }
 
-    if (!isExact)
+    if (!isExact && parameters.page)
     {
+        // Without the compiled page, nothing can be rasterized. The caller
+        // requests the compilation and draws the page again, when it is compiled.
         request(parameters, key);
     }
 
     return isDrawn;
+}
+
+PDFAsynchronousPageRasterCache::DrawResult PDFAsynchronousPageRasterCache::getLastDrawResult(PDFInteger pageIndex) const
+{
+    auto it = m_lastDrawResults.find(pageIndex);
+    return it != m_lastDrawResults.cend() ? it->second : DrawResult::Nothing;
 }
 
 void PDFAsynchronousPageRasterCache::request(const PageDrawParameters& parameters, const Key& key)
@@ -254,11 +266,15 @@ void PDFAsynchronousPageRasterCache::request(const PageDrawParameters& parameter
     if (pendingIt != m_pending.end())
     {
         const Task& pendingTask = pendingIt->second;
-        if (pendingTask.page == parameters.page &&
+        if (pendingTask.contentGeneration == parameters.contentGeneration &&
             pendingTask.key.isSameGeometry(key) &&
-            pendingTask.region.contains(parameters.visibleRegion))
+            pendingTask.region.intersects(parameters.visibleRegion))
         {
-            // Same image is already being rasterized
+            // Image of the current zoom and content is already being rasterized. It is
+            // not cancelled, even if it doesn't cover the whole visible area (the page
+            // has been scrolled) - otherwise scrolling during a long rasterization would
+            // cancel it again and again and the sharp image would never be finished.
+            // The remaining area is requested, when this image is ready.
             return;
         }
 
@@ -272,6 +288,7 @@ void PDFAsynchronousPageRasterCache::request(const PageDrawParameters& parameter
     task.id = m_nextTaskId++;
     task.pageIndex = parameters.pageIndex;
     task.page = parameters.page;
+    task.contentGeneration = parameters.contentGeneration;
     task.cropBox = parameters.cropBox;
     task.key = key;
     task.region = getRequestedRegion(parameters);
@@ -356,7 +373,7 @@ void PDFAsynchronousPageRasterCache::onTaskFinished(quint64 taskId, PDFInteger p
     const Task& task = it->second;
 
     Entry entry;
-    entry.page = task.page;
+    entry.contentGeneration = task.contentGeneration;
     entry.key = task.key;
     entry.region = task.region;
     entry.pageToImage = createPageToImageMatrix(task.key, task.region);
@@ -392,6 +409,18 @@ void PDFAsynchronousPageRasterCache::retainPages(const std::vector<PDFInteger>& 
         else
         {
             it = m_entries.erase(it);
+        }
+    }
+
+    for (auto it = m_lastDrawResults.begin(); it != m_lastDrawResults.end();)
+    {
+        if (isRetained(it->first))
+        {
+            ++it;
+        }
+        else
+        {
+            it = m_lastDrawResults.erase(it);
         }
     }
 
