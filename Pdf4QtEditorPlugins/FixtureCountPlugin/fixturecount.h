@@ -235,11 +235,16 @@ public:
                                                 const FixtureCountData& data,
                                                 const QStringList& sheetNames);
 
-    /// Creates the CSV text from the table (comma separated, fields are quoted when needed)
+    /// Creates the CSV text from the table (fields are quoted when needed)
     /// \param table Table
-    static QString createCsv(const std::vector<QStringList>& table);
+    /// \param separator Separator of the fields, a semicolon is used by
+    ///        spreadsheets in the locales with the decimal comma
+    ///        (see pdf::PDFSysUtils::getSystemListSeparator)
+    static QString createCsv(const std::vector<QStringList>& table, QChar separator = QChar(','));
 
-    /// Escapes the CSV field
+    /// Escapes the CSV field. A field containing any of the separators
+    /// (comma, semicolon, tab) is quoted, so it is read correctly whichever
+    /// separator the spreadsheet expects.
     static QString escapeCsvField(const QString& text);
 };
 
