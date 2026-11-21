@@ -64,9 +64,13 @@ bool PDFPagePreviewStore::isEnabled()
 
 bool PDFPagePreviewStore::isOperationCancelled() const
 {
-    // This function is called by the worker thread only (often, while a page
-    // is compiled), so the worker is paused also in the middle of a page.
-    if (m_paused.load(std::memory_order_relaxed))
+    // This function is called often, while a page is compiled, so the worker is paused
+    // also in the middle of a page. It is called also by the threads of the thread pool
+    // of the execution policy (rows of an image are converted in parallel) - these threads
+    // must never wait here, because they are shared with the compiler of the displayed
+    // pages. The pause exists to give the processor to the displayed pages; with the threads
+    // of the pool blocked, the displayed pages would wait for the end of the pause instead.
+    if (m_paused.load(std::memory_order_relaxed) && QThread::currentThread() == m_thread)
     {
         waitWhilePaused();
     }
