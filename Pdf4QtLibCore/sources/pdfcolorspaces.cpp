@@ -237,6 +237,14 @@ void PDFDeviceGrayColorSpace::fillRGBBuffer(const std::vector<float>& colors, un
     }
 }
 
+void PDFDeviceGrayColorSpace::fillRGBBuffer8(const unsigned char* colors, size_t pixelCount, unsigned char* outputBuffer, RenderingIntent intent, const PDFCMS* cms, PDFRenderErrorReporter* reporter) const
+{
+    if (!cms->fillRGBBufferFromDeviceGray8(colors, pixelCount, intent, outputBuffer, reporter))
+    {
+        PDFAbstractColorSpace::fillRGBBuffer8(colors, pixelCount, outputBuffer, intent, cms, reporter);
+    }
+}
+
 PDFColor PDFDeviceRGBColorSpace::getDefaultColorOriginal() const
 {
     return PDFColor(0.0f, 0.0f, 0.0f);
@@ -273,6 +281,14 @@ void PDFDeviceRGBColorSpace::fillRGBBuffer(const std::vector<float>& colors, uns
     if (!cms->fillRGBBufferFromDeviceRGB(colors, intent, outputBuffer, reporter))
     {
         PDFAbstractColorSpace::fillRGBBuffer(colors, outputBuffer, intent, cms, reporter);
+    }
+}
+
+void PDFDeviceRGBColorSpace::fillRGBBuffer8(const unsigned char* colors, size_t pixelCount, unsigned char* outputBuffer, RenderingIntent intent, const PDFCMS* cms, PDFRenderErrorReporter* reporter) const
+{
+    if (!cms->fillRGBBufferFromDeviceRGB8(colors, pixelCount, intent, outputBuffer, reporter))
+    {
+        PDFAbstractColorSpace::fillRGBBuffer8(colors, pixelCount, outputBuffer, intent, cms, reporter);
     }
 }
 
@@ -374,6 +390,7 @@ QImage PDFAbstractColorSpace::getImage(const PDFImageData& imageData,
                 const unsigned int imageWidth = imageData.getWidth();
                 const unsigned int imageHeight = imageData.getHeight();
                 const PDFDecodeTransform decodeTransform(decode, componentCount, imageData.getBitsPerComponent());
+                const bool isFast8BitImage = isFast8BitImageData(imageData, componentCount, decodeTransform.hasDecode());
 
                 QMutex exceptionMutex;
                 std::optional<PDFException> exception;
@@ -388,6 +405,13 @@ QImage PDFAbstractColorSpace::getImage(const PDFImageData& imageData,
 
                     try
                     {
+                        if (isFast8BitImage)
+                        {
+                            // Samples are bytes, which are converted directly
+                            fillRGBBuffer8(imageData.getRow(i), imageWidth, image.scanLine(i), intent, cms, reporter);
+                            return;
+                        }
+
                         PDFBitReader reader(&imageData.getData(), imageData.getBitsPerComponent());
                         reader.seek(i * imageData.getStride());
 
@@ -465,6 +489,7 @@ QImage PDFAbstractColorSpace::getImage(const PDFImageData& imageData,
                 const unsigned int imageWidth = imageData.getWidth();
                 const unsigned int imageHeight = imageData.getHeight();
                 const PDFDecodeTransform decodeTransform(decode, componentCount, imageData.getBitsPerComponent());
+                const bool isFast8BitImage = isFast8BitImageData(imageData, componentCount, decodeTransform.hasDecode());
 
                 QImage alphaMask = createAlphaMask(softMask);
                 QSize targetSize = getLargerSizeByArea(alphaMask.size(), image.size());
@@ -482,38 +507,48 @@ QImage PDFAbstractColorSpace::getImage(const PDFImageData& imageData,
 
                     try
                     {
-                        PDFBitReader reader(&imageData.getData(), imageData.getBitsPerComponent());
-                        reader.seek(i * imageData.getStride());
-
-                        const double max = reader.max();
-                        const double coefficient = 1.0 / max;
                         unsigned char* outputLine = image.scanLine(i);
 
-                        std::vector<float>& inputColors = s_rowInputColors;
                         std::vector<unsigned char>& outputColors = s_rowOutputColors;
-                        inputColors.resize(imageWidth * componentCount);
                         outputColors.resize(imageWidth * 3);
 
-                        auto itInputColor = inputColors.begin();
-                        for (unsigned int j = 0; j < imageData.getWidth(); ++j)
+                        if (isFast8BitImage)
                         {
-                            for (unsigned int k = 0; k < componentCount; ++k)
-                            {
-                                PDFReal value = reader.read();
+                            // Samples are bytes, which are converted directly
+                            fillRGBBuffer8(imageData.getRow(i), imageWidth, outputColors.data(), intent, cms, reporter);
+                        }
+                        else
+                        {
+                            PDFBitReader reader(&imageData.getData(), imageData.getBitsPerComponent());
+                            reader.seek(i * imageData.getStride());
 
-                                // Interpolate value, if it is not empty
-                                if (decodeTransform.hasDecode())
+                            const double max = reader.max();
+                            const double coefficient = 1.0 / max;
+
+                            std::vector<float>& inputColors = s_rowInputColors;
+                            inputColors.resize(imageWidth * componentCount);
+
+                            auto itInputColor = inputColors.begin();
+                            for (unsigned int j = 0; j < imageData.getWidth(); ++j)
+                            {
+                                for (unsigned int k = 0; k < componentCount; ++k)
                                 {
-                                    *itInputColor++ = decodeTransform.decode(value, k, max);
-                                }
-                                else
-                                {
-                                    *itInputColor++ = value * coefficient;
+                                    PDFReal value = reader.read();
+
+                                    // Interpolate value, if it is not empty
+                                    if (decodeTransform.hasDecode())
+                                    {
+                                        *itInputColor++ = decodeTransform.decode(value, k, max);
+                                    }
+                                    else
+                                    {
+                                        *itInputColor++ = value * coefficient;
+                                    }
                                 }
                             }
-                        }
 
-                        fillRGBBuffer(inputColors, outputColors.data(), intent, cms, reporter);
+                            fillRGBBuffer(inputColors, outputColors.data(), intent, cms, reporter);
+                        }
 
                         const unsigned char* transformedLine = outputColors.data();
                         for (unsigned int ii = 0; ii < imageWidth; ++ii)
@@ -710,6 +745,16 @@ void PDFAbstractColorSpace::fillRGBBuffer(const std::vector<float>& colors,
     }
 }
 
+void PDFAbstractColorSpace::fillRGBBuffer8(const unsigned char* colors,
+                                           size_t pixelCount,
+                                           unsigned char* outputBuffer,
+                                           RenderingIntent intent,
+                                           const PDFCMS* cms,
+                                           PDFRenderErrorReporter* reporter) const
+{
+    fillRGBBuffer(PDFCMS::convert8BitColors(colors, pixelCount * getColorComponentCount()), outputBuffer, intent, cms, reporter);
+}
+
 QColor PDFAbstractColorSpace::getCheckedColor(const PDFColor& color, const PDFCMS* cms, RenderingIntent intent, PDFRenderErrorReporter* reporter) const
 {
     if (getColorComponentCount() != color.size())
@@ -718,6 +763,20 @@ QColor PDFAbstractColorSpace::getCheckedColor(const PDFColor& color, const PDFCM
     }
 
     return getColor(color, cms, intent, reporter, true);
+}
+
+bool PDFAbstractColorSpace::isFast8BitImageData(const PDFImageData& imageData, unsigned int componentCount, bool hasDecode)
+{
+    if (imageData.getBitsPerComponent() != 8 || hasDecode || imageData.getHeight() == 0)
+    {
+        return false;
+    }
+
+    // All rows must be present, otherwise the generic path reports the missing data
+    const qint64 rowSize = qint64(imageData.getWidth()) * componentCount;
+    const qint64 stride = imageData.getStride();
+    const qint64 requiredSize = stride * (qint64(imageData.getHeight()) - 1) + rowSize;
+    return stride >= rowSize && imageData.getData().size() >= requiredSize;
 }
 
 QImage PDFAbstractColorSpace::createAlphaMask(const PDFImageData& softMask)

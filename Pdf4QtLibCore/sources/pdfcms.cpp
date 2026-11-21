@@ -70,6 +70,7 @@
 #include <unordered_map>
 #include <iterator>
 #include <string>
+#include <cstring>
 
 namespace pdf
 {
@@ -237,6 +238,8 @@ public:
     virtual QColor getColorFromICC(const PDFColor& color, RenderingIntent renderingIntent, const QByteArray& iccID, const QByteArray& iccData, PDFRenderErrorReporter* reporter) const override;
     virtual bool fillRGBBufferFromDeviceGray(const std::vector<float>& colors, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
     virtual bool fillRGBBufferFromDeviceRGB(const std::vector<float>& colors, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
+    virtual bool fillRGBBufferFromDeviceGray8(const unsigned char* colors, size_t pixelCount, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
+    virtual bool fillRGBBufferFromDeviceRGB8(const unsigned char* colors, size_t pixelCount, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
     virtual bool fillRGBBufferFromDeviceCMYK(const std::vector<float>& colors, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
     virtual bool fillRGBBufferFromXYZ(const PDFColor3& whitePoint, const std::vector<float>& colors, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const override;
     virtual bool fillRGBBufferFromICC(const std::vector<float>& colors, RenderingIntent renderingIntent, unsigned char* outputBuffer, const QByteArray& iccID, const QByteArray& iccData, PDFRenderErrorReporter* reporter) const override;
@@ -326,6 +329,16 @@ private:
     /// \param outputBuffer Output buffer
     static void transformToRGBBuffer(cmsHTRANSFORM transform, const float* colors, size_t count, unsigned char* outputBuffer);
 
+    /// Transforms 8-bit colors to the output RGB buffer. Returns false, if the transform
+    /// has the floating point input (then the caller converts the colors as floats).
+    /// The 8-bit values are expanded to 16 bits exactly as the floating point values
+    /// v / 255 are converted by \p transformToRGBBuffer, so the results are the same.
+    /// \param transform Transform
+    /// \param colors Color values (8 bits per component)
+    /// \param count Number of the color components
+    /// \param outputBuffer Output buffer
+    static bool transform8ToRGBBuffer(cmsHTRANSFORM transform, const unsigned char* colors, size_t count, unsigned char* outputBuffer);
+
     /// Returns color from output color. Clamps invalid rgb output values to range [0.0, 1.0].
     /// \param color01 Rgb color (range 0-1 is assumed).
     static QColor getColorFromOutputColor(std::array<float, 3> color01);
@@ -401,6 +414,34 @@ bool PDFLittleCMS::fillRGBBufferFromDeviceRGB(const std::vector<float>& colors, 
     }
 
     return false;
+}
+
+bool PDFLittleCMS::fillRGBBufferFromDeviceGray8(const unsigned char* colors, size_t pixelCount, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const
+{
+    cmsHTRANSFORM transform = getTransform(Gray, getEffectiveRenderingIntent(intent), true);
+
+    if (transform && T_COLORSPACE(cmsGetTransformInputFormat(transform)) == PT_GRAY && transform8ToRGBBuffer(transform, colors, pixelCount, outputBuffer))
+    {
+        return true;
+    }
+
+    return PDFCMS::fillRGBBufferFromDeviceGray8(colors, pixelCount, intent, outputBuffer, reporter);
+}
+
+bool PDFLittleCMS::fillRGBBufferFromDeviceRGB8(const unsigned char* colors, size_t pixelCount, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const
+{
+    cmsHTRANSFORM transform = getTransform(RGB, getEffectiveRenderingIntent(intent), true);
+
+    if (transform)
+    {
+        const cmsUInt32Number inputFormat = cmsGetTransformInputFormat(transform);
+        if (T_COLORSPACE(inputFormat) == PT_RGB && T_CHANNELS(inputFormat) == 3 && transform8ToRGBBuffer(transform, colors, pixelCount * 3, outputBuffer))
+        {
+            return true;
+        }
+    }
+
+    return PDFCMS::fillRGBBufferFromDeviceRGB8(colors, pixelCount, intent, outputBuffer, reporter);
 }
 
 bool PDFLittleCMS::fillRGBBufferFromDeviceCMYK(const std::vector<float>& colors, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const
@@ -1346,6 +1387,41 @@ void PDFLittleCMS::transformToRGBBuffer(cmsHTRANSFORM transform, const float* co
     }
 }
 
+bool PDFLittleCMS::transform8ToRGBBuffer(cmsHTRANSFORM transform, const unsigned char* colors, size_t count, unsigned char* outputBuffer)
+{
+    const cmsUInt32Number format = cmsGetTransformInputFormat(transform);
+    const size_t channels = T_CHANNELS(format);
+
+    if (channels == 0 || channels > 4 || T_FLOAT(format) || T_BYTES(format) != 2)
+    {
+        return false;
+    }
+
+    const size_t pixelCount = count / channels;
+
+    constexpr size_t BLOCK_PIXEL_COUNT = 1024;
+    std::array<cmsUInt16Number, BLOCK_PIXEL_COUNT * 4> block = { };
+
+    size_t pixelIndex = 0;
+    while (pixelIndex < pixelCount)
+    {
+        const size_t blockPixelCount = qMin(BLOCK_PIXEL_COUNT, pixelCount - pixelIndex);
+        const size_t blockValueCount = blockPixelCount * channels;
+        const unsigned char* source = colors + pixelIndex * channels;
+
+        // Value v / 255 is converted to round(v / 255 * 65535) = v * 257
+        for (size_t i = 0; i < blockValueCount; ++i)
+        {
+            block[i] = static_cast<cmsUInt16Number>(source[i] * 257);
+        }
+
+        cmsDoTransform(transform, block.data(), outputBuffer + pixelIndex * 3, static_cast<cmsUInt32Number>(blockPixelCount));
+        pixelIndex += blockPixelCount;
+    }
+
+    return true;
+}
+
 QColor PDFLittleCMS::getColorFromOutputColor(std::array<float, 3> color01)
 {
     QColor color(QColor::Rgb);
@@ -1607,6 +1683,32 @@ bool PDFCMSGeneric::fillRGBBufferFromDeviceRGB(const std::vector<float>& colors,
         *outputBuffer++ = static_cast<unsigned char>(qRound(qBound(0.0f, component, 1.0f) * 255.0f));
     }
 
+    return true;
+}
+
+bool PDFCMSGeneric::fillRGBBufferFromDeviceGray8(const unsigned char* colors, size_t pixelCount, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const
+{
+    Q_UNUSED(intent);
+    Q_UNUSED(reporter);
+
+    // Value v / 255 is converted to round(v / 255 * 255) = v
+    for (size_t i = 0; i < pixelCount; ++i)
+    {
+        const unsigned char value = colors[i];
+        *outputBuffer++ = value;
+        *outputBuffer++ = value;
+        *outputBuffer++ = value;
+    }
+
+    return true;
+}
+
+bool PDFCMSGeneric::fillRGBBufferFromDeviceRGB8(const unsigned char* colors, size_t pixelCount, RenderingIntent intent, unsigned char* outputBuffer, PDFRenderErrorReporter* reporter) const
+{
+    Q_UNUSED(intent);
+    Q_UNUSED(reporter);
+
+    std::memcpy(outputBuffer, colors, pixelCount * 3);
     return true;
 }
 

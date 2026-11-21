@@ -45,7 +45,7 @@ public:
     /// Retrieves filter by filter name. If filter with that name doesn't exist,
     /// then nullptr is returned. This function is thread safe.
     /// \param filterName Name of the filter to be retrieved.
-    static const PDFStreamFilter* getFilter(const QByteArray& filterName);
+    static PDF4QTLIBCORESHARED_EXPORT const PDFStreamFilter* getFilter(const QByteArray& filterName);
 
     /// Returns decoded data from the stream
     /// \param stream Stream containing the data
