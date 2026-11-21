@@ -173,8 +173,8 @@ void FixtureCountPanel::setData(const FixtureTypes& types,
     QFont boldFont = m_table->font();
     boldFont.setBold(true);
     const QStringList totals = { tr("Total"), QString(),
-                                 currentPageIndex >= 0 ? QString::number(data.getTotalCount(currentPageIndex)) : QString(),
-                                 QString::number(data.getTotalCount()) };
+                                 currentPageIndex >= 0 ? QString::number(countData.getTotalCount(currentPageIndex)) : QString(),
+                                 QString::number(countData.getTotalCount()) };
     for (int column = 0; column < LastColumn; ++column)
     {
         QTableWidgetItem* item = setItem(totalRow, column, totals[column], column >= SheetColumn);
