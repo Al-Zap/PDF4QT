@@ -1,7 +1,15 @@
 # Main build of this fork: a portable Windows build of the editor on every push and pull request.
 # Based on WindowsInstall.yml of upstream PDF4QT, without the MSI/MSIX packaging and attestation steps.
 # The results are the artifacts PDF4QT-Windows-<version>.zip (unzip it and run Pdf4QtEditor.exe) and
-# PDF4QT-Setup-<version>.exe (per-user installer, no administrator rights needed).
+# PDF4QT-Setup-<version>.exe (per-user installer, no administrator rights needed). The unit tests run at the end
+# of the job (after the artifacts are uploaded, so a failing test does not withhold the build), a failing test
+# makes the run red.
+#
+# Code signing (Azure Artifact Signing) switches on by itself, once the secrets AZURE_TENANT_ID, AZURE_CLIENT_ID,
+# AZURE_CLIENT_SECRET and the repository variables AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT,
+# AZURE_SIGNING_PROFILE are set (Settings > Secrets and variables > Actions). Only pushes to master and manual
+# runs are signed, pull requests never are (they cannot read the secrets and would spend the signature quota).
+# See installer/SIGNING.md.
 name: Windows build
 
 on:
@@ -164,6 +172,34 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "$qt_root/bin" >> "$GITHUB_PATH"
 
+      # The build uses Ninja (single configuration generator): the build tree has the same layout as the
+      # installation (all binaries in build/usr/bin), so the unit tests find their libraries, plugins and data.
+      # The Visual Studio generator puts the binaries into build/usr/bin/Release and the tests do not run there.
+      # Ninja needs the environment of the compiler, which is set here for all following steps.
+      - name: Set up MSVC environment
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) { Write-Error "vcvars64.bat not found in $vs"; exit 1 }
+          # Only the variables changed by vcvars64.bat are exported
+          $before = @{}
+          foreach ($line in (cmd /c 'set')) { if ($line -match '^([^=]+)=(.*)$') { $before[$matches[1]] = $matches[2] } }
+          $after = cmd /c "`"$vcvars`" >nul && set"
+          if ($LASTEXITCODE -ne 0) { Write-Error 'vcvars64.bat failed'; exit 1 }
+          foreach ($line in $after) {
+            if ($line -match '^([^=]+)=(.*)$' -and $before[$matches[1]] -ne $matches[2]) {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          $env:PATH = ($after | Where-Object { $_ -match '^Path=' }) -replace '^Path=', ''
+          if (-not (Get-Command ninja.exe -ErrorAction SilentlyContinue)) {
+            Write-Host 'Ninja not found in the environment of Visual Studio, installing it by Chocolatey'
+            choco install ninja -y --no-progress
+            if ($LASTEXITCODE -ne 0) { Write-Error 'Installation of Ninja failed'; exit 1 }
+          }
+          Write-Host "Compiler: $((Get-Command cl.exe).Source)"
+
       - name: Find VC Redistributable Directories
         shell: pwsh
         run: |
@@ -189,13 +225,13 @@ jobs:
         working-directory: pdf4qt
         run: |
           # The dependencies are already installed, CMake must not run vcpkg install again into the build tree
-          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=$VCPKG_TRIPLET -DVCPKG_HOST_TRIPLET=$VCPKG_TRIPLET -DVCPKG_INSTALLED_DIR="$VCPKG_INSTALLED_DIR" -DVCPKG_MANIFEST_INSTALL=OFF -DPDF4QT_INSTALL_QT_DEPENDENCIES=ON -DPDF4QT_INSTALL_DEPENDENCIES=ON -DPDF4QT_QT_ROOT="$QT_ROOT_DIR" -DPDF4QT_INSTALL_MSVC_REDISTRIBUTABLE=ON -DPDF4QT_INSTALL_PREPARE_WIX_INSTALLER=OFF -DPDF4QT_INSTALL_TO_USR=ON
+          cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=$VCPKG_TRIPLET -DVCPKG_HOST_TRIPLET=$VCPKG_TRIPLET -DVCPKG_INSTALLED_DIR="$VCPKG_INSTALLED_DIR" -DVCPKG_MANIFEST_INSTALL=OFF -DPDF4QT_INSTALL_QT_DEPENDENCIES=ON -DPDF4QT_INSTALL_DEPENDENCIES=ON -DPDF4QT_QT_ROOT="$QT_ROOT_DIR" -DPDF4QT_INSTALL_MSVC_REDISTRIBUTABLE=ON -DPDF4QT_INSTALL_PREPARE_WIX_INSTALLER=OFF -DPDF4QT_INSTALL_TO_USR=ON
           cmake --build build --target release_translations --config Release -j6
           cmake --build build --config Release -j6
           cmake --install build --config Release
 
-      # The generator of Visual Studio is multi-configuration, the configuration is given by --config. The check
-      # of the installed binaries is the real guarantee: a debug build (also a debug Qt) links the debug runtime.
+      # The check of the installed binaries is the real guarantee of the configuration: a debug build (also a
+      # debug Qt) links the debug runtime.
       - name: Check release build
         shell: pwsh
         run: |
@@ -231,6 +267,67 @@ jobs:
           Write-Host "Version: $version"
           echo "pdf4qt_version=$version" >> $env:GITHUB_ENV
 
+      # Signing is used, when all of its settings exist, and only for pushes to master and manual runs
+      - name: 'Signing: Check configuration'
+        id: signing
+        env:
+          HAS_TENANT: ${{ secrets.AZURE_TENANT_ID != '' }}
+          HAS_CLIENT: ${{ secrets.AZURE_CLIENT_ID != '' }}
+          HAS_SECRET: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
+          ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            echo "Pull request: the build is not signed"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_TENANT" = true ] && [ "$HAS_CLIENT" = true ] && [ "$HAS_SECRET" = true ] && [ -n "$ENDPOINT" ] && [ -n "$ACCOUNT" ] && [ -n "$PROFILE" ]; then
+            echo "Signing by Azure Artifact Signing, account $ACCOUNT, profile $PROFILE"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$HAS_TENANT$HAS_CLIENT$HAS_SECRET" != falsefalsefalse ] || [ -n "$ENDPOINT$ACCOUNT$PROFILE" ]; then
+              echo "::warning::Code signing is configured only partly, the build is not signed. See installer/SIGNING.md."
+            else
+              echo "Code signing is not configured, the build is not signed"
+            fi
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only the own binaries are signed (Qt, MSVC runtime and other libraries are signed by their vendors or
+      # stay as they are), about 30 signatures for each build
+      - name: 'Signing: List own binaries'
+        if: steps.signing.outputs.enabled == 'true'
+        id: signing-files
+        shell: pwsh
+        run: |
+          $bin = (Resolve-Path 'pdf4qt\build\install\usr').Path
+          $files = Get-ChildItem $bin -Recurse -File -Include '*.exe', '*.dll' |
+            Where-Object { $_.Name -like 'Pdf4Qt*' -or $_.Name -like 'PdfTool*' -or $_.Name -like '*Plugin.dll' -or $_.Name -in @('CodeGenerator.exe', 'JBIG2_Viewer.exe', 'PdfExampleGenerator.exe') } |
+            ForEach-Object { $_.FullName }
+          if (-not $files) { Write-Error 'No binaries to sign'; exit 1 }
+          $files | ForEach-Object { Write-Host $_ }
+          Write-Host "$(@($files).Count) files"
+          $delimiter = "EOF_$([guid]::NewGuid().ToString('N'))"
+          "files<<$delimiter" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $files | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $delimiter | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: 'Signing: Sign own binaries'
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files: ${{ steps.signing-files.outputs.files }}
+          file-digest: SHA256
+          # The certificates of Artifact Signing are valid for 3 days, the timestamp keeps the signature valid
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       - name: Create ZIP archive
         shell: pwsh
         working-directory: pdf4qt\build\install\usr\bin
@@ -252,6 +349,34 @@ jobs:
         run: |
           .\pdf4qt\installer\build-installer.ps1 -Version "${{ env.pdf4qt_version }}" -SourceDir .\pdf4qt\build\install\usr\bin -OutputDir .\pdf4qt\build\install
 
+      - name: 'Signing: Sign installer'
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\pdf4qt\build\install\PDF4QT-Setup-${{ env.pdf4qt_version }}.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # A signed build must carry valid signatures: the installer and the editor in the ZIP archive
+      - name: 'Signing: Verify signatures'
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in @("pdf4qt\build\install\PDF4QT-Setup-${{ env.pdf4qt_version }}.exe", 'pdf4qt\build\install\usr\bin\Pdf4QtEditor.exe', 'pdf4qt\build\install\usr\bin\Pdf4QtLibCore.dll')) {
+            $signature = Get-AuthenticodeSignature $file
+            Write-Host "$file : $($signature.Status) $($signature.SignerCertificate.Subject)"
+            if ($signature.Status -ne 'Valid') { $failed = $true }
+          }
+          if ($failed) { Write-Host '::error::Signature verification failed'; exit 1 }
+
       # Installs, updates and uninstalls the installer on the runner and checks files, shortcuts and registry
       - name: Test installer
         shell: pwsh
@@ -265,3 +390,23 @@ jobs:
           path: .\pdf4qt\build\install\PDF4QT-Setup-${{ env.pdf4qt_version }}.exe
           retention-days: 30
           compression-level: 0
+
+      # The tests run on the build tree (build/usr/bin), not on the installation, see the comment of the Ninja
+      # generator above. The tests run one after another: some of them change the settings of the applications
+      # (registry of the user) and would disturb each other in parallel.
+      - name: Run unit tests
+        working-directory: pdf4qt
+        run: |
+          export PATH="$(cygpath -u "$VCPKG_INSTALLED_DIR")/$VCPKG_TRIPLET/bin:$PATH"
+          ctest --test-dir build --output-on-failure --timeout 1500 --output-junit "$(cygpath -m "$GITHUB_WORKSPACE")/test-results.xml"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-windows
+          path: |
+            test-results.xml
+            pdf4qt/build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 30

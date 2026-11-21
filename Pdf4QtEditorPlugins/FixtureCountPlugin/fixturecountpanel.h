@@ -62,12 +62,12 @@ public:
 
     /// Displays the count
     /// \param types Types (rows of the table)
-    /// \param data Count data
+    /// \param countData Count data
     /// \param currentPageIndex Current page (sheet), or -1
     /// \param currentSheetName Name of the current sheet
     /// \param currentTypeIndex Index of the selected type, or -1
     void setData(const FixtureTypes& types,
-                 const FixtureCountData& data,
+                 const FixtureCountData& countData,
                  pdf::PDFInteger currentPageIndex,
                  const QString& currentSheetName,
                  int currentTypeIndex);

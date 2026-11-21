@@ -118,7 +118,7 @@ FixtureCountPanel::FixtureCountPanel(const std::vector<QAction*>& actions, QWidg
 }
 
 void FixtureCountPanel::setData(const FixtureTypes& types,
-                                const FixtureCountData& data,
+                                const FixtureCountData& countData,
                                 pdf::PDFInteger currentPageIndex,
                                 const QString& currentSheetName,
                                 int currentTypeIndex)
@@ -164,8 +164,8 @@ void FixtureCountPanel::setData(const FixtureTypes& types,
             typeItem->setToolTip(tr("Key %1 selects this type while counting").arg(row + 1));
         }
         setItem(row, DescriptionColumn, type.description, false);
-        setItem(row, SheetColumn, currentPageIndex >= 0 ? QString::number(data.getCount(type.name, currentPageIndex)) : QString(), true);
-        setItem(row, TotalColumn, QString::number(data.getCount(type.name)), true);
+        setItem(row, SheetColumn, currentPageIndex >= 0 ? QString::number(countData.getCount(type.name, currentPageIndex)) : QString(), true);
+        setItem(row, TotalColumn, QString::number(countData.getCount(type.name)), true);
     }
 
     // Totals row

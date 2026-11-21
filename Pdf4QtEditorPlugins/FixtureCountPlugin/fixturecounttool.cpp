@@ -84,7 +84,7 @@ void FixtureCountTool::drawPage(QPainter* painter,
 
     QColor color = convertor.convert(m_currentType.color, false, false);
     QColor fillColor = color;
-    fillColor.setAlphaF(FixtureCountEditor::FILL_OPACITY);
+    fillColor.setAlphaF(static_cast<float>(FixtureCountEditor::FILL_OPACITY));
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing);
