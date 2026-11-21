@@ -53,10 +53,13 @@ public:
         return PDFDocumentManipulator::createAllDocumentPages(documentIndex, document);
     }
 
-    /// Assembles the pages into a new document, which replaces the given document
+    /// Assembles the pages into a new document, which replaces the given document.
+    /// The organized document keeps its object numbers, unless \p isExtracted is set:
+    /// extracted pages are written as a new, fully optimized file.
     static PDFOperationResult assemble(PDFDocument* document,
                                        const std::vector<const PDFDocument*>& sourceDocuments,
-                                       const PDFDocumentManipulator::AssembledPages& pages)
+                                       const PDFDocumentManipulator::AssembledPages& pages,
+                                       bool isExtracted = false)
     {
         if (pages.empty())
         {
@@ -73,6 +76,10 @@ public:
         // The first document is the organized document, it keeps its document information,
         // metadata, form, layers and named destinations, when pages of another document are inserted.
         manipulator.setPrimaryDocument(0);
+
+        // The organized document keeps its object numbers, so a change of the pages
+        // does not serialize every object of the document (slow for large plan sets).
+        manipulator.setKeepObjectNumbers(!isExtracted);
 
         PDFOperationResult result = manipulator.assemble(pages);
         if (!result)
@@ -345,7 +352,7 @@ PDFOperationResult PDFPageOrganizer::extractPages(const PDFDocument* document, c
     }
 
     PDFDocument result;
-    PDFOperationResult assembleResult = PDFPageOrganizerHelper::assemble(&result, { document }, pages);
+    PDFOperationResult assembleResult = PDFPageOrganizerHelper::assemble(&result, { document }, pages, true);
     if (assembleResult)
     {
         *extractedDocument = std::move(result);

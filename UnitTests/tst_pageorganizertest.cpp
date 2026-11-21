@@ -65,6 +65,7 @@ private slots:
     void splitPages();
     void annotationsFollowMovedPages();
     void organizedDocumentRoundTrip();
+    void organizedDocumentKeepsObjectNumbers();
     void cloudyPathSurroundsPolygon();
     void cloudyPolygonAnnotation();
     void cloudySquareAnnotation();
@@ -896,6 +897,85 @@ void PageOrganizerTest::organizedDocumentRoundTrip()
     const PDFDocument reread = read(write(document));
     QCOMPARE(getPageWidths(reread), std::vector<int>({ 130, 100, 700, 110 }));
     QCOMPARE(reread.getCatalog()->getPage(0)->getPageRotation(), PageRotation::Rotate90);
+}
+
+void PageOrganizerTest::organizedDocumentKeepsObjectNumbers()
+{
+    RichDocument description;
+    description.pageCount = 4;
+    description.title = "Plan set";
+    description.fields = { { "field0", 0 }, { "field1", 1 }, { "field2", 2 }, { "field3", 3 } };
+    const PDFDocument original = createRichDocument(description);
+    const std::vector<PDFObjectReference> originalPages = PDFDocumentBuilder(&original).getPages();
+
+    auto getFieldReferences = [](const PDFDocument& document)
+    {
+        std::map<QString, PDFObjectReference> references;
+        const PDFForm form = PDFForm::parse(&document, document.getCatalog()->getFormObject());
+        for (const PDFFormFieldPointer& field : form.getFormFields())
+        {
+            references[field->getName(PDFFormField::NameType::FullyQualified)] = field->getSelfReference();
+        }
+        return references;
+    };
+    const std::map<QString, PDFObjectReference> originalFields = getFieldReferences(original);
+    QCOMPARE(originalFields.size(), size_t(4));
+
+    // Objects of the original document, which are not changed by the page organizing,
+    // stay at their object numbers with the same content (no renumbering, no merging)
+    auto checkKeptObjects = [&](const PDFDocument& document, const std::vector<size_t>& keptPages)
+    {
+        const std::vector<PDFObjectReference> pages = PDFDocumentBuilder(&document).getPages();
+        QCOMPARE(pages.size(), keptPages.size());
+        for (size_t i = 0; i < pages.size(); ++i)
+        {
+            QVERIFY(pages[i] == originalPages.at(keptPages[i]));
+        }
+
+        const std::map<QString, PDFObjectReference> fields = getFieldReferences(document);
+        for (const auto& field : fields)
+        {
+            QVERIFY(originalFields.count(field.first));
+            QVERIFY(field.second == originalFields.at(field.first));
+            QVERIFY(document.getObjectByReference(field.second) == original.getObjectByReference(field.second));
+        }
+
+        QVERIFY(document.getTrailerDictionary()->get("Info") == original.getTrailerDictionary()->get("Info"));
+        QVERIFY(document.getStorage().getObjects().size() >= original.getStorage().getObjects().size());
+    };
+
+    PDFDocument document = original;
+    QVERIFY(PDFPageOrganizer::movePages(&document, { 0 }, 3));
+    checkKeptObjects(document, { 1, 2, 0, 3 });
+
+    QVERIFY(PDFPageOrganizer::deletePages(&document, { 1 }));
+    checkKeptObjects(document, { 1, 0, 3 });
+    QCOMPARE(getFieldNames(document), QStringList({ "field0", "field1", "field3" }));
+    QVERIFY(original.getObjectByReference(originalPages[2]).isDictionary());
+    QVERIFY(document.getObjectByReference(originalPages[2]).isNull());
+
+    // Inserted pages get new object numbers after the objects of the organized document
+    const PDFDocument inserted = createDocument(2, 500);
+    QVERIFY(PDFPageOrganizer::insertDocument(&document, &inserted, 1));
+    QCOMPARE(getPageWidths(document), std::vector<int>({ 110, 500, 510, 100, 130 }));
+    const std::vector<PDFObjectReference> pages = PDFDocumentBuilder(&document).getPages();
+    QVERIFY(pages[0] == originalPages[1]);
+    QVERIFY(pages[3] == originalPages[0]);
+    QVERIFY(pages[4] == originalPages[3]);
+    QVERIFY(size_t(pages[1].objectNumber) >= original.getStorage().getObjects().size());
+    QVERIFY(size_t(pages[2].objectNumber) >= original.getStorage().getObjects().size());
+
+    // The organized document is still a valid file
+    const PDFDocument reread = read(write(document));
+    QCOMPARE(getPageWidths(reread), std::vector<int>({ 110, 500, 510, 100, 130 }));
+    QCOMPARE(getFieldNames(reread), QStringList({ "field0", "field1", "field3" }));
+    QCOMPARE(getPageObjectCount(reread), 5);
+
+    // Extracted pages are a new compact file, the object numbers are not kept
+    PDFDocument extracted;
+    QVERIFY(PDFPageOrganizer::extractPages(&original, { 3 }, &extracted));
+    QCOMPARE(getPageWidths(extracted), std::vector<int>({ 130 }));
+    QVERIFY(extracted.getStorage().getObjects().size() < original.getStorage().getObjects().size());
 }
 
 void PageOrganizerTest::cloudyPathSurroundsPolygon()
