@@ -523,6 +523,16 @@ void PDFPageContentProcessor::performClipping(const QPainterPath& path, Qt::Fill
     Q_UNUSED(fillRule);
 }
 
+bool PDFPageContentProcessor::isDeferredImagePaintingSupported() const
+{
+    return false;
+}
+
+void PDFPageContentProcessor::performDeferredImagePainting(const std::shared_ptr<PDFDeferredImage>& image)
+{
+    Q_UNUSED(image);
+}
+
 bool PDFPageContentProcessor::performOriginalImagePainting(const PDFImage& image, const PDFStream* stream, PDFObjectReference reference)
 {
     Q_UNUSED(image);
@@ -3704,6 +3714,27 @@ void PDFPageContentProcessor::paintXObjectImage(const PDFStream* stream, PDFObje
         else if (!colorSpaceObject.isNull())
         {
             throw PDFRendererException(RenderErrorType::Error, PDFTranslationContext::tr("Invalid color space of the image."));
+        }
+    }
+
+    // Large JPEG images are decoded later, at the size, at which they are drawn
+    if (colorSpace && isDeferredImagePaintingSupported() && !streamDictionary->hasKey("Intent"))
+    {
+        const RenderingIntent renderingIntent = m_graphicState.getRenderingIntent();
+        const std::pair<int, int> colorTableKey(int(colorSpace->getColorSpace()), int(renderingIntent));
+        auto itColorTable = m_deferredImageColorTables.find(colorTableKey);
+        if (itColorTable == m_deferredImageColorTables.cend())
+        {
+            itColorTable = m_deferredImageColorTables.emplace(colorTableKey, PDFImageColorTable::create(colorSpace.data(), m_CMS, renderingIntent, this)).first;
+        }
+
+        if (itColorTable->second)
+        {
+            if (PDFDeferredImagePointer deferredImage = PDFDeferredImage::create(m_document, stream, colorSpace.data(), itColorTable->second, getCurrentWorldMatrix(), this))
+            {
+                performDeferredImagePainting(deferredImage);
+                return;
+            }
         }
     }
 

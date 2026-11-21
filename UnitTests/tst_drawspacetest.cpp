@@ -26,6 +26,8 @@
 #include "pdfdocumentreader.h"
 #include "pdfdrawspacecontroller.h"
 #include "pdfdrawwidget.h"
+#include "pdfexecutionpolicy.h"
+#include "pdfpagepreviewstore.h"
 #include "pdfpagerastercache.h"
 #include "pdfprogress.h"
 
@@ -49,6 +51,7 @@ private slots:
     void rasterCacheDrawsImageWithoutCompiledPage();
     void rasterCacheKeepsSharpTaskWhileScrolling();
     void heavyPageBecomesSharpAfterZoomAndScroll();
+    void displayedPageDoesNotWaitForPausedPreviews();
 };
 
 struct DrawSpaceFixture
@@ -748,6 +751,146 @@ void DrawSpaceTest::rasterCacheKeepsSharpTaskWhileScrolling()
     QCOMPARE(cache.getLastDrawResult(0), Cache::DrawResult::Exact);
 
     painter.end();
+}
+
+/// Helper functions of the test of the paused page previews
+class PausedPreviewTestHelper
+{
+public:
+    PausedPreviewTestHelper() = delete;
+
+    static constexpr int IMAGE_SIZE = 1400;
+    static constexpr int IMAGE_COUNT = 40;
+
+    /// Creates a document of a single sheet, on which an image is drawn several times. The image
+    /// has a decode array, so its rows are converted by the generic (slow) path, in the threads
+    /// of the thread pool of the execution policy - the page is processed mostly there.
+    static pdf::PDFDocument createDocument()
+    {
+        QByteArray imageData(IMAGE_SIZE * IMAGE_SIZE * 3, Qt::Uninitialized);
+        for (int i = 0; i < imageData.size(); ++i)
+        {
+            imageData[i] = char(200 + (i % 7) * 8);
+        }
+
+        QByteArray content;
+        for (int i = 0; i < IMAGE_COUNT; ++i)
+        {
+            content += "q 300 0 0 300 " + QByteArray::number(60 + (i % 8) * 310) + " " + QByteArray::number(80 + (i / 8) * 310) + " cm /Im0 Do Q\n";
+        }
+
+        const std::vector<QByteArray> objects =
+        {
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+            "<< /Type /Catalog /Pages 1 0 R >>",
+            "<< /Type /Page /Parent 1 0 R /MediaBox [0 0 2592 1728] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>",
+            "<< /Length " + QByteArray::number(content.size()) + " >>\nstream\n" + content + "\nendstream",
+            "<< /Type /XObject /Subtype /Image /Width " + QByteArray::number(IMAGE_SIZE) + " /Height " + QByteArray::number(IMAGE_SIZE) +
+            " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Decode [1 0 1 0 1 0] /Length " + QByteArray::number(imageData.size()) + " >>\nstream\n" + imageData + "\nendstream"
+        };
+
+        QByteArray file = "%PDF-1.7\n";
+        std::vector<qint64> offsets;
+        for (size_t i = 0; i < objects.size(); ++i)
+        {
+            offsets.push_back(file.size());
+            file += QByteArray::number(qint64(i + 1)) + " 0 obj\n" + objects[i] + "\nendobj\n";
+        }
+
+        const qint64 xrefOffset = file.size();
+        file += "xref\n0 " + QByteArray::number(qint64(offsets.size() + 1)) + "\n0000000000 65535 f \n";
+        for (qint64 offset : offsets)
+        {
+            file += QByteArray::number(offset).rightJustified(10, '0') + " 00000 n \n";
+        }
+        file += "trailer\n<< /Size " + QByteArray::number(qint64(offsets.size() + 1)) + " /Root 2 0 R >>\nstartxref\n" + QByteArray::number(xrefOffset) + "\n%%EOF\n";
+
+        pdf::PDFDocumentReader reader(nullptr, [](bool* ok) { *ok = false; return QString(); }, true, false);
+        pdf::PDFDocument document = reader.readFromBuffer(file);
+        Q_ASSERT(reader.getReadingResult() == pdf::PDFDocumentReader::Result::OK);
+        return document;
+    }
+
+    /// Returns true, if the images of the sheet (they are dark) are painted in the image
+    static bool hasPageContent(const QImage& image)
+    {
+        int darkPixels = 0;
+        for (int y = 0; y < image.height(); y += 2)
+        {
+            const QRgb* line = reinterpret_cast<const QRgb*>(image.constScanLine(y));
+            for (int x = 0; x < image.width(); x += 2)
+            {
+                if (qRed(line[x]) < 80 && qGreen(line[x]) < 80 && qBlue(line[x]) < 80)
+                {
+                    ++darkPixels;
+                }
+            }
+        }
+
+        return darkPixels > 500;
+    }
+};
+
+void DrawSpaceTest::displayedPageDoesNotWaitForPausedPreviews()
+{
+    // The previews of the pages are created in the background, and they are paused, while the
+    // page view waits for the displayed pages. Rows of the images are converted in the threads
+    // of the thread pool shared with the compiler of the displayed pages. If the pause blocked
+    // these threads, the displayed page would appear only after the safety timeout of the
+    // pause (BACKGROUND_WORK_RESUME_TIMEOUT, 10 seconds) - this was the slow opening of the
+    // lighting plans with large images.
+    if (!pdf::PDFPagePreviewStore::isEnabled())
+    {
+        QSKIP("Page previews are disabled.");
+    }
+
+    using Policy = pdf::PDFExecutionPolicy;
+    auto strategyGuard = qScopeGuard([]() { Policy::setStrategy(Policy::Strategy::PageMultithreaded); });
+    Policy::setStrategy(Policy::Strategy::AlwaysMultithreaded);
+
+    // Previews are created only for a document with the shared ownership
+    pdf::PDFDocumentPointer document(new pdf::PDFDocument(PausedPreviewTestHelper::createDocument()));
+
+    pdf::PDFCMSManager cms(nullptr);
+    pdf::PDFProgress progress(nullptr);
+    pdf::PDFWidget widget(&cms, pdf::RendererEngine::QPainter, nullptr);
+    widget.resize(1000, 800);
+
+    pdf::PDFDrawWidgetProxy* proxy = widget.getDrawWidgetProxy();
+    proxy->setProgress(&progress);
+    widget.setDocument(pdf::PDFModifiedDocument(document, nullptr), {});
+    proxy->setPageLayout(pdf::PageLayout::SinglePage);
+    for (int i = 0; i < 4; ++i)
+    {
+        widget.layout()->activate();
+        proxy->update();
+    }
+    proxy->performOperation(pdf::PDFDrawWidgetProxy::ZoomFit);
+
+    const QRect viewRect = widget.getDrawWidget()->getWidget()->rect();
+    auto paint = [&]()
+    {
+        QImage image(viewRect.size(), QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::gray);
+        QPainter painter(&image);
+        proxy->draw(&painter, viewRect);
+        painter.end();
+        return image;
+    };
+
+    // Let the worker of the previews start with the sheet, then the page view asks for it
+    QTest::qWait(300);
+
+    QElapsedTimer timer;
+    timer.start();
+
+    const bool isDisplayed = HeavyPageTestHelper::waitFor([&]() { return PausedPreviewTestHelper::hasPageContent(paint()); }, 20000);
+    const qint64 elapsed = timer.elapsed();
+
+    widget.setDocument(pdf::PDFModifiedDocument(), {});
+
+    QVERIFY(isDisplayed);
+    QVERIFY2(elapsed < 7000, qPrintable(QString("The displayed page was painted after %1 ms.").arg(elapsed)));
 }
 
 QTEST_MAIN(DrawSpaceTest)

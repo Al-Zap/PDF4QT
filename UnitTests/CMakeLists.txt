@@ -48,6 +48,22 @@ set_target_properties(UnitTestsImageScaling PROPERTIES
 )
 add_test(UnitTestsImageScaling  "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsImageScaling")
 
+add_executable(UnitTestsDeferredImage
+	tst_deferredimagetest.cpp
+)
+
+target_link_libraries(UnitTestsDeferredImage PRIVATE Pdf4QtLibCore Qt6::Core Qt6::Gui Qt6::Test)
+target_compile_definitions(UnitTestsDeferredImage PRIVATE PDF4QT_UNIT_TESTS_DATA_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/data")
+
+set_target_properties(UnitTestsDeferredImage PROPERTIES
+    WIN32_EXECUTABLE OFF
+    MACOSX_BUNDLE OFF
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_LIB_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+)
+add_test(UnitTestsDeferredImage  "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsDeferredImage")
+set_tests_properties(UnitTestsDeferredImage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 add_executable(UnitTestsImageOptimizer
 	tst_imageoptimizertest.cpp
 )

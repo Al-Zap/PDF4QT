@@ -516,6 +516,41 @@ void PDFPrecompiledPageGenerator::performImagePainting(const QImage& image)
     m_precompiledPage->addImage(image);
 }
 
+bool PDFPrecompiledPageGenerator::isDeferredImagePaintingSupported() const
+{
+    return true;
+}
+
+void PDFPrecompiledPageGenerator::performDeferredImagePainting(const std::shared_ptr<PDFDeferredImage>& image)
+{
+    if (isContentSuppressed())
+    {
+        // Content is suppressed, do not paint anything
+        return;
+    }
+
+    if (isTransparencyGroupActive() && getEffectiveFillingAlpha() != 1.0)
+    {
+        // Transparency is approximated by the alpha channel of the image, which
+        // must be decoded now (it is very rare for the plotted sheets)
+        performImagePainting(image->decode(1, this, true));
+        return;
+    }
+
+    // Add snap info for image to the snapper
+    QTransform matrix = getCurrentWorldMatrix();
+    PDFSnapInfo* snapInfo = m_precompiledPage->getSnapInfo();
+    snapInfo->addImage({
+                           matrix.map(QPointF(0.0, 0.0)),
+                           matrix.map(QPointF(1.0, 0.0)),
+                           matrix.map(QPointF(1.0, 1.0)),
+                           matrix.map(QPointF(0.0, 1.0)),
+                           matrix.map(QPointF(0.5, 0.5)),
+                       }, QImage(), image);
+
+    m_precompiledPage->addDeferredImage(image);
+}
+
 void PDFPrecompiledPageGenerator::performMeshPainting(const PDFMesh& mesh)
 {
     m_precompiledPage->addMesh(mesh, getEffectiveFillingAlpha());
@@ -1034,7 +1069,41 @@ void PDFPrecompiledPage::drawImpl(QPainter* painter,
                 // a raster target - the redaction replays the page into a pdf writer, which
                 // must get the image at its full resolution.
                 QImage downscaledImage;
+                QImage deferredImage;
                 const QImage* image = &data.image;
+
+                if (image->isNull())
+                {
+                    painter->restore();
+                    break;
+                }
+
+                if (data.deferredImage)
+                {
+                    // Jakub Melka: the deferred image is decoded at the size, at which it is
+                    // drawn (a vector device gets the full resolution). The preview is used,
+                    // if it is large enough, otherwise the image is decoded at a larger scale
+                    // and memoized in the cache of the caller.
+                    unsigned int scaleDenominator = 1;
+                    if (PDFImageScaling::isRasterPaintDevice(painter->device()))
+                    {
+                        const QTransform& deviceTransform = painter->deviceTransform();
+                        const qreal deviceWidth = std::hypot(deviceTransform.m11(), deviceTransform.m12());
+                        const qreal deviceHeight = std::hypot(deviceTransform.m21(), deviceTransform.m22());
+                        scaleDenominator = data.deferredImage->getScaleDenominator(deviceWidth, deviceHeight);
+                    }
+
+                    if (scaleDenominator < data.deferredImage->getPreviewScaleDenominator())
+                    {
+                        deferredImage = scaledImageCache ? scaledImageCache->getDeferredImage(*data.deferredImage, scaleDenominator)
+                                                         : data.deferredImage->getImage(scaleDenominator);
+
+                        if (!deferredImage.isNull())
+                        {
+                            image = &deferredImage;
+                        }
+                    }
+                }
 
                 if (PDFImageScaling::isDownscalingEnabled(painter->device(), data.imageType, features.testFlag(PDFRenderer::SmoothImages)))
                 {
@@ -1251,7 +1320,20 @@ void PDFPrecompiledPage::redact(QPainterPath redactPath, const QTransform& matri
             case InstructionType::DrawImage:
             {
                 ImageData& data = m_images[instruction.dataIndex];
+
+                if (data.deferredImage)
+                {
+                    // Redacted image is held at its full resolution
+                    data.image = data.getFullResolutionImage();
+                    data.deferredImage.reset();
+                }
+
                 QImage& image = data.image;
+
+                if (image.isNull())
+                {
+                    break;
+                }
 
                 QTransform imageTransform(1.0 / image.width(), 0, 0, 1.0 / image.height(), 0, 0);
                 QTransform worldTransform = imageTransform * QTransform(worldMatrixStack.top());
@@ -1334,6 +1416,80 @@ void PDFPrecompiledPage::addImage(QImage image)
     m_images.emplace_back(qMove(image), imageType);
 }
 
+void PDFPrecompiledPage::addDeferredImage(PDFDeferredImagePointer image)
+{
+    ImageData data;
+    data.deferredImage = qMove(image);
+
+    m_instructions.emplace_back(InstructionType::DrawImage, m_images.size());
+    m_images.emplace_back(qMove(data));
+}
+
+void PDFPrecompiledPage::prepareDeferredImages(QList<PDFRenderError>& errors, const PDFOperationControl* operationControl)
+{
+    std::vector<size_t> indices;
+    for (size_t i = 0; i < m_images.size(); ++i)
+    {
+        if (m_images[i].deferredImage && m_images[i].image.isNull())
+        {
+            indices.push_back(i);
+        }
+    }
+
+    if (indices.empty())
+    {
+        return;
+    }
+
+    QMutex errorsMutex;
+    auto preparePreview = [&](size_t index)
+    {
+        if (PDFOperationControl::isOperationCancelled(operationControl))
+        {
+            return;
+        }
+
+        ImageData& data = m_images[index];
+
+        try
+        {
+            PDFRenderErrorReporterDummy dummyReporter;
+            data.image = data.deferredImage->decode(data.deferredImage->getPreviewScaleDenominator(), &dummyReporter, false);
+            data.imageType = PDFImageScaling::getImageType(data.image);
+        }
+        catch (const PDFException& exception)
+        {
+            data.image = QImage();
+            data.deferredImage.reset();
+
+            QMutexLocker lock(&errorsMutex);
+            errors.push_back(PDFRenderError(RenderErrorType::Error, exception.getMessage()));
+        }
+    };
+
+    // Images are decoded in parallel - the decoding of a single image is sequential
+    PDFExecutionPolicy::execute(PDFExecutionPolicy::Scope::Content, indices.cbegin(), indices.cend(), preparePreview);
+
+    for (size_t index : indices)
+    {
+        if (m_images[index].image.isNull())
+        {
+            // Cancelled or failed image is not drawn
+            m_images[index].deferredImage.reset();
+        }
+    }
+}
+
+QImage PDFPrecompiledPage::ImageData::getFullResolutionImage() const
+{
+    if (deferredImage)
+    {
+        return deferredImage->getImage(1);
+    }
+
+    return image;
+}
+
 void PDFPrecompiledPage::addMesh(PDFMesh mesh, PDFReal alpha)
 {
     m_instructions.emplace_back(InstructionType::DrawMesh, m_meshes.size());
@@ -1411,6 +1567,12 @@ void PDFPrecompiledPage::convertColors(const PDFColorConvertor& colorConvertor)
 
     for (ImageData& imageData : m_images)
     {
+        if (imageData.deferredImage)
+        {
+            // Images decoded later are converted too
+            imageData.deferredImage->setColorConvertor(colorConvertor);
+        }
+
         imageData.image = colorConvertor.convert(imageData.image);
 
         // Jakub Melka: the conversion can both destroy the bitonal representation of the
@@ -1460,6 +1622,11 @@ void PDFPrecompiledPage::finalize(qint64 compilingTimeNS, QList<PDFRenderError> 
     for (const ImageData& data : m_images)
     {
         m_memoryConsumptionEstimate += data.image.sizeInBytes();
+
+        if (data.deferredImage)
+        {
+            m_memoryConsumptionEstimate += data.deferredImage->getMemoryConsumptionEstimate();
+        }
     }
     for (const MeshPaintData& data : m_meshes)
     {
@@ -1543,7 +1710,7 @@ PDFPrecompiledPage::GraphicPieceInfos PDFPrecompiledPage::calculateGraphicPieceI
             case InstructionType::DrawImage:
             {
                 const ImageData& data = m_images[instruction.dataIndex];
-                const QImage& image = data.image;
+                const QImage image = data.getFullResolutionImage();
 
                 GraphicPieceInfo info;
                 QByteArray serializedPath;

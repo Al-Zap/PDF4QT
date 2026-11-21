@@ -58,7 +58,17 @@ void PDFSnapInfo::addPageMediaBox(const QRectF& mediaBox)
     addLine(tl, bl);
 }
 
-void PDFSnapInfo::addImage(const std::array<QPointF, 5>& points, const QImage& image)
+QImage PDFSnapInfo::SnapImage::getImage() const
+{
+    if (deferredImage)
+    {
+        return deferredImage->getImage(1);
+    }
+
+    return image;
+}
+
+void PDFSnapInfo::addImage(const std::array<QPointF, 5>& points, const QImage& image, std::shared_ptr<const PDFDeferredImage> deferredImage)
 {
     m_snapPoints.insert(m_snapPoints.cend(), {
                             SnapPoint(SnapType::ImageCorner, points[0]),
@@ -80,6 +90,7 @@ void PDFSnapInfo::addImage(const std::array<QPointF, 5>& points, const QImage& i
     snapImage.imagePath.lineTo(points[3]);
     snapImage.imagePath.lineTo(points[0]);
     snapImage.image = image;
+    snapImage.deferredImage = qMove(deferredImage);
     m_snapImages.emplace_back(qMove(snapImage));
 }
 
@@ -279,6 +290,7 @@ void PDFSnapper::buildSnapImages(const PDFWidgetSnapshot& snapshot)
         {
             ViewportSnapImage viewportSnapImage;
             viewportSnapImage.image = snapImage.image;
+            viewportSnapImage.deferredImage = snapImage.deferredImage;
             viewportSnapImage.imagePath = snapImage.imagePath;
             viewportSnapImage.pageIndex = item.pageIndex;
             viewportSnapImage.viewportPath = item.pageToDeviceMatrix.map(snapImage.imagePath);

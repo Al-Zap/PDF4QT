@@ -163,6 +163,8 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfimageoptimizer.h
     sources/pdfimage.cpp
     sources/pdfimage.h
+    sources/pdfdeferredimage.cpp
+    sources/pdfdeferredimage.h
     sources/pdfdocumentsanitizer.h
     sources/pdfdocumentsanitizer.cpp
     sources/pdfimageconversion.h
