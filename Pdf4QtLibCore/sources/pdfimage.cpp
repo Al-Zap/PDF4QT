@@ -848,6 +848,15 @@ std::optional<PDFImage::DCTImage> PDFImage::decodeDCT(const QByteArray& content,
         {
             colorTransform = codec.Adobe_transform;
         }
+        else if (codec.saw_JFIF_marker)
+        {
+            // JFIF data are always gray or YCbCr, and the decoder has detected it from
+            // the marker. Some producers (Skia, i.e. pdfs printed from Chrome) write
+            // ColorTransform 0 into the dictionary of YCbCr JFIF images - as the other
+            // viewers do, the dictionary entry is ignored, otherwise the luma and chroma
+            // would be displayed as red, green and blue (reddish image).
+            colorTransform = -1;
+        }
 
         // Set the input transform
         if (colorTransform > -1)

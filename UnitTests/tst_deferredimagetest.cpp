@@ -34,6 +34,7 @@
 #include "pdfexecutionpolicy.h"
 
 #include <QtTest>
+#include <QBuffer>
 #include <QPainter>
 #include <QPaintEngine>
 #include <QRandomGenerator>
@@ -109,6 +110,7 @@ private slots:
     void test_precompiled_page_zoom();
     void test_precompiled_page_vector_device();
     void test_heavy_image_sheet();
+    void test_jfif_ignores_color_transform();
 
 private:
     struct ImageOptions
@@ -921,6 +923,51 @@ void DeferredImageTest::test_heavy_image_sheet()
     int maximum = 0;
     const double mean = meanDifference(expected, actual, &maximum);
     QVERIFY2(mean < 3.0, qPrintable(QString("Mean difference %1, maximum %2").arg(mean).arg(maximum)));
+}
+
+void DeferredImageTest::test_jfif_ignores_color_transform()
+{
+    // Skia (pdfs printed from Chrome) writes /ColorTransform 0 for YCbCr JFIF images.
+    // The JFIF marker decides: the image must not be displayed as raw YCbCr (reddish).
+    QImage source(64, 48, QImage::Format_RGB888);
+    source.fill(QColor(250, 250, 250));
+    for (int y = 16; y < 32; ++y)
+    {
+        for (int x = 16; x < 48; ++x)
+        {
+            source.setPixelColor(x, y, QColor(20, 60, 200));
+        }
+    }
+
+    QByteArray jpegData;
+    {
+        QBuffer buffer(&jpegData);
+        QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(source.save(&buffer, "JPG", 95));
+    }
+    QVERIFY(jpegData.contains("JFIF"));
+
+    pdf::PDFRenderErrorReporterDummy reporter;
+    for (int colorTransform : { -1, 0, 1 })
+    {
+        std::optional<pdf::PDFImage::DCTImage> image = pdf::PDFImage::decodeDCT(jpegData, colorTransform, 1, false, &reporter);
+        QVERIFY(image);
+        QCOMPARE(image->width, 64u);
+        QCOMPARE(image->height, 48u);
+        QCOMPARE(image->components, 3u);
+
+        auto getPixel = [&image](int x, int y)
+        {
+            const uchar* pixel = reinterpret_cast<const uchar*>(image->data.constData()) + (y * 64 + x) * 3;
+            return QColor(pixel[0], pixel[1], pixel[2]);
+        };
+
+        const QColor background = getPixel(4, 4);
+        const QColor rectangle = getPixel(32, 24);
+        const QString message = QString("ColorTransform %1: background %2, rectangle %3").arg(colorTransform).arg(background.name(), rectangle.name());
+        QVERIFY2(qAbs(background.red() - 250) < 8 && qAbs(background.green() - 250) < 8 && qAbs(background.blue() - 250) < 8, qPrintable(message));
+        QVERIFY2(qAbs(rectangle.red() - 20) < 12 && qAbs(rectangle.green() - 60) < 12 && qAbs(rectangle.blue() - 200) < 12, qPrintable(message));
+    }
 }
 
 QTEST_MAIN(DeferredImageTest)
