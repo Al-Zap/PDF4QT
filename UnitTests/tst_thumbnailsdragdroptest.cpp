@@ -25,6 +25,7 @@
 #include "pdfitemmodels.h"
 #include "pdfcms.h"
 
+#include "pdfpageorganizerui.h"
 #include "pdfthumbnailslistview.h"
 
 #include <QtTest>
@@ -37,7 +38,7 @@
 using namespace pdf;
 
 /// Drag and drop of the page thumbnails (the strip of the pages in the sidebar): every drop is passed
-/// to the model, which requests the move of the pages. QListView handles a drop of its own items by
+/// to the model, which requests the move of the pages, the page organizing creates the new document. QListView handles a drop of its own items by
 /// itself and never passed a drop next to one of the dragged pages to the model. The offscreen platform
 /// can't run a real drag (QDrag::exec does nothing there), so the drag events are sent to the viewport.
 class ThumbnailsDragDropTest : public QObject
@@ -69,8 +70,8 @@ private:
     };
 };
 
-/// The thumbnails of a document of 6 pages are shown in a narrow view - one thumbnail in a line,
-/// configured like the thumbnails of the sidebar and of the page organizing.
+/// The thumbnails of a document of 6 pages (page i has the width 100 + 10 i) are shown in a narrow view - one
+/// thumbnail in a line, configured like the thumbnails of the sidebar, the page organizing moves the pages.
 struct ThumbnailsFixture
 {
     PDFDocument document;
@@ -78,16 +79,17 @@ struct ThumbnailsFixture
     PDFWidget widget{ &cms, RendererEngine::QPainter, nullptr };
     PDFThumbnailsItemModel model{ widget.getDrawWidgetProxy(), nullptr };
     std::unique_ptr<pdfviewer::PDFThumbnailsListView> view;
+    std::unique_ptr<pdfviewer::PDFPageOrganizerUI> organizer;
 
-    /// Requests of the model to move the pages: pages and the insert position
-    std::vector<std::pair<std::vector<PDFInteger>, PDFInteger>> moveRequests;
+    /// Documents created by the page organizing, as the original page indices in their order
+    std::vector<std::vector<int>> results;
 
     explicit ThumbnailsFixture()
     {
         PDFDocumentBuilder builder;
         for (int i = 0; i < 6; ++i)
         {
-            builder.appendPage(QRectF(0, 0, 200, 200));
+            builder.appendPage(QRectF(0, 0, 100 + 10 * i, 200));
         }
         document = builder.build();
 
@@ -96,32 +98,35 @@ struct ThumbnailsFixture
         model.setThumbnailsSize(60);
         model.setExtraItemSizeHint(4, 20);
         model.setDocument(PDFModifiedDocument(&document, nullptr));
-        model.setPageOrganizingEnabled(true);
 
-        view.reset(new pdfviewer::PDFThumbnailsListView(nullptr));
         // The same order as in the form of the sidebar (the movement changes the drops of the viewport)
+        view.reset(new pdfviewer::PDFThumbnailsListView(nullptr));
         view->setMovement(QListView::Static);
         view->setResizeMode(QListView::Adjust);
         view->setViewMode(QListView::IconMode);
         view->setSpacing(10);
-        view->setSelectionMode(QAbstractItemView::ExtendedSelection);
-        view->setDragEnabled(true);
-        view->setAcceptDrops(true);
-        view->setDropIndicatorShown(true);
-        view->setDragDropMode(QAbstractItemView::DragDrop);
-        view->setDefaultDropAction(Qt::MoveAction);
         view->setModel(&model);
-        view->resize(120, 900);
+
+        organizer.reset(new pdfviewer::PDFPageOrganizerUI(widget.getDrawWidgetProxy(), view.get(), &model, nullptr));
+        organizer->setDocument(PDFModifiedDocument(&document, nullptr));
+
+        view->resize(90, 900);
         view->show();
 
-        QObject::connect(&model, &PDFThumbnailsItemModel::pagesMoveRequested, &model, [this](std::vector<PDFInteger> pages, PDFInteger insertPosition)
+        QObject::connect(organizer.get(), &pdfviewer::PDFPageOrganizerUI::documentModified, organizer.get(), [this](PDFModifiedDocument modified)
         {
-            moveRequests.emplace_back(std::move(pages), insertPosition);
+            std::vector<int> pages;
+            for (size_t i = 0; i < modified.getDocument()->getCatalog()->getPageCount(); ++i)
+            {
+                pages.push_back((qRound(modified.getDocument()->getCatalog()->getPage(i)->getMediaBox().width()) - 100) / 10);
+            }
+            results.push_back(std::move(pages));
         });
     }
 
     ~ThumbnailsFixture()
     {
+        organizer.reset();
         view.reset();
         model.setDocument(PDFModifiedDocument());
         widget.setDocument(PDFModifiedDocument(), {});
@@ -241,12 +246,24 @@ void ThumbnailsDragDropTest::dragPages()
     }
 
     QVERIFY(fixture.drag(draggedPages, dropPoint));
-    QCOMPARE(fixture.moveRequests.size(), size_t(1));
-    QVERIFY(fixture.moveRequests.front().first == draggedPages);
-    QCOMPARE(fixture.moveRequests.front().second, PDFInteger(insertPosition));
 
     // The thumbnails are not removed by the view, the move is done by changing the document
     QCOMPARE(fixture.model.rowCount(QModelIndex()), 6);
+
+    // Expected order: the dragged pages are inserted before the page at the insert position
+    std::vector<int> expected;
+    for (int i = 0; i < 6; ++i)
+    {
+        if (!pages.contains(i))
+        {
+            expected.push_back(i);
+        }
+    }
+    const qsizetype movedBefore = std::count_if(pages.cbegin(), pages.cend(), [insertPosition](int page) { return page < insertPosition; });
+    expected.insert(expected.begin() + (insertPosition - movedBefore), pages.cbegin(), pages.cend());
+
+    QTRY_COMPARE(fixture.results.size(), size_t(1));
+    QVERIFY(fixture.results.front() == expected);
 }
 
 QTEST_MAIN(ThumbnailsDragDropTest)
