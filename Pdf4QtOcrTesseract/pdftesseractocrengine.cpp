@@ -42,6 +42,16 @@
 #include <limits>
 #include <optional>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace pdf
 {
 
@@ -88,8 +98,10 @@ public:
                              const std::vector<std::string>& variableNames,
                              const std::vector<std::string>& variableValues);
 
-    /// Encodes the name of a file, which is opened by the engine itself (user words and
-    /// patterns). Returns no value, if the name cannot be represented.
+    /// Encodes the name of an existing file, which is opened by the engine itself (user words
+    /// and patterns). Tesseract opens it by fopen, i.e. in the ANSI code page on Windows. A name,
+    /// which the code page cannot represent (a user profile 'Jiří' on an English Windows), is
+    /// replaced by its short (8.3) name. Returns no value, if the name cannot be represented.
     static std::optional<QByteArray> encodeFileNameForEngine(const QString& fileName);
 
     static QString takeText(char* text);
@@ -230,11 +242,33 @@ std::optional<QByteArray> PDFTesseractOCREngineHelper::encodeFileNameForEngine(c
 
 #ifdef Q_OS_WIN
     const QByteArray encoded = nativeFileName.toLocal8Bit();
-    if (QString::fromLocal8Bit(encoded) != nativeFileName)
+    if (QString::fromLocal8Bit(encoded) == nativeFileName)
+    {
+        return encoded;
+    }
+
+    const std::wstring wideFileName = nativeFileName.toStdWString();
+    const DWORD length = GetShortPathNameW(wideFileName.c_str(), nullptr, 0);
+    if (length == 0)
     {
         return std::nullopt;
     }
-    return encoded;
+    std::wstring shortFileName(length, L'\0');
+    const DWORD writtenLength = GetShortPathNameW(wideFileName.c_str(), shortFileName.data(), length);
+    if (writtenLength == 0 || writtenLength >= length)
+    {
+        return std::nullopt;
+    }
+    shortFileName.resize(writtenLength);
+
+    // Short names may be switched off on the volume, then the long name is returned
+    const QString shortName = QString::fromStdWString(shortFileName);
+    const QByteArray encodedShortName = shortName.toLocal8Bit();
+    if (QString::fromLocal8Bit(encodedShortName) != shortName)
+    {
+        return std::nullopt;
+    }
+    return encodedShortName;
 #else
     return nativeFileName.toUtf8();
 #endif
