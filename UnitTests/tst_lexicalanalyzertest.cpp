@@ -716,7 +716,7 @@ void LexicalAnalyzerTest::test_flate_filter_sizes()
     }
 
     // Garbage is an error
-    QVERIFY_EXCEPTION_THROWN(filter.apply(QByteArray("This is not a flate stream."), objectFetcher, pdf::PDFObject(), nullptr), pdf::PDFException);
+    QVERIFY_THROWS_EXCEPTION(pdf::PDFException, filter.apply(QByteArray("This is not a flate stream."), objectFetcher, pdf::PDFObject(), nullptr));
 }
 
 void LexicalAnalyzerTest::test_token_values()
