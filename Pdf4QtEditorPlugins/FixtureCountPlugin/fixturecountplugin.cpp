@@ -33,6 +33,7 @@
 #include "pdfpainter.h"
 #include "pdfrenderer.h"
 #include "pdfsecurityhandler.h"
+#include "pdfutils.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -345,7 +346,9 @@ void FixtureCountPlugin::onExportTriggered()
     std::copy_if(m_types.cbegin(), m_types.cend(), std::back_inserter(countedTypes), [this](const FixtureType& type) { return m_data.getCount(type.name) > 0; });
 
     const std::vector<QStringList> table = FixtureCountReport::createTable(countedTypes, m_data, m_sheetNames);
-    const QString csv = FixtureCountReport::createCsv(table);
+    // Excel in the locales with the decimal comma expects a semicolon,
+    // with a comma all values would be in the first column
+    const QString csv = FixtureCountReport::createCsv(table, pdf::PDFSysUtils::getSystemListSeparator());
 
     QFile file(fileName);
     if (!file.open(QFile::WriteOnly | QFile::Truncate))

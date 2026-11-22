@@ -29,6 +29,7 @@
 #include "pdfdocumentwriter.h"
 #include "pdfoutline.h"
 #include "pdfpainter.h"
+#include "pdfutils.h"
 
 #include <QtTest>
 #include <QBuffer>
@@ -60,6 +61,7 @@ private slots:
     void changeMarkerTypeInPlace();
     void sheetNamesFromPageLabels();
     void csvFormulaInjection();
+    void csvSeparatorOfLocale();
     void findSimilarSymbols();
     void findSimilarSymbolsWithoutRotations();
     void findSimilarSymbolsEmptySample();
@@ -700,6 +702,37 @@ void FixtureCountTest::csvFormulaInjection()
     QCOMPARE(FixtureCountReport::escapeCsvField("@SUM(A1)"), QString("'@SUM(A1)"));
     QCOMPARE(FixtureCountReport::escapeCsvField("E-101"), QString("E-101"));
     QCOMPARE(FixtureCountReport::escapeCsvField("12"), QString("12"));
+}
+
+void FixtureCountTest::csvSeparatorOfLocale()
+{
+    // Spreadsheets in the locales with the decimal comma expect a semicolon
+    QCOMPARE(PDFSysUtils::getListSeparator(QLocale(QLocale::English, QLocale::UnitedStates)), QChar(','));
+    QCOMPARE(PDFSysUtils::getListSeparator(QLocale(QLocale::English, QLocale::UnitedKingdom)), QChar(','));
+    QCOMPARE(PDFSysUtils::getListSeparator(QLocale(QLocale::German, QLocale::Germany)), QChar(';'));
+    QCOMPARE(PDFSysUtils::getListSeparator(QLocale(QLocale::French, QLocale::France)), QChar(';'));
+    QCOMPARE(PDFSysUtils::getListSeparator(QLocale(QLocale::Czech, QLocale::CzechRepublic)), QChar(';'));
+    QCOMPARE(PDFSysUtils::getListSeparator(QLocale(QLocale::Spanish, QLocale::Spain)), QChar(';'));
+    QCOMPARE(PDFSysUtils::getListSeparator(QLocale::c()), QChar(','));
+
+    const QChar systemSeparator = PDFSysUtils::getSystemListSeparator();
+    QVERIFY(!systemSeparator.isLetterOrNumber() && !systemSeparator.isSpace() && systemSeparator != QChar('"'));
+
+    // Fields with any of the separators are quoted, so the file is read
+    // correctly whichever separator the spreadsheet expects
+    QCOMPARE(FixtureCountReport::escapeCsvField("a;b"), QString("\"a;b\""));
+    QCOMPARE(FixtureCountReport::escapeCsvField("a\tb"), QString("\"a\tb\""));
+
+    const std::vector<QStringList> table = { { "Type", "Description", "E-101", "Total" },
+                                             { "B2", "Downlight, 6\"", "3", "3" },
+                                             { "C3", "Wall pack; LED", "1", "1" },
+                                             { "Total", "", "4", "4" } };
+    const QStringList lines = FixtureCountReport::createCsv(table, QChar(';')).split("\r\n", Qt::SkipEmptyParts);
+    QCOMPARE(lines.size(), 4);
+    QCOMPARE(lines[0], QString("Type;Description;E-101;Total"));
+    QCOMPARE(lines[1], QString("B2;\"Downlight, 6\"\"\";3;3"));
+    QCOMPARE(lines[2], QString("C3;\"Wall pack; LED\";1;1"));
+    QCOMPARE(lines[3], QString("Total;;4;4"));
 }
 
 void FixtureCountTest::findSimilarSymbols()
