@@ -69,8 +69,6 @@ private:
     };
 };
 
-Q_DECLARE_METATYPE(std::vector<PDFInteger>)
-
 /// The thumbnails of a document of 6 pages are shown in a narrow view - one thumbnail in a line,
 /// configured like the thumbnails of the sidebar and of the page organizing.
 struct ThumbnailsFixture
@@ -183,32 +181,33 @@ struct ThumbnailsFixture
 
 void ThumbnailsDragDropTest::dragPages_data()
 {
-    QTest::addColumn<std::vector<PDFInteger>>("pages");
+    QTest::addColumn<QList<int>>("pages");
     QTest::addColumn<int>("target");
     QTest::addColumn<int>("place");
-    QTest::addColumn<PDFInteger>("insertPosition");
+    QTest::addColumn<int>("insertPosition");
 
     // Pages dropped next to the first dragged page (the other pages join it)
-    QTest::newRow("next to the first dragged page") << std::vector<PDFInteger>{ 0, 2 } << 0 << int(DropPlace::BottomEdge) << PDFInteger(1);
-    QTest::newRow("before the first dragged page") << std::vector<PDFInteger>{ 1, 4 } << 1 << int(DropPlace::TopEdge) << PDFInteger(1);
-    QTest::newRow("after the last dragged page") << std::vector<PDFInteger>{ 1, 4 } << 4 << int(DropPlace::BottomEdge) << PDFInteger(5);
-    QTest::newRow("onto the first dragged page") << std::vector<PDFInteger>{ 0, 2 } << 0 << int(DropPlace::Center) << PDFInteger(0);
-    QTest::newRow("onto a dragged page in the middle") << std::vector<PDFInteger>{ 1, 3, 5 } << 3 << int(DropPlace::Center) << PDFInteger(3);
-    QTest::newRow("gap next to the dragged page") << std::vector<PDFInteger>{ 2, 4 } << 3 << int(DropPlace::GapAbove) << PDFInteger(3);
+    QTest::newRow("next to the first dragged page") << QList<int>{ 0, 2 } << 0 << int(DropPlace::BottomEdge) << 1;
+    QTest::newRow("before the first dragged page") << QList<int>{ 1, 4 } << 1 << int(DropPlace::TopEdge) << 1;
+    QTest::newRow("after the last dragged page") << QList<int>{ 1, 4 } << 4 << int(DropPlace::BottomEdge) << 5;
+    QTest::newRow("onto the first dragged page") << QList<int>{ 0, 2 } << 0 << int(DropPlace::Center) << 0;
+    QTest::newRow("onto a dragged page in the middle") << QList<int>{ 1, 3, 5 } << 3 << int(DropPlace::Center) << 3;
+    QTest::newRow("gap next to the dragged page") << QList<int>{ 2, 4 } << 3 << int(DropPlace::GapAbove) << 3;
 
     // Ordinary drops
-    QTest::newRow("onto a page below") << std::vector<PDFInteger>{ 0 } << 3 << int(DropPlace::Center) << PDFInteger(4);
-    QTest::newRow("onto a page above") << std::vector<PDFInteger>{ 4 } << 1 << int(DropPlace::Center) << PDFInteger(1);
-    QTest::newRow("gap between pages") << std::vector<PDFInteger>{ 5 } << 2 << int(DropPlace::GapAbove) << PDFInteger(2);
-    QTest::newRow("below all pages") << std::vector<PDFInteger>{ 1 } << 5 << int(DropPlace::BelowAll) << PDFInteger(6);
+    QTest::newRow("onto a page below") << QList<int>{ 0 } << 3 << int(DropPlace::Center) << 4;
+    QTest::newRow("onto a page above") << QList<int>{ 4 } << 1 << int(DropPlace::Center) << 1;
+    QTest::newRow("gap between pages") << QList<int>{ 5 } << 2 << int(DropPlace::GapAbove) << 2;
+    QTest::newRow("below all pages") << QList<int>{ 1 } << 5 << int(DropPlace::BelowAll) << 6;
 }
 
 void ThumbnailsDragDropTest::dragPages()
 {
-    QFETCH(std::vector<PDFInteger>, pages);
+    QFETCH(QList<int>, pages);
+    const std::vector<PDFInteger> draggedPages(pages.cbegin(), pages.cend());
     QFETCH(int, target);
     QFETCH(int, place);
-    QFETCH(PDFInteger, insertPosition);
+    QFETCH(int, insertPosition);
 
     ThumbnailsFixture fixture;
     QVERIFY(QTest::qWaitForWindowExposed(fixture.view.get()));
@@ -241,10 +240,10 @@ void ThumbnailsDragDropTest::dragPages()
             break;
     }
 
-    QVERIFY(fixture.drag(pages, dropPoint));
+    QVERIFY(fixture.drag(draggedPages, dropPoint));
     QCOMPARE(fixture.moveRequests.size(), size_t(1));
-    QCOMPARE(fixture.moveRequests.front().first, pages);
-    QCOMPARE(fixture.moveRequests.front().second, insertPosition);
+    QVERIFY(fixture.moveRequests.front().first == draggedPages);
+    QCOMPARE(fixture.moveRequests.front().second, PDFInteger(insertPosition));
 
     // The thumbnails are not removed by the view, the move is done by changing the document
     QCOMPARE(fixture.model.rowCount(QModelIndex()), 6);
