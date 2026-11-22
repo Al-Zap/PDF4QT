@@ -619,7 +619,7 @@ QString FixtureCountReport::escapeCsvField(const QString& fieldText)
         text.prepend(QChar('\''));
     }
 
-    if (text.contains(QChar(',')) || text.contains(QChar('"')) || text.contains(QChar('\n')) || text.contains(QChar('\r')) ||
+    if (text.contains(QChar(',')) || text.contains(QChar(';')) || text.contains(QChar('\t')) || text.contains(QChar('"')) || text.contains(QChar('\n')) || text.contains(QChar('\r')) ||
         text.startsWith(QChar(' ')) || text.endsWith(QChar(' ')))
     {
         QString escapedText = text;
@@ -630,7 +630,7 @@ QString FixtureCountReport::escapeCsvField(const QString& fieldText)
     return text;
 }
 
-QString FixtureCountReport::createCsv(const std::vector<QStringList>& table)
+QString FixtureCountReport::createCsv(const std::vector<QStringList>& table, QChar separator)
 {
     QString csv;
     for (const QStringList& row : table)
@@ -640,7 +640,7 @@ QString FixtureCountReport::createCsv(const std::vector<QStringList>& table)
         {
             fields << escapeCsvField(field);
         }
-        csv += fields.join(QChar(','));
+        csv += fields.join(separator);
         csv += QStringLiteral("\r\n");
     }
     return csv;

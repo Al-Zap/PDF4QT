@@ -31,6 +31,7 @@
 #include <QString>
 #include <QByteArray>
 #include <QDataStream>
+#include <QLocale>
 
 #include <set>
 #include <vector>
@@ -678,6 +679,18 @@ class PDF4QTLIBCORESHARED_EXPORT PDFSysUtils
 public:
 
     static QString getUserName();
+
+    /// Returns the separator of the fields of a CSV file for the locale, so
+    /// that a spreadsheet using the same locale opens the file in columns.
+    /// Locales with the decimal comma use a semicolon, others a comma.
+    /// \param locale Locale
+    static QChar getListSeparator(const QLocale& locale);
+
+    /// Returns the separator of the fields of a CSV file, which is used by
+    /// the spreadsheets of this system. On Windows, it is the list separator
+    /// of the regional settings of the user (Excel uses it), on other systems
+    /// it is derived from the system locale (see \ref getListSeparator).
+    static QChar getSystemListSeparator();
 };
 
 /// Settings of the author name, which is used, when new user generated content
