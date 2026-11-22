@@ -151,14 +151,21 @@ struct ThumbnailsFixture
         std::unique_ptr<QMimeData> mimeData(model.mimeData(indexes));
         const Qt::DropActions actions = Qt::MoveAction | Qt::CopyAction;
 
-        QDragEnterEvent enterEvent(QPointF(rect(int(pages.front())).center()), actions, mimeData.get(), Qt::LeftButton, Qt::NoModifier);
+        // Qt 6.12 deprecates the constructors of the drag events taking QPoint, older versions don't have the others
+#if QT_VERSION >= QT_VERSION_CHECK(6, 12, 0)
+        using EventPoint = QPointF;
+#else
+        using EventPoint = QPoint;
+#endif
+
+        QDragEnterEvent enterEvent(EventPoint(rect(int(pages.front())).center()), actions, mimeData.get(), Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(viewport, &enterEvent);
         if (!enterEvent.isAccepted())
         {
             return false;
         }
 
-        QDragMoveEvent moveEvent(QPointF(dropPoint), actions, mimeData.get(), Qt::LeftButton, Qt::NoModifier);
+        QDragMoveEvent moveEvent(EventPoint(dropPoint), actions, mimeData.get(), Qt::LeftButton, Qt::NoModifier);
         QApplication::sendEvent(viewport, &moveEvent);
         if (!moveEvent.isAccepted())
         {
