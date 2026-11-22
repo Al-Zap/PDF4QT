@@ -398,7 +398,21 @@ jobs:
         working-directory: pdf4qt
         run: |
           export PATH="$(cygpath -u "$VCPKG_INSTALLED_DIR")/$VCPKG_TRIPLET/bin:$PATH"
-          ctest --test-dir build --output-on-failure --timeout 1500 --output-junit "$(cygpath -m "$GITHUB_WORKSPACE")/test-results.xml"
+          if ctest --test-dir build --output-on-failure --timeout 1500 --output-junit "$(cygpath -m "$GITHUB_WORKSPACE")/test-results.xml"; then
+            exit 0
+          fi
+          # The output of QtTest does not reach the log of ctest on Windows. The failed test executables are run
+          # again with the output into a file, which is printed.
+          export QT_QPA_PLATFORM=offscreen
+          export PDF4QT_OCR_DATA_DIRECTORY="$(cygpath -m "$PWD")/build/usr/bin/ocr"
+          tr -d '\r' < build/Testing/Temporary/LastTestsFailed.log | sed -n 's/^[0-9]*:\(UnitTests[A-Za-z0-9]*\)$/\1/p' | while read -r test; do
+            echo "::group::Output of $test"
+            "build/usr/bin/$test.exe" -o "$test-output.txt,txt" || true
+            cat "$test-output.txt" | grep -v '^PASS' || true
+            echo "::endgroup::"
+            grep -E '^(FAIL!|XPASS)' "$test-output.txt" | sed "s/^/::error::$test: /" || true
+          done
+          exit 1
 
       - name: Upload test results
         if: always()
@@ -408,5 +422,6 @@ jobs:
           path: |
             test-results.xml
             pdf4qt/build/Testing/Temporary/LastTest.log
+            pdf4qt/*-output.txt
           if-no-files-found: ignore
           retention-days: 30
