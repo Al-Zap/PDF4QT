@@ -595,6 +595,29 @@ QString PDFSysUtils::getUserName()
     return userName;
 }
 
+QChar PDFSysUtils::getListSeparator(const QLocale& locale)
+{
+    return locale.decimalPoint() == QStringLiteral(",") ? QChar(';') : QChar(',');
+}
+
+QChar PDFSysUtils::getSystemListSeparator()
+{
+#ifdef Q_OS_WIN
+    WCHAR buffer[8] = { };
+    if (GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_SLIST, buffer, static_cast<int>(std::size(buffer))) == 2)
+    {
+        // Only a single character, which can't be a part of a value, is used
+        const QChar separator = QChar(static_cast<char16_t>(buffer[0]));
+        if (!separator.isLetterOrNumber() && !separator.isSpace() && separator != QChar('"') && separator != QChar('\''))
+        {
+            return separator;
+        }
+    }
+#endif
+
+    return getListSeparator(QLocale::system());
+}
+
 struct PDFAuthorSettingsHolder
 {
     QMutex mutex;

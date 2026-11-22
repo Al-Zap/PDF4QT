@@ -61,7 +61,7 @@ namespace dimensionsplugin
 /// Escapes the field so it can be written to a csv file
 QString escapeCsvField(const QString& text)
 {
-    if (text.contains(QChar(',')) || text.contains(QChar(';')) || text.contains(QChar('"')) || text.contains(QChar('\n')) || text.contains(QChar('\r')))
+    if (text.contains(QChar(',')) || text.contains(QChar(';')) || text.contains(QChar('\t')) || text.contains(QChar('"')) || text.contains(QChar('\n')) || text.contains(QChar('\r')))
     {
         QString escapedText = text;
         escapedText.replace(QChar('"'), QString("\"\""));
@@ -1228,14 +1228,21 @@ void DimensionsPlugin::onExportTriggered()
     stream.setEncoding(QStringConverter::Utf8);
     stream.setGenerateByteOrderMark(true);
 
-    // Comma separated, with CRLF line endings and plain numbers, so the file
-    // opens in columns in a spreadsheet and the values can be summed
-    stream << escapeCsvField(tr("Page")) << ","
-           << escapeCsvField(tr("Type")) << ","
-           << escapeCsvField(tr("Value")) << ","
-           << escapeCsvField(tr("Unit")) << ","
-           << escapeCsvField(tr("Measurement")) << ","
-           << escapeCsvField(tr("Scale")) << "\r\n";
+    // Separator and decimal point of the spreadsheets of this system (Excel in
+    // the locales with the decimal comma expects a semicolon and the decimal
+    // comma), with CRLF line endings and plain numbers, so the file opens
+    // in columns in a spreadsheet and the values can be summed
+    const QChar separator = pdf::PDFSysUtils::getSystemListSeparator();
+    const QString decimalPoint = QLocale::system().decimalPoint();
+
+    QStringList header;
+    header << escapeCsvField(tr("Page"));
+    header << escapeCsvField(tr("Type"));
+    header << escapeCsvField(tr("Value"));
+    header << escapeCsvField(tr("Unit"));
+    header << escapeCsvField(tr("Measurement"));
+    header << escapeCsvField(tr("Scale"));
+    stream << header.join(separator) << "\r\n";
 
     const QLocale locale;
     for (const QStringList& row : rows)
@@ -1247,11 +1254,18 @@ void DimensionsPlugin::onExportTriggered()
         QStringList escapedRow;
         escapedRow << escapeCsvField(row[0]);
         escapedRow << escapeCsvField(row[1]);
-        escapedRow << (hasValue ? QString::number(value, 'g', 12) : QString());
+        QString valueText;
+        if (hasValue)
+        {
+            valueText = QString::number(value, 'g', 12);
+            valueText.replace(QChar('.'), decimalPoint);
+        }
+
+        escapedRow << escapeCsvField(valueText);
         escapedRow << escapeCsvField(unit);
         escapedRow << escapeCsvField(row[2]);
         escapedRow << escapeCsvField(row[3]);
-        stream << escapedRow.join(QChar(',')) << "\r\n";
+        stream << escapedRow.join(separator) << "\r\n";
     }
 
     file.close();
