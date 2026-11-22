@@ -762,6 +762,15 @@ void PDFDocumentManipulator::finalizeDocument(PDFDocument* document)
                                                                   PDFOptimizer::ShrinkObjectStorage |
                                                                   PDFOptimizer::DereferenceSimpleObjects |
                                                                   PDFOptimizer::MergeIdenticalObjects);
+
+    // The document edited in place keeps its object numbers, only the objects,
+    // which are no longer used (removed pages, old page tree), are removed.
+    const bool isEditedDocument = m_flags.testFlag(SingleDocument) || m_flags.testFlag(PrimaryDocument);
+    if (m_keepObjectNumbers && isEditedDocument)
+    {
+        optimizationFlags = PDFOptimizer::OptimizationFlags(PDFOptimizer::RemoveUnusedObjects);
+    }
+
     PDFOptimizer optimizer(optimizationFlags, nullptr);
     optimizer.setDocument(document);
     optimizer.optimize();

@@ -88,6 +88,17 @@ public:
     /// \param documentIndex Document index, or -1
     void setPrimaryDocument(int documentIndex) { m_primaryDocumentIndex = documentIndex; }
 
+    /// Sets, whether the assembled document keeps the object numbers of the document, which
+    /// the pages are assembled into (a single document, or the primary document). Only the
+    /// objects, which are no longer used, are removed - identical objects are not merged,
+    /// simple objects are not dereferenced and the object storage is not shrunk. It is meant
+    /// for documents edited in place (organizing of the pages): merging of the identical
+    /// objects serializes every object of the document, which is slow for large documents,
+    /// and renumbered objects are useless to the references, which the application keeps.
+    /// Pages assembled into a new document are always fully optimized.
+    /// \param keepObjectNumbers Keep the object numbers
+    void setKeepObjectNumbers(bool keepObjectNumbers) { m_keepObjectNumbers = keepObjectNumbers; }
+
     /// Adds image with given index to available image list
     /// \param imageIndex Image index
     /// \param image Image
@@ -181,6 +192,7 @@ private:
     OutlineMode m_outlineMode = OutlineMode::DocumentParts;
     std::map<PDFInteger, PDFObjectReference> m_outlines;
     PDFInteger m_primaryDocumentIndex = -1;
+    bool m_keepObjectNumbers = false;
 
     /// Pages of the source documents, which are not used in the assembled document
     /// (references in the assembled document)

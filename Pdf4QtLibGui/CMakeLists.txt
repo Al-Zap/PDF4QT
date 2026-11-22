@@ -51,6 +51,8 @@ add_library(Pdf4QtLibGui SHARED
     pdfsidebarwidget.h
     pdfpageorganizerui.cpp
     pdfpageorganizerui.h
+    pdfthumbnailslistview.cpp
+    pdfthumbnailslistview.h
     pdftexttospeech.cpp
     pdftexttospeech.h
     pdfundoredomanager.cpp
@@ -127,7 +129,7 @@ if(PDF4QT_ENABLE_OCR)
     target_compile_definitions(Pdf4QtLibGui PRIVATE PDF4QT_OCR_TESSERACT)
 endif()
 
-target_include_directories(Pdf4QtLibGui INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(Pdf4QtLibGui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(Pdf4QtLibGui PUBLIC ${CMAKE_BINARY_DIR}/${INSTALL_INCLUDEDIR})
 
 set_target_properties(Pdf4QtLibGui PROPERTIES
