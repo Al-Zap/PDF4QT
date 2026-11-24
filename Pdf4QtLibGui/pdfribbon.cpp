@@ -219,6 +219,16 @@ void PDFRibbonButton::setDropDownMenu(QMenu* menu)
         setProperty("ribbonMenu", QStringLiteral("popup"));
     }
 
+    // The arrow of the menu takes the space under the text, the text of a large button is wrapped only without it
+    if (m_action)
+    {
+        updateFromAction();
+    }
+    else if (m_hasFixedText)
+    {
+        setDisplayedText(getCleanText(m_text));
+    }
+
     updateGeometry();
 }
 
@@ -370,7 +380,8 @@ void PDFRibbonButton::setDisplayedText(const QString& text)
 {
     QString displayedText = text;
 
-    if (m_size == Size::Large)
+    // A large button with a menu has the arrow of the menu under the text, there is no space for the second line
+    if (m_size == Size::Large && !menu())
     {
         displayedText = getWrappedText(displayedText);
     }
