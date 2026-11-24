@@ -437,6 +437,16 @@ if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
     add_test(UnitTestsVisualCompare "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsVisualCompare")
     set_tests_properties(UnitTestsVisualCompare PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+    add_executable(UnitTestsBatchProcessingDialog tst_batchprocessingdialogtest.cpp)
+    target_link_libraries(UnitTestsBatchProcessingDialog PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
+    set_target_properties(UnitTestsBatchProcessingDialog PROPERTIES
+        WIN32_EXECUTABLE OFF
+        MACOSX_BUNDLE OFF
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+    )
+    add_test(UnitTestsBatchProcessingDialog "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsBatchProcessingDialog")
+    set_tests_properties(UnitTestsBatchProcessingDialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(UnitTestsFormFields tst_formfieldstest.cpp)
     target_link_libraries(UnitTestsFormFields PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
     set_target_properties(UnitTestsFormFields PROPERTIES
@@ -580,6 +590,16 @@ if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
     add_test(UnitTestsDiffOverlay "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsDiffOverlay")
     set_tests_properties(UnitTestsDiffOverlay PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
+
+add_executable(UnitTestsBatchProcessor tst_batchprocessortest.cpp)
+target_link_libraries(UnitTestsBatchProcessor PRIVATE Pdf4QtLibCore Qt6::Core Qt6::Gui Qt6::Test)
+set_target_properties(UnitTestsBatchProcessor PROPERTIES
+    WIN32_EXECUTABLE OFF
+    MACOSX_BUNDLE OFF
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+)
+add_test(UnitTestsBatchProcessor "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsBatchProcessor")
+set_tests_properties(UnitTestsBatchProcessor PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_executable(UnitTestsPageStamper tst_pagestampertest.cpp)
 target_link_libraries(UnitTestsPageStamper PRIVATE Pdf4QtLibCore Qt6::Core Qt6::Gui Qt6::Test)

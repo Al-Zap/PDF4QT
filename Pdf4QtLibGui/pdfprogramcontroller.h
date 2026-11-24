@@ -158,6 +158,7 @@ public:
         ManageOCRLanguages,
         PrepareScannedPages,
         BatchRecognizeText,
+        BatchProcessing,
         MakeSearchable,
         Encryption,
         FitPage,
@@ -439,6 +440,7 @@ private:
     void onActionRecognizeTextTriggered();
     void onActionPrepareScannedPagesTriggered();
     void onActionBatchRecognizeTextTriggered();
+    void onActionBatchProcessingTriggered();
     void onActionManageOCRLanguagesTriggered();
     void onActionMakeSearchableTriggered();
     void onActionEncryptionTriggered();

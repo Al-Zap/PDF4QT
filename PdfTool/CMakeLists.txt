@@ -52,6 +52,8 @@ add_executable(PdfTool
     pdftoolstamp.h
     pdftoolcompare.cpp
     pdftoolcompare.h
+    pdftoolbatch.cpp
+    pdftoolbatch.h
     pdftoolseparate.cpp 
     pdftoolstatistics.cpp 
     pdftoolunite.cpp 

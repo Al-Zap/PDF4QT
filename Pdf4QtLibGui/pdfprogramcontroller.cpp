@@ -47,6 +47,7 @@
 #include "pdfscanpreparationdialog.h"
 #include "pdfocrlanguagesdialog.h"
 #include "pdfocrbatchdialog.h"
+#include "pdfbatchprocessingdialog.h"
 #include "pdfocrmakesearchable.h"
 
 #ifdef PDF4QT_OCR_TESSERACT
@@ -645,6 +646,10 @@ void PDFProgramController::initialize(Features features,
     if (QAction* action = m_actionManager->getAction(PDFActionManager::BatchRecognizeText))
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::onActionBatchRecognizeTextTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::BatchProcessing))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionBatchProcessingTriggered);
     }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::MakeSearchable))
     {
@@ -2370,6 +2375,16 @@ void PDFProgramController::onActionBatchRecognizeTextTriggered()
     }
 }
 
+void PDFProgramController::onActionBatchProcessingTriggered()
+{
+    // The files are processed into new files, the current document is not changed
+    PDFBatchProcessingDialog dialog(m_mainWindow);
+    if (dialog.exec() == QDialog::Accepted && !dialog.getDocumentToOpen().isEmpty())
+    {
+        openDocument(dialog.getDocumentToOpen());
+    }
+}
+
 void PDFProgramController::onActionManageOCRLanguagesTriggered()
 {
     PDFOCRLanguagesDialog dialog(nullptr, m_mainWindow);
@@ -2782,6 +2797,7 @@ void PDFProgramController::updateActionsAvailability()
     m_actionManager->setEnabled(PDFActionManager::RecognizeText, hasValidDocument && m_pdfDocument->getCatalog()->getPageCount() > 0);
     m_actionManager->setEnabled(PDFActionManager::ManageOCRLanguages, !isBusy);
     m_actionManager->setEnabled(PDFActionManager::BatchRecognizeText, !isBusy);
+    m_actionManager->setEnabled(PDFActionManager::BatchProcessing, !isBusy);
     m_actionManager->setEnabled(PDFActionManager::MakeSearchable, hasValidDocument && m_pdfDocument->getCatalog()->getPageCount() > 0 && !(m_makeSearchable && m_makeSearchable->isRunning()));
 
     // Preparation of the scanned pages changes the pages (crop, split, deskew)

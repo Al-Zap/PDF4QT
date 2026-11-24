@@ -36,6 +36,7 @@
 #include "pdfocrdocumentrunner.h"
 #include "pdfpagestamper.h"
 #include "pdfvisualcompare.h"
+#include "pdfbatchprocessor.h"
 
 #include <QtGlobal>
 #include <QString>
@@ -148,6 +149,33 @@ struct PDFToolVisualCompareOptions
     /// Page ranges of the old and new document (empty = all pages)
     QString oldPages;
     QString newPages;
+
+    /// Description of the first invalid value of an option (empty = all options are valid)
+    QString invalidArgument;
+};
+
+/// Options of the command 'batch'
+struct PDFToolBatchOptions
+{
+    /// Files and folders to process
+    QStringList inputs;
+
+    /// JSON file of the sequence of the actions
+    QString sequenceFile;
+
+    QString outputDirectory;
+    bool nextToOriginal = false;
+    QString suffix;
+    bool suffixSet = false;
+    QString existing;
+    bool recursive = false;
+
+    /// Password of the protected originals
+    QString password;
+
+    /// Passwords of the action 'password' (never stored in the sequence)
+    QString userPassword;
+    QString ownerPassword;
 
     /// Description of the first invalid value of an option (empty = all options are valid)
     QString invalidArgument;
@@ -303,6 +331,9 @@ struct PDFToolOptions
     // For option 'VisualCompare'
     PDFToolVisualCompareOptions visualCompare;
 
+    // For option 'Batch'
+    PDFToolBatchOptions batch;
+
     // For option 'Encrypt'
     pdf::PDFSecurityHandlerFactory::Algorithm encryptionAlgorithm = pdf::PDFSecurityHandlerFactory::Algorithm::AES_256;
     pdf::PDFSecurityHandlerFactory::EncryptContents encryptionContents = pdf::PDFSecurityHandlerFactory::EncryptContents::All;
@@ -369,7 +400,7 @@ public:
         Description     ///< Description (what this application does)
     };
 
-    enum Option
+    enum Option : quint32
     {
         ConsoleFormat                   = 0x00000001,       ///< Set format of console output (text, xml or html)
         OpenDocument                    = 0x00000002,       ///< Flags for document reading
@@ -401,7 +432,8 @@ public:
         OCR                             = 0x08000000,       ///< Settings for OCR tool (text recognition)
         OCRModels                       = 0x10000000,       ///< Settings for OCR language models tool
         PageStamp                       = 0x20000000,       ///< Settings for headers, footers, Bates numbers and watermarks
-        VisualCompare                   = 0x40000000,       ///< Settings for the visual comparison of revisions
+        Batch                           = 0x40000000,       ///< Settings for batch processing
+        VisualCompare                   = 0x80000000,       ///< Settings for the visual comparison of revisions
     };
     Q_DECLARE_FLAGS(Options, Option)
 
