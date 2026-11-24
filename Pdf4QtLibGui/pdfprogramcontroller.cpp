@@ -41,6 +41,11 @@
 #include "pdfsanitizedocumentdialog.h"
 #include "pdfpagestampdialog.h"
 #include "pdfvisualcomparedialog.h"
+#include "pdfsheetlinksdialog.h"
+#include "pdfsheetlinks.h"
+#include "pdfcompiler.h"
+#include "pdfredact.h"
+#include "pdfocrpagepreparer.h"
 #include "pdfpagestamper.h"
 #include "pdfcreatebitonaldocumentdialog.h"
 #include "pdfocrdocumentdialog.h"
@@ -606,6 +611,14 @@ void PDFProgramController::initialize(Features features,
     if (QAction* action = m_actionManager->getAction(PDFActionManager::RemoveExternalLinks))
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::onActionRemoveExternalLinksTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::SheetLinks))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionSheetLinksTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::RemoveSheetLinks))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionRemoveSheetLinksTriggered);
     }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::HeaderFooter))
     {
@@ -2134,6 +2147,87 @@ void PDFProgramController::onActionRemoveExternalLinksTriggered()
     m_mainWindowInterface->setStatusBarMessage(tr("External link annotations removed: %1.").arg(annotationsToRemove.size()), 4000);
 }
 
+void PDFProgramController::onActionSheetLinksTriggered()
+{
+    if (!m_pdfDocument)
+    {
+        return;
+    }
+
+    commitPendingFormChanges();
+
+    // Text of all pages is needed to find the sheet numbers and the references. The text
+    // of the search is used, if it is ready, otherwise it is created now.
+    pdf::PDFDrawWidgetProxy* proxy = m_pdfWidget->getDrawWidgetProxy();
+    std::optional<pdf::PDFTextLayoutStorage> createdStorage;
+    const pdf::PDFTextLayoutStorage* storage = proxy->getTextLayoutCompiler()->getTextLayoutStorage();
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    if (!storage)
+    {
+        pdf::PDFCMSPointer cms = proxy->getCMSManager()->getCurrentCMS();
+        proxy->getFontCache()->setCacheShrinkEnabled(this, false);
+        createdStorage = pdf::PDFRedactSearch::createTextLayouts(m_pdfDocument.data(), proxy->getFontCache(), proxy->getIccProfileCache(), cms.data(), proxy->getOptionalContentActivity(), proxy->getMeshQualitySettings());
+        proxy->getFontCache()->setCacheShrinkEnabled(this, true);
+        storage = &createdStorage.value();
+    }
+    const pdf::PDFSheetLinks::Sheets sheets = pdf::PDFSheetLinks::findSheets(m_pdfDocument.data(), *storage);
+    QApplication::restoreOverrideCursor();
+
+    QStringList pageLabels;
+    for (size_t i = 0; i < sheets.size(); ++i)
+    {
+        pageLabels << pdf::PDFOCRPagePreparer::getPageLabel(m_pdfDocument.data(), pdf::PDFInteger(i));
+    }
+
+    const int existingLinks = pdf::PDFSheetLinks::getLinkCount(m_pdfDocument.data());
+    PDFSheetLinksDialog dialog(m_pdfDocument.data(), storage, sheets, pageLabels, existingLinks, m_mainWindow);
+    if (dialog.exec() != QDialog::Accepted || dialog.getLinks().empty())
+    {
+        return;
+    }
+
+    pdf::PDFDocumentModifier modifier(m_pdfDocument.data());
+    pdf::PDFDocumentBuilder* builder = modifier.getBuilder();
+    pdf::PDFSheetLinks::removeLinks(builder, m_pdfDocument.data());
+    const int count = pdf::PDFSheetLinks::createLinks(builder, m_pdfDocument.data(), dialog.getLinks());
+    modifier.markAnnotationsChanged();
+
+    if (modifier.finalize())
+    {
+        pdf::PDFModifiedDocument document(modifier.getDocument(), m_optionalContentActivity, modifier.getFlags());
+        onDocumentModified(qMove(document));
+    }
+
+    m_mainWindowInterface->setStatusBarMessage(tr("Sheet links created: %1.").arg(count), 4000);
+}
+
+void PDFProgramController::onActionRemoveSheetLinksTriggered()
+{
+    if (!m_pdfDocument)
+    {
+        return;
+    }
+
+    if (pdf::PDFSheetLinks::getLinkCount(m_pdfDocument.data()) == 0)
+    {
+        m_mainWindowInterface->setStatusBarMessage(tr("The document has no sheet links."), 4000);
+        return;
+    }
+
+    pdf::PDFDocumentModifier modifier(m_pdfDocument.data());
+    const int count = pdf::PDFSheetLinks::removeLinks(modifier.getBuilder(), m_pdfDocument.data());
+    modifier.markAnnotationsChanged();
+
+    if (modifier.finalize())
+    {
+        pdf::PDFModifiedDocument document(modifier.getDocument(), m_optionalContentActivity, modifier.getFlags());
+        onDocumentModified(qMove(document));
+    }
+
+    m_mainWindowInterface->setStatusBarMessage(tr("Sheet links removed: %1.").arg(count), 4000);
+}
+
 void PDFProgramController::onActionCompareDocumentsTriggered()
 {
     // Unsaved changes of the open document are compared as they are (the document
@@ -2786,6 +2880,8 @@ void PDFProgramController::updateActionsAvailability()
     m_actionManager->setEnabled(PDFActionManager::OptimizeImages, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Sanitize, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::RemoveExternalLinks, hasValidDocument);
+    m_actionManager->setEnabled(PDFActionManager::SheetLinks, hasValidDocument);
+    m_actionManager->setEnabled(PDFActionManager::RemoveSheetLinks, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::HeaderFooter, hasValidDocument && canModify);
     m_actionManager->setEnabled(PDFActionManager::BatesNumbering, hasValidDocument && canModify);
     m_actionManager->setEnabled(PDFActionManager::Watermark, hasValidDocument && canModify);

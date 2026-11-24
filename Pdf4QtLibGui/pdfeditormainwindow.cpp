@@ -434,6 +434,19 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_actionManager->setAction(PDFActionManager::OptimizeImages, ui->actionOptimizeImages);
     m_actionManager->setAction(PDFActionManager::Sanitize, ui->actionSanitize);
     m_actionManager->setAction(PDFActionManager::RemoveExternalLinks, ui->actionRemoveExternalLinks);
+
+    // Links of the sheet references of a plan set ("SEE SHEET E-102") to the sheets
+    m_sheetLinksAction = new QAction(PDFEditorMainWindowHelper::getThemedIcon(QStringLiteral("hyperlink")), tr("S&heet Links..."), this);
+    m_sheetLinksAction->setObjectName("actionSheetLinks");
+    m_sheetLinksAction->setToolTip(tr("Link the references to other sheets (sheet numbers like E-102) to those sheets"));
+    m_removeSheetLinksAction = new QAction(PDFEditorMainWindowHelper::getIcon(QStringLiteral("ribbon-link-remove")), tr("Remove Sheet Links"), this);
+    m_removeSheetLinksAction->setObjectName("actionRemoveSheetLinks");
+    m_removeSheetLinksAction->setToolTip(tr("Remove the sheet links created by Sheet Links, other links are kept"));
+    ui->menuInsert->addSeparator();
+    ui->menuInsert->addAction(m_sheetLinksAction);
+    ui->menuInsert->addAction(m_removeSheetLinksAction);
+    m_actionManager->setAction(PDFActionManager::SheetLinks, m_sheetLinksAction);
+    m_actionManager->setAction(PDFActionManager::RemoveSheetLinks, m_removeSheetLinksAction);
     m_actionManager->setAction(PDFActionManager::HeaderFooter, ui->actionHeaderFooter);
     m_actionManager->setAction(PDFActionManager::BatesNumbering, ui->actionBatesNumbering);
     m_actionManager->setAction(PDFActionManager::Watermark, ui->actionWatermark);
@@ -933,6 +946,8 @@ void PDFEditorMainWindow::createRibbon()
     group->addLargeAction(ui->actionInlineText, tr("Text Box"));
     group->addLargeAction(ui->actionCreateHyperlink, tr("Web Link"));
     group->addMenu(Size::Large, tr("Link to Page"), Helper::getThemedIcon(QStringLiteral("hyperlink")), ui->menuHyperlinkToThisPDF);
+    group->addLargeAction(m_sheetLinksAction, tr("Sheet Links"));
+    group->addSmallAction(m_removeSheetLinksAction, tr("Remove Sheet Links"));
     group->addLargeAction(ui->actionInsertPageNumbers, tr("Page Numbers"));
     group->addSmallAction(ui->actionHeaderFooter, tr("Header/Footer"));
     group->addSmallAction(ui->actionWatermark, tr("Watermark"));

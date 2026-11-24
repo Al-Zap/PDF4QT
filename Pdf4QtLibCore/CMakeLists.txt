@@ -121,6 +121,8 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfvisualcompare.h
     sources/pdfredact.cpp
     sources/pdfredact.h
+    sources/pdfsheetlinks.cpp
+    sources/pdfsheetlinks.h
     sources/pdfsecurityhandler.cpp
     sources/pdfsecurityhandler.h
     sources/pdfsignaturehandler.cpp
