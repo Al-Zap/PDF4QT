@@ -273,6 +273,32 @@ set_target_properties(UnitTestsFixtureCount PROPERTIES
 )
 add_test(UnitTestsFixtureCount  "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsFixtureCount")
 
+if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
+    add_executable(UnitTestsLightingTools
+        tst_lightingtoolstest.cpp
+        ../Pdf4QtEditorPlugins/FixtureCountPlugin/countlegend.cpp
+        ../Pdf4QtEditorPlugins/FixtureCountPlugin/fixturecount.cpp
+        ../Pdf4QtEditorPlugins/FixtureCountPlugin/fixtureschedule.cpp
+        ../Pdf4QtEditorPlugins/FixtureCountPlugin/footcandlestats.cpp
+        ../Pdf4QtEditorPlugins/FixtureCountPlugin/lightingdialogs.cpp
+        ../Pdf4QtEditorPlugins/FixtureCountPlugin/lightingshapetool.cpp
+        ../Pdf4QtEditorPlugins/FixtureCountPlugin/lightingtable.cpp
+        ../Pdf4QtEditorPlugins/FixtureCountPlugin/lightingtext.cpp
+        ../Pdf4QtEditorPlugins/FixtureCountPlugin/lightingtools.cpp
+        ../Pdf4QtEditorPlugins/FixtureCountPlugin/wiretakeoff.cpp
+    )
+    target_include_directories(UnitTestsLightingTools PRIVATE ${CMAKE_SOURCE_DIR}/Pdf4QtEditorPlugins/FixtureCountPlugin)
+    target_link_libraries(UnitTestsLightingTools PRIVATE Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
+    set_target_properties(UnitTestsLightingTools PROPERTIES
+        WIN32_EXECUTABLE OFF
+        MACOSX_BUNDLE OFF
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_LIB_DIR}
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+    )
+    add_test(UnitTestsLightingTools "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsLightingTools")
+    set_tests_properties(UnitTestsLightingTools PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
 add_executable(UnitTestsRedact
 	tst_redacttest.cpp
 )

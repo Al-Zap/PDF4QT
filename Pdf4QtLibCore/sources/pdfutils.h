@@ -693,6 +693,19 @@ public:
     static QChar getSystemListSeparator();
 };
 
+/// Utilities of the strings
+class PDF4QTLIBCORESHARED_EXPORT PDFStringUtils
+{
+public:
+    PDFStringUtils() = delete;
+
+    /// Compares the strings as a person does: case insensitive, numbers by their value
+    /// ("plan2.pdf" is in front of "plan10.pdf", circuit "2" in front of "10").
+    /// Unlike QCollator, the result does not depend on the platform (numeric mode of
+    /// QCollator is not supported without ICU).
+    static bool isNaturallyLess(const QString& left, const QString& right);
+};
+
 /// Settings of the author name, which is used, when new user generated content
 /// is created (for example annotations). For privacy reasons, name of the system
 /// user is never used, unless the user explicitly enables it in the application

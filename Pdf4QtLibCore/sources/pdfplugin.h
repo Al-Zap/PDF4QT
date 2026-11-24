@@ -108,7 +108,7 @@ public:
     virtual PluginMenuLocation getPluginMenuLocation() const;
 
     /// Returns the area of the user interface, where the plugin belongs ("view",
-    /// "measure", "count", "forms", "organize", "markup"). The ribbon of the editor
+    /// "measure", "lighting", "forms", "organize", "markup"). The ribbon of the editor
     /// places the actions of the known plugins into the groups of its tabs, other
     /// plugins get a group of their own on the Advanced tab. An empty string (the
     /// default) means the plugin is an advanced one. The classic layout ignores it.

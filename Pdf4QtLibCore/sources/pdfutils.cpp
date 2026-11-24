@@ -569,6 +569,69 @@ bool PDFClosedIntervalSet::overlapsOrAdjacent(ClosedInterval a, ClosedInterval b
     return b.first <= a.second + 1;
 }
 
+bool PDFStringUtils::isNaturallyLess(const QString& left, const QString& right)
+{
+    qsizetype i = 0;
+    qsizetype j = 0;
+    while (i < left.size() && j < right.size())
+    {
+        if (left[i].isDigit() && right[j].isDigit())
+        {
+            qsizetype iEnd = i;
+            qsizetype jEnd = j;
+            while (iEnd < left.size() && left[iEnd].isDigit())
+            {
+                ++iEnd;
+            }
+            while (jEnd < right.size() && right[jEnd].isDigit())
+            {
+                ++jEnd;
+            }
+
+            // Numbers are compared without the leading zeros: first by the length, then by the digits
+            QStringView leftNumber = QStringView(left).mid(i, iEnd - i);
+            QStringView rightNumber = QStringView(right).mid(j, jEnd - j);
+            while (leftNumber.size() > 1 && leftNumber.front() == QChar('0'))
+            {
+                leftNumber = leftNumber.mid(1);
+            }
+            while (rightNumber.size() > 1 && rightNumber.front() == QChar('0'))
+            {
+                rightNumber = rightNumber.mid(1);
+            }
+            if (leftNumber.size() != rightNumber.size())
+            {
+                return leftNumber.size() < rightNumber.size();
+            }
+            const int compare = leftNumber.compare(rightNumber);
+            if (compare != 0)
+            {
+                return compare < 0;
+            }
+
+            i = iEnd;
+            j = jEnd;
+            continue;
+        }
+
+        const QChar leftChar = left[i].toCaseFolded();
+        const QChar rightChar = right[j].toCaseFolded();
+        if (leftChar != rightChar)
+        {
+            return leftChar < rightChar;
+        }
+        ++i;
+        ++j;
+    }
+
+    if ((left.size() - i) != (right.size() - j))
+    {
+        return (left.size() - i) < (right.size() - j);
+    }
+
+    return left < right;
+}
+
 QString PDFSysUtils::getUserName()
 {
 #ifdef Q_OS_WIN
