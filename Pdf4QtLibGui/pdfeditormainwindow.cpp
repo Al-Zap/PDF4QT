@@ -1151,29 +1151,44 @@ void PDFEditorMainWindow::createRibbonStatusBar()
     QStatusBar* bar = statusBar();
     bar->setObjectName("ribbonStatusBar");
 
+    // Widgets of the status bar, which are hidden, when a message would be cut off by them
+    QList<QWidget*> navigationWidgets;
+    QList<QWidget*> pageLayoutWidgets;
+    QList<QWidget*> zoomButtonWidgets;
+    QList<QWidget*> zoomSliderWidgets;
+
+    auto addStatusBarWidget = [bar](QWidget* widget, QList<QWidget*>* hiddenWidgets = nullptr)
+    {
+        bar->addPermanentWidget(widget);
+        if (hiddenWidgets)
+        {
+            hiddenWidgets->append(widget);
+        }
+    };
+
     // Page navigation
-    bar->addPermanentWidget(Helper::createStatusBarSeparator(bar));
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionGoToDocumentStart, bar));
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionGoToPreviousPage, bar));
-    bar->addPermanentWidget(m_pageNumberSpinBox);
-    bar->addPermanentWidget(m_pageNumberLabel);
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionGoToNextPage, bar));
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionGoToDocumentEnd, bar));
+    addStatusBarWidget(Helper::createStatusBarSeparator(bar));
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionGoToDocumentStart, bar), &navigationWidgets);
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionGoToPreviousPage, bar));
+    addStatusBarWidget(m_pageNumberSpinBox);
+    addStatusBarWidget(m_pageNumberLabel);
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionGoToNextPage, bar));
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionGoToDocumentEnd, bar), &navigationWidgets);
     m_pageNumberSpinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_pageNumberSpinBox->setFixedWidth(pdf::PDFWidgetUtils::scaleDPI_x(m_pageNumberSpinBox, 52));
     m_pageNumberSpinBox->setToolTip(tr("Current page"));
 
     // Page layout
-    bar->addPermanentWidget(Helper::createStatusBarSeparator(bar));
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionPageLayoutSinglePage, bar));
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionPageLayoutContinuous, bar));
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionPageLayoutTwoPages, bar));
+    addStatusBarWidget(Helper::createStatusBarSeparator(bar), &pageLayoutWidgets);
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionPageLayoutSinglePage, bar), &pageLayoutWidgets);
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionPageLayoutContinuous, bar), &pageLayoutWidgets);
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionPageLayoutTwoPages, bar), &pageLayoutWidgets);
 
     // Zoom
-    bar->addPermanentWidget(Helper::createStatusBarSeparator(bar));
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionFitPage, bar));
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionFitWidth, bar));
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionZoom_Out, bar));
+    addStatusBarWidget(Helper::createStatusBarSeparator(bar));
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionFitPage, bar), &zoomButtonWidgets);
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionFitWidth, bar), &zoomButtonWidgets);
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionZoom_Out, bar), &zoomSliderWidgets);
 
     m_zoomSlider = new QSlider(Qt::Horizontal, bar);
     m_zoomSlider->setObjectName("zoomSlider");
@@ -1182,14 +1197,24 @@ void PDFEditorMainWindow::createRibbonStatusBar()
     m_zoomSlider->setFocusPolicy(Qt::NoFocus);
     m_zoomSlider->setToolTip(tr("Zoom"));
     connect(m_zoomSlider, &QSlider::valueChanged, this, &PDFEditorMainWindow::onZoomSliderValueChanged);
-    bar->addPermanentWidget(m_zoomSlider);
+    addStatusBarWidget(m_zoomSlider, &zoomSliderWidgets);
 
-    bar->addPermanentWidget(Helper::createStatusBarButton(ui->actionZoom_In, bar));
-    bar->addPermanentWidget(m_pageZoomSpinBox);
+    addStatusBarWidget(Helper::createStatusBarButton(ui->actionZoom_In, bar), &zoomSliderWidgets);
+    addStatusBarWidget(m_pageZoomSpinBox);
     m_pageZoomSpinBox->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_pageZoomSpinBox->setDecimals(0);
     m_pageZoomSpinBox->setFixedWidth(pdf::PDFWidgetUtils::scaleDPI_x(m_pageZoomSpinBox, 58));
     m_pageZoomSpinBox->setToolTip(tr("Zoom"));
+
+    // A long message (hint of a tool) is not cut off in a narrow window: the page layout
+    // buttons are hidden first, then the zoom slider, the fit buttons and the buttons
+    // of the first and last page. Page number and zoom value stay visible.
+    PDFStatusBarMessageFitter* messageFitter = new PDFStatusBarMessageFitter(bar);
+    messageFitter->setObjectName("statusBarMessageFitter");
+    messageFitter->addWidgets(pageLayoutWidgets);
+    messageFitter->addWidgets(zoomSliderWidgets);
+    messageFitter->addWidgets(zoomButtonWidgets);
+    messageFitter->addWidgets(navigationWidgets);
 
     updateZoomSlider();
 }

@@ -30,8 +30,12 @@
 #include <QScrollBar>
 #include <QBoxLayout>
 #include <QScrollArea>
+#include <QStyle>
+#include <QStatusBar>
 #include <QWheelEvent>
+#include <QWidgetAction>
 #include <QStackedWidget>
+#include <QTimer>
 
 #include "pdfdbgheap.h"
 
@@ -120,6 +124,45 @@ PDFRibbonButton::PDFRibbonButton(Size size, QWidget* parent) :
     setProperty("ribbonButton", true);
     setProperty("ribbonMenu", QStringLiteral("none"));
 
+    applyButtonSize();
+
+    connect(this, &QToolButton::clicked, this, &PDFRibbonButton::onClicked);
+}
+
+void PDFRibbonButton::setButtonSize(Size size)
+{
+    if (m_size == size)
+    {
+        return;
+    }
+
+    m_size = size;
+    applyButtonSize();
+
+    // The style sheet of the button depends on its size
+    style()->unpolish(this);
+    style()->polish(this);
+
+    // A large button wraps its text, the other buttons do not
+    if (m_action)
+    {
+        updateFromAction();
+    }
+    else if (m_hasFixedText)
+    {
+        setDisplayedText(getCleanText(m_text));
+    }
+
+    if (m_size == Size::IconOnly && !m_action && m_hasFixedText)
+    {
+        setToolTip(getCleanText(m_text));
+    }
+
+    updateGeometry();
+}
+
+void PDFRibbonButton::applyButtonSize()
+{
     switch (m_size)
     {
         case Size::Large:
@@ -152,8 +195,6 @@ PDFRibbonButton::PDFRibbonButton(Size size, QWidget* parent) :
             break;
         }
     }
-
-    connect(this, &QToolButton::clicked, this, &PDFRibbonButton::onClicked);
 }
 
 void PDFRibbonButton::setAction(QAction* action, const QString& text)
@@ -346,7 +387,12 @@ void PDFRibbonButton::updateFromAction()
     setEnabled(m_action->isEnabled());
     setCheckable(m_action->isCheckable());
     setChecked(m_action->isChecked());
-    setVisible(m_action->isVisible());
+
+    if (isHidden() == m_action->isVisible())
+    {
+        setVisible(m_action->isVisible());
+        Q_EMIT sizeHintChanged();
+    }
 
     QString toolTip = getCleanText(m_action->toolTip());
     if (toolTip.isEmpty())
@@ -393,36 +439,50 @@ void PDFRibbonButton::setDisplayedText(const QString& text)
     {
         setText(displayedText);
         updateGeometry();
+        Q_EMIT sizeHintChanged();
     }
 }
 
 PDFRibbonGroup::PDFRibbonGroup(const QString& title, QWidget* parent) :
     BaseClass(parent),
+    m_groupLayout(nullptr),
+    m_contentWidget(nullptr),
     m_contentLayout(nullptr),
-    m_smallColumnLayout(nullptr),
-    m_iconRowLayout(nullptr),
     m_titleLabel(nullptr),
-    m_smallColumnCount(0),
-    m_itemCount(0)
+    m_collapsedButton(nullptr),
+    m_collapsedMenu(nullptr),
+    m_collapsedMenuContainer(nullptr),
+    m_reduction(Reduction::None),
+    m_appliedReduction(Reduction::None),
+    m_contentReduction(Reduction::None),
+    m_itemCount(0),
+    m_isUpdatingLayout(false),
+    m_isCollapsedMenuOpen(false)
 {
+    m_reducedWidths.fill(-1);
+
     setProperty("ribbonGroup", true);
     setAttribute(Qt::WA_StyledBackground, true);
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 
-    QVBoxLayout* groupLayout = new QVBoxLayout(this);
-    groupLayout->setContentsMargins(6, 3, 7, 1);
-    groupLayout->setSpacing(0);
+    m_groupLayout = new QVBoxLayout(this);
+    m_groupLayout->setContentsMargins(6, 3, 7, 1);
+    m_groupLayout->setSpacing(0);
 
-    m_contentLayout = new QHBoxLayout();
+    // The buttons lie in a widget of their own, which is moved into the drop down
+    // window of the collapsed group
+    m_contentWidget = new QWidget(this);
+    m_contentWidget->setObjectName("ribbonGroupContent");
+    m_contentLayout = new QHBoxLayout(m_contentWidget);
     m_contentLayout->setContentsMargins(0, 0, 0, 0);
     m_contentLayout->setSpacing(2);
     m_contentLayout->addStrut(pdf::PDFWidgetUtils::scaleDPI_y(this, PDFRibbonHelper::LARGE_BUTTON_HEIGHT));
-    groupLayout->addLayout(m_contentLayout);
+    m_groupLayout->addWidget(m_contentWidget, 0, Qt::AlignHCenter | Qt::AlignTop);
 
     m_titleLabel = new QLabel(PDFRibbonButton::getCleanText(title), this);
     m_titleLabel->setProperty("ribbonGroupTitle", true);
     m_titleLabel->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
-    groupLayout->addWidget(m_titleLabel);
+    m_groupLayout->addWidget(m_titleLabel);
 }
 
 PDFRibbonButton* PDFRibbonGroup::addLargeAction(QAction* action, const QString& text)
@@ -434,7 +494,7 @@ PDFRibbonButton* PDFRibbonGroup::addLargeAction(QAction* action, const QString& 
 
     PDFRibbonButton* button = createButton(PDFRibbonButton::Size::Large);
     button->setAction(action, text);
-    placeButton(button);
+    addItem(ItemType::Button, button);
     return button;
 }
 
@@ -447,7 +507,7 @@ PDFRibbonButton* PDFRibbonGroup::addSmallAction(QAction* action, const QString& 
 
     PDFRibbonButton* button = createButton(PDFRibbonButton::Size::Small);
     button->setAction(action, text);
-    placeButton(button);
+    addItem(ItemType::Button, button);
     return button;
 }
 
@@ -460,7 +520,7 @@ PDFRibbonButton* PDFRibbonGroup::addIconAction(QAction* action)
 
     PDFRibbonButton* button = createButton(PDFRibbonButton::Size::IconOnly);
     button->setAction(action);
-    placeButton(button);
+    addItem(ItemType::Button, button);
     return button;
 }
 
@@ -484,7 +544,7 @@ PDFRibbonButton* PDFRibbonGroup::addActionList(PDFRibbonButton::Size size, const
     PDFRibbonButton* button = createButton(size);
     button->setAction(defaultAction, text);
     button->setActionList(actions, rememberLastUsed);
-    placeButton(button);
+    addItem(ItemType::Button, button);
     return button;
 }
 
@@ -493,7 +553,7 @@ PDFRibbonButton* PDFRibbonGroup::addMenu(PDFRibbonButton::Size size, const QStri
     PDFRibbonButton* button = createButton(size);
     button->setCaption(text, icon);
     button->setActionList(actions, false);
-    placeButton(button);
+    addItem(ItemType::Button, button);
     return button;
 }
 
@@ -502,43 +562,34 @@ PDFRibbonButton* PDFRibbonGroup::addMenu(PDFRibbonButton::Size size, const QStri
     PDFRibbonButton* button = createButton(size);
     button->setCaption(text, icon);
     button->setDropDownMenu(menu);
-    placeButton(button);
+    addItem(ItemType::Button, button);
     return button;
 }
 
 void PDFRibbonGroup::addWidget(QWidget* widget)
 {
-    widget->setParent(this);
-    m_contentLayout->addWidget(widget, 0, Qt::AlignVCenter);
-    m_smallColumnLayout = nullptr;
-    m_iconRowLayout = nullptr;
-    ++m_itemCount;
+    widget->setParent(m_contentWidget);
+    addItem(ItemType::Widget, widget);
 }
 
 void PDFRibbonGroup::addSmallWidget(QWidget* widget)
 {
-    widget->setParent(this);
-    placeSmallWidget(widget);
-    m_iconRowLayout = nullptr;
-    ++m_itemCount;
+    widget->setParent(m_contentWidget);
+    addItem(ItemType::SmallWidget, widget);
 }
 
 void PDFRibbonGroup::breakColumn()
 {
-    m_smallColumnLayout = nullptr;
-    m_iconRowLayout = nullptr;
+    addItem(ItemType::ColumnBreak, nullptr);
 }
 
 void PDFRibbonGroup::addSeparator()
 {
-    QFrame* line = new QFrame(this);
+    QFrame* line = new QFrame(m_contentWidget);
     line->setProperty("ribbonSeparator", true);
     line->setFrameShape(QFrame::NoFrame);
     line->setFixedWidth(1);
-    m_contentLayout->addSpacing(2);
-    m_contentLayout->addWidget(line);
-    m_contentLayout->addSpacing(2);
-    breakColumn();
+    addItem(ItemType::Separator, line);
 }
 
 QString PDFRibbonGroup::getTitle() const
@@ -546,64 +597,344 @@ QString PDFRibbonGroup::getTitle() const
     return m_titleLabel->text();
 }
 
-PDFRibbonButton* PDFRibbonGroup::createButton(PDFRibbonButton::Size size)
+int PDFRibbonGroup::getReducedWidth(Reduction reduction)
 {
-    return new PDFRibbonButton(size, this);
+    int& width = m_reducedWidths[size_t(reduction)];
+
+    if (width < 0)
+    {
+        // The content lies in the drop down window, the width is not known now
+        if (m_isCollapsedMenuOpen)
+        {
+            return sizeHint().width();
+        }
+
+        applyReduction(reduction);
+        width = sizeHint().width();
+    }
+
+    return width;
 }
 
-void PDFRibbonGroup::placeButton(PDFRibbonButton* button)
+void PDFRibbonGroup::setReduction(Reduction reduction)
 {
-    switch (button->getButtonSize())
+    m_reduction = reduction;
+
+    // The content is laid out again, when the drop down window is closed
+    if (!m_isCollapsedMenuOpen)
     {
-        case PDFRibbonButton::Size::Large:
-            m_contentLayout->addWidget(button, 0, Qt::AlignTop);
-            m_smallColumnLayout = nullptr;
-            m_iconRowLayout = nullptr;
-            break;
+        applyReduction(reduction);
+    }
+}
 
-        case PDFRibbonButton::Size::Small:
-            placeSmallWidget(button);
-            m_iconRowLayout = nullptr;
-            break;
+void PDFRibbonGroup::changeEvent(QEvent* event)
+{
+    BaseClass::changeEvent(event);
 
-        case PDFRibbonButton::Size::IconOnly:
+    if (event->type() == QEvent::StyleChange || event->type() == QEvent::FontChange)
+    {
+        invalidateReduction();
+    }
+}
+
+PDFRibbonButton* PDFRibbonGroup::createButton(PDFRibbonButton::Size size)
+{
+    PDFRibbonButton* button = new PDFRibbonButton(size, m_contentWidget);
+    connect(button, &PDFRibbonButton::sizeHintChanged, this, &PDFRibbonGroup::invalidateReduction);
+
+    // The drop down window of the collapsed group is closed, when its button is used
+    connect(button, &QToolButton::clicked, this, &PDFRibbonGroup::closeCollapsedMenu);
+    connect(button, &QToolButton::triggered, this, &PDFRibbonGroup::closeCollapsedMenu);
+    return button;
+}
+
+void PDFRibbonGroup::addItem(ItemType type, QWidget* widget)
+{
+    Item item;
+    item.type = type;
+    item.widget = widget;
+
+    if (PDFRibbonButton* button = qobject_cast<PDFRibbonButton*>(widget))
+    {
+        item.size = button->getButtonSize();
+    }
+
+    m_items.push_back(item);
+
+    if (type != ItemType::ColumnBreak && type != ItemType::Separator)
+    {
+        ++m_itemCount;
+    }
+
+    // New items are added to the full group, the group is reduced again by the ribbon
+    m_reduction = Reduction::None;
+    m_contentReduction = Reduction::Count;
+    applyReduction(Reduction::None);
+    invalidateReduction();
+}
+
+void PDFRibbonGroup::layoutContent(Reduction reduction)
+{
+    if (m_contentReduction == reduction)
+    {
+        return;
+    }
+
+    m_contentReduction = reduction;
+
+    // All items are removed from the layout and placed again, the widgets stay
+    while (QLayoutItem* layoutItem = m_contentLayout->takeAt(0))
+    {
+        delete layoutItem;
+    }
+
+    QVBoxLayout* smallColumnLayout = nullptr;
+    QHBoxLayout* iconRowLayout = nullptr;
+    int smallColumnCount = 0;
+
+    auto startNewColumn = [&]()
+    {
+        smallColumnLayout = nullptr;
+        iconRowLayout = nullptr;
+    };
+
+    // Widgets and rows of icons are stacked in columns by three
+    auto placeSmallItem = [&](QWidget* widget, QLayout* layout)
+    {
+        if (!smallColumnLayout || smallColumnCount >= PDFRibbonHelper::SMALL_BUTTONS_IN_COLUMN)
         {
-            if (!m_iconRowLayout || m_iconRowLayout->count() > PDFRibbonHelper::ICON_BUTTONS_IN_ROW)
+            smallColumnLayout = new QVBoxLayout();
+            smallColumnLayout->setContentsMargins(0, 0, 0, 0);
+            smallColumnLayout->setSpacing(2);
+            smallColumnLayout->addStretch(1);
+            m_contentLayout->addLayout(smallColumnLayout);
+            smallColumnCount = 0;
+        }
+
+        // The stretch stays the last item of the column
+        if (widget)
+        {
+            smallColumnLayout->insertWidget(smallColumnLayout->count() - 1, widget);
+        }
+        else
+        {
+            smallColumnLayout->insertLayout(smallColumnLayout->count() - 1, layout);
+        }
+        ++smallColumnCount;
+    };
+
+    for (const Item& item : m_items)
+    {
+        switch (item.type)
+        {
+            case ItemType::Button:
             {
-                QWidget* row = new QWidget(this);
-                m_iconRowLayout = new QHBoxLayout(row);
-                m_iconRowLayout->setContentsMargins(0, 0, 0, 0);
-                m_iconRowLayout->setSpacing(0);
-                m_iconRowLayout->addStretch(1);
-                QHBoxLayout* rowLayout = m_iconRowLayout;
-                placeSmallWidget(row);
-                m_iconRowLayout = rowLayout;
+                PDFRibbonButton* button = static_cast<PDFRibbonButton*>(item.widget);
+                PDFRibbonButton::Size size = item.size;
+
+                switch (reduction)
+                {
+                    case Reduction::SmallButtons:
+                        if (size == PDFRibbonButton::Size::Large)
+                        {
+                            size = PDFRibbonButton::Size::Small;
+                        }
+                        break;
+
+                    case Reduction::IconButtons:
+                        // A button without an icon keeps its text
+                        if (size != PDFRibbonButton::Size::IconOnly)
+                        {
+                            size = button->icon().isNull() ? PDFRibbonButton::Size::Small : PDFRibbonButton::Size::IconOnly;
+                        }
+                        break;
+
+                    default:
+                        break;
+                }
+
+                button->setButtonSize(size);
+
+                if (size == PDFRibbonButton::Size::Large)
+                {
+                    m_contentLayout->addWidget(button, 0, Qt::AlignTop);
+                    startNewColumn();
+                }
+                else if (size == PDFRibbonButton::Size::IconOnly && item.size == PDFRibbonButton::Size::IconOnly)
+                {
+                    // Buttons created without a text are placed in rows
+                    if (!iconRowLayout || iconRowLayout->count() > PDFRibbonHelper::ICON_BUTTONS_IN_ROW)
+                    {
+                        iconRowLayout = new QHBoxLayout();
+                        iconRowLayout->setContentsMargins(0, 0, 0, 0);
+                        iconRowLayout->setSpacing(0);
+                        iconRowLayout->addStretch(1);
+                        QHBoxLayout* rowLayout = iconRowLayout;
+                        placeSmallItem(nullptr, rowLayout);
+                        iconRowLayout = rowLayout;
+                    }
+
+                    // The stretch stays the last item of the row
+                    iconRowLayout->insertWidget(iconRowLayout->count() - 1, button);
+                }
+                else
+                {
+                    placeSmallItem(button, nullptr);
+                    iconRowLayout = nullptr;
+                }
+                break;
             }
 
-            // The stretch stays the last item of the row
-            m_iconRowLayout->insertWidget(m_iconRowLayout->count() - 1, button);
+            case ItemType::Widget:
+                m_contentLayout->addWidget(item.widget, 0, Qt::AlignVCenter);
+                startNewColumn();
+                break;
+
+            case ItemType::SmallWidget:
+                placeSmallItem(item.widget, nullptr);
+                iconRowLayout = nullptr;
+                break;
+
+            case ItemType::ColumnBreak:
+                startNewColumn();
+                break;
+
+            case ItemType::Separator:
+                m_contentLayout->addSpacing(2);
+                m_contentLayout->addWidget(item.widget);
+                m_contentLayout->addSpacing(2);
+                startNewColumn();
+                break;
+        }
+    }
+
+    m_contentLayout->invalidate();
+    m_contentWidget->updateGeometry();
+}
+
+void PDFRibbonGroup::applyReduction(Reduction reduction)
+{
+    const bool isUpdatingLayout = m_isUpdatingLayout;
+    m_isUpdatingLayout = true;
+
+    const bool isCollapsed = reduction == Reduction::Collapsed;
+
+    // The collapsed group opens the full group in its drop down window
+    layoutContent(isCollapsed ? Reduction::None : reduction);
+
+    if (isCollapsed)
+    {
+        createCollapsedButton();
+    }
+
+    if (m_collapsedButton)
+    {
+        m_collapsedButton->setVisible(isCollapsed);
+    }
+    m_contentWidget->setVisible(!isCollapsed);
+    m_titleLabel->setVisible(!isCollapsed);
+
+    m_appliedReduction = reduction;
+    m_groupLayout->invalidate();
+    updateGeometry();
+
+    m_isUpdatingLayout = isUpdatingLayout;
+}
+
+void PDFRibbonGroup::invalidateReduction()
+{
+    if (m_isUpdatingLayout)
+    {
+        return;
+    }
+
+    m_reducedWidths.fill(-1);
+    Q_EMIT reductionInvalidated();
+}
+
+void PDFRibbonGroup::createCollapsedButton()
+{
+    if (m_collapsedButton)
+    {
+        return;
+    }
+
+    // Icon of the collapsed group is the icon of its first button
+    QIcon icon;
+    for (const Item& item : m_items)
+    {
+        if (item.type == ItemType::Button && !static_cast<PDFRibbonButton*>(item.widget)->icon().isNull())
+        {
+            icon = static_cast<PDFRibbonButton*>(item.widget)->icon();
             break;
         }
     }
 
-    ++m_itemCount;
+    m_collapsedMenuContainer = new QWidget();
+    m_collapsedMenuContainer->setObjectName("ribbonCollapsedGroup");
+    m_collapsedMenuContainer->setProperty("ribbonPage", true);
+    m_collapsedMenuContainer->setAttribute(Qt::WA_StyledBackground, true);
+    QVBoxLayout* containerLayout = new QVBoxLayout(m_collapsedMenuContainer);
+    containerLayout->setContentsMargins(4, 3, 4, 3);
+    containerLayout->setSpacing(0);
+
+    m_collapsedMenu = new QMenu(this);
+    m_collapsedMenu->setObjectName("ribbonCollapsedGroupMenu");
+    QWidgetAction* widgetAction = new QWidgetAction(m_collapsedMenu);
+    widgetAction->setDefaultWidget(m_collapsedMenuContainer);
+    m_collapsedMenu->addAction(widgetAction);
+    connect(m_collapsedMenu, &QMenu::aboutToShow, this, &PDFRibbonGroup::onCollapsedMenuAboutToShow);
+    connect(m_collapsedMenu, &QMenu::aboutToHide, this, &PDFRibbonGroup::onCollapsedMenuAboutToHide);
+
+    m_collapsedButton = new PDFRibbonButton(PDFRibbonButton::Size::Large, this);
+    m_collapsedButton->setObjectName("ribbonCollapsedGroupButton");
+    m_collapsedButton->setCaption(getTitle(), icon);
+    m_collapsedButton->setToolTip(getTitle());
+    m_collapsedButton->setDropDownMenu(m_collapsedMenu);
+    m_collapsedButton->hide();
+    m_groupLayout->insertWidget(0, m_collapsedButton, 0, Qt::AlignHCenter | Qt::AlignTop);
 }
 
-void PDFRibbonGroup::placeSmallWidget(QWidget* widget)
+void PDFRibbonGroup::closeCollapsedMenu()
 {
-    if (!m_smallColumnLayout || m_smallColumnCount >= PDFRibbonHelper::SMALL_BUTTONS_IN_COLUMN)
+    if (m_collapsedMenu && m_collapsedMenu->isVisible())
     {
-        m_smallColumnLayout = new QVBoxLayout();
-        m_smallColumnLayout->setContentsMargins(0, 0, 0, 0);
-        m_smallColumnLayout->setSpacing(2);
-        m_smallColumnLayout->addStretch(1);
-        m_contentLayout->addLayout(m_smallColumnLayout);
-        m_smallColumnCount = 0;
+        m_collapsedMenu->close();
+    }
+}
+
+void PDFRibbonGroup::onCollapsedMenuAboutToShow()
+{
+    if (m_isCollapsedMenuOpen)
+    {
+        return;
     }
 
-    // The stretch stays the last item of the column
-    m_smallColumnLayout->insertWidget(m_smallColumnLayout->count() - 1, widget);
-    ++m_smallColumnCount;
+    m_isUpdatingLayout = true;
+    layoutContent(Reduction::None);
+    m_groupLayout->removeWidget(m_contentWidget);
+    m_collapsedMenuContainer->layout()->addWidget(m_contentWidget);
+    m_contentWidget->show();
+    m_isCollapsedMenuOpen = true;
+    m_isUpdatingLayout = false;
+}
+
+void PDFRibbonGroup::onCollapsedMenuAboutToHide()
+{
+    if (!m_isCollapsedMenuOpen)
+    {
+        return;
+    }
+
+    m_isUpdatingLayout = true;
+    m_collapsedMenuContainer->layout()->removeWidget(m_contentWidget);
+    m_groupLayout->insertWidget(m_collapsedButton ? 1 : 0, m_contentWidget, 0, Qt::AlignHCenter | Qt::AlignTop);
+    m_contentWidget->hide();
+    m_isCollapsedMenuOpen = false;
+    m_isUpdatingLayout = false;
+
+    // The ribbon could have changed the reduction, while the window was open
+    applyReduction(m_reduction);
 }
 
 PDFRibbonPage::PDFRibbonPage(const QString& id, QWidget* parent) :
@@ -631,6 +962,7 @@ PDFRibbonGroup* PDFRibbonPage::getGroup(const QString& id, const QString& title)
     group->setObjectName(QString("ribbonGroup_%1_%2").arg(m_id, id));
     m_layout->insertWidget(m_layout->count() - 1, group);
     m_groups.emplace_back(id, group);
+    connect(group, &PDFRibbonGroup::reductionInvalidated, this, &PDFRibbonPage::reductionInvalidated);
     return group;
 }
 
@@ -655,6 +987,71 @@ void PDFRibbonPage::updateGroups()
     }
 }
 
+bool PDFRibbonPage::fitToWidth(int width)
+{
+    using Reduction = PDFRibbonGroup::Reduction;
+
+    std::vector<PDFRibbonGroup*> groups;
+    for (const auto& group : m_groups)
+    {
+        if (!group.second->isEmpty() && !group.second->isHidden())
+        {
+            groups.push_back(group.second);
+        }
+    }
+
+    const QMargins margins = m_layout->contentsMargins();
+    std::vector<Reduction> reductions(groups.size(), Reduction::None);
+    std::vector<int> widths(groups.size(), 0);
+
+    int totalWidth = margins.left() + margins.right();
+    for (size_t i = 0; i < groups.size(); ++i)
+    {
+        widths[i] = groups[i]->getReducedWidth(Reduction::None);
+        totalWidth += widths[i];
+    }
+
+    // Each step of the reduction is done for all groups (from the right to the left),
+    // before the next step starts. A step, which does not make a group narrower, is skipped.
+    for (int step = int(Reduction::SmallButtons); step < int(Reduction::Count) && totalWidth > width; ++step)
+    {
+        const Reduction reduction = Reduction(step);
+
+        for (size_t i = groups.size(); i > 0 && totalWidth > width; --i)
+        {
+            const size_t index = i - 1;
+            const int reducedWidth = groups[index]->getReducedWidth(reduction);
+
+            if (reducedWidth < widths[index])
+            {
+                totalWidth -= widths[index] - reducedWidth;
+                widths[index] = reducedWidth;
+                reductions[index] = reduction;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < groups.size(); ++i)
+    {
+        groups[i]->setReduction(reductions[i]);
+    }
+
+    return totalWidth <= width;
+}
+
+std::vector<PDFRibbonGroup*> PDFRibbonPage::getGroups() const
+{
+    std::vector<PDFRibbonGroup*> groups;
+    groups.reserve(m_groups.size());
+
+    for (const auto& group : m_groups)
+    {
+        groups.push_back(group.second);
+    }
+
+    return groups;
+}
+
 PDFRibbon::PDFRibbon(QWidget* parent) :
     BaseClass(parent),
     m_fileButton(nullptr),
@@ -667,7 +1064,8 @@ PDFRibbon::PDFRibbon(QWidget* parent) :
     m_stackedWidget(nullptr),
     m_scrollLeftButton(nullptr),
     m_scrollRightButton(nullptr),
-    m_isCollapsed(false)
+    m_isCollapsed(false),
+    m_isReductionScheduled(false)
 {
     setObjectName("ribbon");
     setAttribute(Qt::WA_StyledBackground, true);
@@ -772,6 +1170,7 @@ PDFRibbonPage* PDFRibbon::addPage(const QString& id, const QString& title)
     page->setObjectName(QString("ribbonPage_%1").arg(id));
     m_pages.push_back(page);
     m_stackedWidget->addWidget(page);
+    connect(page, &PDFRibbonPage::reductionInvalidated, this, &PDFRibbon::scheduleReduction);
     m_tabBar->addTab(PDFRibbonButton::getCleanText(title));
     updateTabRow();
 
@@ -872,6 +1271,7 @@ void PDFRibbon::updateGroups()
         page->updateGroups();
     }
 
+    updateReduction();
     updateScrollButtons();
 }
 
@@ -964,8 +1364,37 @@ QString PDFRibbon::createStyleSheet(bool isDarkTheme)
 void PDFRibbon::resizeEvent(QResizeEvent* event)
 {
     updateTabRow();
+    updateReduction();
     BaseClass::resizeEvent(event);
     updateScrollButtons();
+}
+
+void PDFRibbon::updateReduction()
+{
+    m_isReductionScheduled = false;
+
+    // Groups of the current page get smaller buttons, when the window is narrow.
+    // The page is scrolled only, if even the collapsed groups do not fit.
+    const int index = m_tabBar->currentIndex();
+    if (index >= 0 && index < int(m_pages.size()))
+    {
+        m_pages[index]->fitToWidth(width());
+    }
+}
+
+void PDFRibbon::scheduleReduction()
+{
+    if (!m_isReductionScheduled)
+    {
+        m_isReductionScheduled = true;
+        QTimer::singleShot(0, this, [this]()
+        {
+            if (m_isReductionScheduled)
+            {
+                updateReduction();
+            }
+        });
+    }
 }
 
 void PDFRibbon::updateTabRow()
@@ -1048,6 +1477,7 @@ void PDFRibbon::onCurrentTabChanged(int index)
     }
 
     m_stackedWidget->setCurrentIndex(index);
+    updateReduction();
     m_scrollArea->horizontalScrollBar()->setValue(0);
     updateScrollButtons();
     Q_EMIT currentPageChanged(m_pages[index]->getId());
@@ -1082,6 +1512,115 @@ void PDFRibbon::scrollPage(int direction)
 {
     QScrollBar* scrollBar = m_scrollArea->horizontalScrollBar();
     scrollBar->setValue(scrollBar->value() + direction * pdf::PDFWidgetUtils::scaleDPI_x(this, 120));
+}
+
+PDFStatusBarMessageFitter::PDFStatusBarMessageFitter(QStatusBar* statusBar) :
+    BaseClass(statusBar),
+    m_statusBar(statusBar),
+    m_isUpdating(false)
+{
+    connect(m_statusBar, &QStatusBar::messageChanged, this, &PDFStatusBarMessageFitter::update);
+    m_statusBar->installEventFilter(this);
+}
+
+void PDFStatusBarMessageFitter::addWidgets(const QList<QWidget*>& widgets)
+{
+    std::vector<QPointer<QWidget>> group;
+    for (QWidget* widget : widgets)
+    {
+        if (widget)
+        {
+            group.emplace_back(widget);
+        }
+    }
+
+    if (!group.empty())
+    {
+        m_groups.push_back(std::move(group));
+    }
+
+    update();
+}
+
+void PDFStatusBarMessageFitter::update()
+{
+    if (m_isUpdating)
+    {
+        return;
+    }
+
+    m_isUpdating = true;
+
+    auto setGroupVisible = [](const std::vector<QPointer<QWidget>>& group, bool visible)
+    {
+        for (const QPointer<QWidget>& widget : group)
+        {
+            if (widget && widget->isHidden() == visible)
+            {
+                widget->setVisible(visible);
+            }
+        }
+    };
+
+    for (const auto& group : m_groups)
+    {
+        setGroupVisible(group, true);
+    }
+
+    const QString message = m_statusBar->currentMessage();
+    if (!message.isEmpty() && m_statusBar->isVisible() && m_statusBar->layout())
+    {
+        // Groups are hidden one by one, until the message fits
+        const int requiredWidth = getRequiredWidth(m_statusBar, message);
+        m_statusBar->layout()->invalidate();
+        m_statusBar->layout()->activate();
+
+        for (const auto& group : m_groups)
+        {
+            if (getMessageWidth() >= requiredWidth)
+            {
+                break;
+            }
+
+            setGroupVisible(group, false);
+            m_statusBar->layout()->invalidate();
+            m_statusBar->layout()->activate();
+        }
+    }
+
+    m_isUpdating = false;
+}
+
+int PDFStatusBarMessageFitter::getMessageWidth() const
+{
+    // The status bar draws the message from the left side to the first visible
+    // permanent widget (the size grip lies right of the permanent widgets)
+    int right = m_statusBar->width() - 12;
+
+    for (QWidget* widget : m_statusBar->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly))
+    {
+        if (!widget->isWindow() && !widget->isHidden())
+        {
+            right = qMin(right, widget->x() - 2);
+        }
+    }
+
+    return right - 6;
+}
+
+int PDFStatusBarMessageFitter::getRequiredWidth(const QStatusBar* statusBar, const QString& message)
+{
+    return statusBar->fontMetrics().horizontalAdvance(message) + 2;
+}
+
+bool PDFStatusBarMessageFitter::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == m_statusBar && (event->type() == QEvent::Resize || event->type() == QEvent::Show))
+    {
+        update();
+    }
+
+    return BaseClass::eventFilter(watched, event);
 }
 
 }   // namespace pdfviewer
