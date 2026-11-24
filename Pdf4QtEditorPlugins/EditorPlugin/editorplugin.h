@@ -48,7 +48,7 @@ private:
     using BaseClass = pdf::PDFPlugin;
 
 public:
-    EditorPlugin();
+    Q_INVOKABLE EditorPlugin();
 
     virtual void setWidget(pdf::PDFWidget* widget) override;
     virtual void setDocument(const pdf::PDFModifiedDocument& document) override;

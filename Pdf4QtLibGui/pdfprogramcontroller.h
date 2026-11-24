@@ -100,6 +100,17 @@ public:
         toolbarActionsPlaced = false;
         return addToolMenu(plugin->getPluginMenuName(), plugin->getPluginMenuLocation());
     }
+
+    /// Called, when the user wants to open a document (open dialog, recent files,
+    /// dropped files, results of the dialogs). A main window hosted in a tab
+    /// of a window with several documents opens the document in another tab.
+    /// \param fileName File name of the document
+    /// \returns true, if the document has been opened (or is being opened) elsewhere
+    virtual bool openDocumentElsewhere(const QString& fileName)
+    {
+        Q_UNUSED(fileName);
+        return false;
+    }
 };
 
 class PDF4QTLIBGUILIBSHARED_EXPORT PDFActionManager : public QObject
@@ -343,6 +354,11 @@ public:
     Q_DECLARE_FLAGS(Features, Feature)
 
     void openDocument(const QString& fileName);
+
+    /// Opens the document requested by the user. The main window can open it
+    /// elsewhere (in another tab), otherwise it replaces the current document.
+    void requestOpenDocument(const QString& fileName);
+
     void setDocument(pdf::PDFModifiedDocument document, std::vector<pdf::PDFSignatureVerificationResult> signatureVerificationResult, bool isCurrentSaved);
     void closeDocument();
 
@@ -351,6 +367,8 @@ public:
     PDFRecentFileManager* getRecentFileManager() const { return m_recentFileManager; }
     PDFViewerSettings* getSettings() const { return m_settings; }
     pdf::PDFDocument* getDocument() const { return m_pdfDocument.data(); }
+    pdf::PDFOptionalContentActivity* getOptionalContentActivity() const { return m_optionalContentActivity; }
+
     pdf::PDFCertificateStore* getCertificateStore() const { return const_cast<pdf::PDFCertificateStore*>(&m_certificateStore); }
     PDFBookmarkManager* getBookmarkManager() const { return m_bookmarkManager; }
     PDFTextToSpeech* getTextToSpeech() const { return m_textToSpeech; }
@@ -408,8 +426,15 @@ public:
 
     bool isFactorySettingsBeingRestored() const;
 
+    /// Returns true, if the document has changes, which are not saved
+    bool isDocumentModified() const;
+
 signals:
     void queryPasswordRequest(QString* password, bool* ok);
+
+    /// The user has closed the document by the Close action
+    void documentClosedByUser();
+
 
 private:
 
@@ -602,6 +627,8 @@ private:
     bool m_planNavigation = false;
     pdf::PDFPluginInfos m_plugins;
     std::vector<std::pair<pdf::PDFPluginInfo, pdf::PDFPlugin*>> m_loadedPlugins;
+    std::vector<pdf::PDFPlugin*> m_ownPlugins;
+
     bool m_isFullscreenMode;
     PDFFullscreenWidget* m_fullscreenWidget;
     PDFOCRMakeSearchable* m_makeSearchable = nullptr;

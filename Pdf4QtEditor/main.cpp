@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 #include "pdfeditormainwindow.h"
+#include "pdfeditortabwindow.h"
 #include "pdfconstants.h"
 #include "pdfsecurityhandler.h"
 #include "pdfwidgetutils.h"
@@ -61,7 +62,7 @@ int main(int argc, char *argv[])
     parser.addOption(configPath);
     parser.addHelpOption();
     parser.addVersionOption();
-    parser.addPositionalArgument("file", "The PDF file to open.");
+    parser.addPositionalArgument("files", "The PDF files to open (each in its own tab).", "[files...]");
     parser.process(application);
     pdf::PDFSettings::applyCommandLineSettingsPath(parser);
 
@@ -102,14 +103,16 @@ int main(int argc, char *argv[])
     QIcon appIcon(":/app-icon.svg");
     QApplication::setWindowIcon(appIcon);
 
-    pdfviewer::PDFEditorMainWindow mainWindow;
+    // Each document is in its own tab of the window
+    pdfviewer::PDFEditorTabWindow mainWindow;
     mainWindow.show();
 
-    QStringList arguments = parser.positionalArguments();
-    if (!arguments.isEmpty())
+    const QStringList arguments = parser.positionalArguments();
+    for (const QString& fileName : arguments)
     {
-        mainWindow.getProgramController()->openDocument(arguments.front());
+        mainWindow.openDocument(fileName);
     }
+
 
     return application.exec();
 }
