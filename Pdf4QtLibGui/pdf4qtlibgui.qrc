@@ -139,6 +139,10 @@
         <file>resources/ribbon-reset-settings.svg</file>
         <file>resources/ribbon-page-insert-file.svg</file>
         <file>resources/ribbon-page-blank.svg</file>
+        <file>resources/ribbon-header-footer.svg</file>
+        <file>resources/ribbon-bates.svg</file>
+        <file>resources/ribbon-watermark.svg</file>
+        <file>resources/ribbon-stamp-remove.svg</file>
         <file>resources/ribbon-page-extract.svg</file>
         <file>resources/ribbon-snap.svg</file>
         <file>resources/ribbon-scale-sheet.svg</file>
