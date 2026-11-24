@@ -34,6 +34,7 @@
 #include <QMimeData>
 #include <QDataStream>
 #include <QUrl>
+#include <QFileInfo>
 
 #include <algorithm>
 
