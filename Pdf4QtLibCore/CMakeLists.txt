@@ -81,6 +81,10 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfmeasure.h
     sources/pdfmarkupslist.cpp
     sources/pdfmarkupslist.h
+    sources/pdfcustomstamp.cpp
+    sources/pdfcustomstamp.h
+    sources/pdftoolchest.cpp
+    sources/pdftoolchest.h
     sources/pdfmultimedia.cpp
     sources/pdfmultimedia.h
     sources/pdfobject.cpp
@@ -117,6 +121,8 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfprogress.h
     sources/pdfbatchprocessor.cpp
     sources/pdfbatchprocessor.h
+    sources/pdfprintlayout.cpp
+    sources/pdfprintlayout.h
     sources/pdfpagestamper.cpp
     sources/pdfpagestamper.h
     sources/pdfvisualcompare.cpp

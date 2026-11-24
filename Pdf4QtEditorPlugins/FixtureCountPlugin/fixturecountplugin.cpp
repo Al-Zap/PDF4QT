@@ -495,25 +495,6 @@ std::vector<QPointF> FixtureCountPlugin::findSimilarSymbols(pdf::PDFInteger page
     }
 
     const pdf::PDFPage* page = catalog->getPage(pageIndex);
-    const QSizeF pageSize = page->getRotatedMediaBox().size();
-    const pdf::PDFReal sampleSize = qMax(sampleRect.width(), sampleRect.height());
-    if (sampleSize <= 0.0 || pageSize.isEmpty())
-    {
-        return result;
-    }
-
-    // Resolution is chosen so the sample has about 40 pixels, but the image
-    // of the whole sheet must not be too large
-    constexpr pdf::PDFReal targetSamplePixels = 40.0;
-    constexpr pdf::PDFReal maximalPixels = 24.0e6;
-    pdf::PDFReal scale = qBound(0.5, targetSamplePixels / sampleSize, 6.0);
-    const pdf::PDFReal pixels = pageSize.width() * pageSize.height() * scale * scale;
-    if (pixels > maximalPixels)
-    {
-        scale *= std::sqrt(maximalPixels / pixels);
-    }
-
-    const QSize imageSize(qMax(1, qCeil(pageSize.width() * scale)), qMax(1, qCeil(pageSize.height() * scale)));
 
     pdf::PDFDrawWidgetProxy* proxy = m_widget->getDrawWidgetProxy();
 
@@ -540,63 +521,9 @@ std::vector<QPointF> FixtureCountPlugin::findSimilarSymbols(pdf::PDFInteger page
         compiledPage = &ownCompiledPage;
     }
 
-    const QTransform pagePointToImagePoint = pdf::PDFRenderer::createPagePointToDevicePointMatrix(page, QRectF(QPointF(0, 0), imageSize));
-    const QRect sampleImageRect = pagePointToImagePoint.mapRect(sampleRect).toAlignedRect();
-
-    auto drawPage = [&](const pdf::PDFPrecompiledPage& pageToDraw, const QRect& area)
+    for (const FixtureSymbolFinder::Match& match : FixtureSymbolFinder::findOnPage(*compiledPage, page, sampleRect, features, FixtureSymbolFinder::Settings()))
     {
-        QImage image(area.size(), QImage::Format_RGB32);
-        image.fill(Qt::white);
-        QPainter painter(&image);
-        const QTransform matrix = pagePointToImagePoint * QTransform::fromTranslate(-area.left(), -area.top());
-        pageToDraw.draw(&painter, page->getCropBox(), matrix, features, 1.0);
-        return image;
-    };
-
-    // Amount of the ink (darkness) of the sample drawn from the page
-    auto getSampleInk = [&](const pdf::PDFPrecompiledPage& candidatePage)
-    {
-        const QImage sampleImage = drawPage(candidatePage, sampleImageRect).convertToFormat(QImage::Format_Grayscale8);
-        double ink = 0.0;
-        for (int y = 0; y < sampleImage.height(); ++y)
-        {
-            const uchar* line = sampleImage.constScanLine(y);
-            for (int x = 0; x < sampleImage.width(); ++x)
-            {
-                ink += 255 - line[x];
-            }
-        }
-        return ink;
-    };
-
-    // Photos (aerial images of site plans), scans and text (light levels, labels,
-    // title block) are not drawn, so they do not disturb the search. The sample
-    // symbol itself can be a part of an image (scanned plan) or of the text
-    // (glyph of a symbol font): images are removed only if something of the sample
-    // stays visible, text only if most of the sample stays visible.
-    pdf::PDFPrecompiledPage vectorPage = *compiledPage;
-    vectorPage.removeImages();
-    pdf::PDFPrecompiledPage reducedPage = vectorPage;
-    reducedPage.removeText();
-
-    constexpr double minimalInk = 255.0;
-    constexpr double minimalInkWithoutText = 0.6;
-    const double vectorInk = getSampleInk(vectorPage);
-
-    const pdf::PDFPrecompiledPage* pageToSearch = compiledPage;
-    if (vectorInk >= minimalInk)
-    {
-        pageToSearch = getSampleInk(reducedPage) >= minimalInkWithoutText * vectorInk ? &reducedPage : &vectorPage;
-    }
-
-    const QImage image = drawPage(*pageToSearch, QRect(QPoint(0, 0), imageSize));
-    const QImage inkImage = FixtureSymbolFinder::createInkImage(image, sampleImageRect);
-    const std::vector<FixtureSymbolFinder::Match> matches = FixtureSymbolFinder::find(inkImage, sampleImageRect, FixtureSymbolFinder::Settings());
-
-    const QTransform imagePointToPagePoint = pagePointToImagePoint.inverted();
-    for (const FixtureSymbolFinder::Match& match : matches)
-    {
-        result.push_back(imagePointToPagePoint.map(match.center));
+        result.push_back(match.center);
     }
 
     return result;

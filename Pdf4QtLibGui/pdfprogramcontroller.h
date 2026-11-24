@@ -54,6 +54,7 @@ class PDFCMSManager;
 class PDFToolManager;
 class PDFWidgetFormManager;
 class PDFWidgetAnnotationManager;
+class PDFDrawWidgetProxy;
 }
 
 namespace pdfviewer
@@ -372,6 +373,20 @@ public:
     void clearRecentFileHistory();
 
     void performPrint();
+
+    /// Draws the page as it is printed: scaled to fit the paper and centered, in the colors
+    /// of the document (color adjustments of the screen are not applied), with the annotations
+    /// marked as printed (comments, measurements, stamps, form fields).
+    /// \param painter Painter of the printer
+    /// \param paperRect Rectangle of the paper in the device coordinates of the painter
+    /// \param document Document
+    /// \param pageIndex Index of the page
+    /// \param proxy Proxy of the draw widget (caches, color management, settings of the rendering)
+    static void drawPageForPrinting(QPainter* painter,
+                                    const QRectF& paperRect,
+                                    pdf::PDFDocument* document,
+                                    pdf::PDFInteger pageIndex,
+                                    const pdf::PDFDrawWidgetProxy* proxy);
     void performSave();
     void performSaveAs();
     void performSaveFlattenedCopy();

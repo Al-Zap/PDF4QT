@@ -23,6 +23,8 @@
 add_library(Pdf4QtLibWidgets SHARED
     sources/pdfadvancedtools.cpp
     sources/pdfadvancedtools.h
+    sources/pdfplacemarkuptool.cpp
+    sources/pdfplacemarkuptool.h
     sources/pdfannotationstyle.cpp
     sources/pdfannotationstyle.h
     sources/pdfwidgettool.cpp

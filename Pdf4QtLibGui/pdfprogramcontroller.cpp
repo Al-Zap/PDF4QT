@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 #include "pdfprogramcontroller.h"
+#include "pdfprintdialog.h"
 #include "pdfdrawwidget.h"
 #include "pdfannotation.h"
 #include "pdfform.h"
@@ -899,94 +900,53 @@ void PDFProgramController::performPrint()
         printerMode = QPrinter::ScreenResolution;
     }
 
-    // Run print dialog
-    QPrinter printer(printerMode);
-    QPrintDialog printDialog(&printer, m_mainWindow);
-    printDialog.setOptions(QPrintDialog::PrintPageRange | QPrintDialog::PrintShowPageSize | QPrintDialog::PrintCollateCopies | QPrintDialog::PrintSelection);
-    printDialog.setOption(QPrintDialog::PrintCurrentPage, m_pdfWidget->getDrawWidget()->getCurrentPages().size() == 1);
-    printDialog.setMinMax(1, int(m_pdfDocument->getCatalog()->getPageCount()));
-    if (printDialog.exec() == QPrintDialog::Accepted)
+    // Run print dialog (scale, tiles, preview)
+    pdf::PDFDrawWidgetProxy* proxy = m_pdfWidget->getDrawWidgetProxy();
+    const std::vector<pdf::PDFInteger> currentPages = m_pdfWidget->getDrawWidget()->getCurrentPages();
+    const pdf::PDFInteger currentPageIndex = !currentPages.empty() ? currentPages.front() : -1;
+
+    PDFPrintDialog printDialog(m_pdfDocument.data(), currentPageIndex, proxy, printerMode, m_mainWindow);
+    if (printDialog.exec() != QDialog::Accepted)
     {
-        std::vector<pdf::PDFInteger> pageIndices;
-        switch (printDialog.printRange())
-        {
-            case QAbstractPrintDialog::AllPages:
-            {
-                pageIndices.resize(m_pdfDocument->getCatalog()->getPageCount(), 0);
-                std::iota(pageIndices.begin(), pageIndices.end(), 0);
-                break;
-            }
+        return;
+    }
 
-            case QAbstractPrintDialog::Selection:
-            case QAbstractPrintDialog::CurrentPage:
-            {
-                pageIndices = m_pdfWidget->getDrawWidget()->getCurrentPages();
-                break;
-            }
+    const std::vector<pdf::PDFPrintSheet> sheets = printDialog.getSheets();
+    if (sheets.empty())
+    {
+        // Nothing to be printed
+        return;
+    }
 
-            case QAbstractPrintDialog::PageRange:
-            {
-                const pdf::PDFInteger fromPage = printDialog.fromPage();
-                const pdf::PDFInteger toPage = printDialog.toPage();
-                const pdf::PDFInteger pageCount = toPage - fromPage + 1;
-                if (pageCount > 0)
-                {
-                    pageIndices.resize(pageCount, 0);
-                    std::iota(pageIndices.begin(), pageIndices.end(), fromPage - 1);
-                }
-                break;
-            }
+    pdf::ProgressStartupInfo info;
+    info.showDialog = true;
+    info.text = tr("Printing document");
+    m_progress->start(sheets.size(), qMove(info));
+    PDFPrintRenderer::print(printDialog.getPrinter(), sheets, m_pdfDocument.data(), proxy, printDialog.getPrintSettings().tileMarks, [this]() { m_progress->step(); return true; });
+    m_progress->finish();
+}
 
-            default:
-                Q_ASSERT(false);
-                break;
-        }
+void PDFProgramController::drawPageForPrinting(QPainter* painter,
+                                               const QRectF& paperRect,
+                                               pdf::PDFDocument* document,
+                                               pdf::PDFInteger pageIndex,
+                                               const pdf::PDFDrawWidgetProxy* proxy)
+{
+    const pdf::PDFPage* page = document->getCatalog()->getPage(pageIndex);
+    if (!page)
+    {
+        return;
+    }
 
-        if (pageIndices.empty())
-        {
-            // Nothing to be printed
-            return;
-        }
+    // Page scaled to fit the paper and centered, the paper rectangle is in the device coordinates
+    pdf::PDFPrintSettings settings;
+    settings.scaleMode = pdf::PDFPrintSettings::ScaleMode::FitToPaper;
+    settings.autoRotate = false;
 
-        pdf::ProgressStartupInfo info;
-        info.showDialog = true;
-        info.text = tr("Printing document");
-        m_progress->start(pageIndices.size(), qMove(info));
-        printer.setFullPage(true);
-        QPainter painter(&printer);
-
-        const pdf::PDFCatalog* catalog = m_pdfDocument->getCatalog();
-        pdf::PDFDrawWidgetProxy* proxy = m_pdfWidget->getDrawWidgetProxy();
-        pdf::PDFOptionalContentActivity optionalContentActivity(m_pdfDocument.data(), pdf::OCUsage::Print, nullptr);
-        pdf::PDFCMSPointer cms = proxy->getCMSManager()->getCurrentCMS();
-        pdf::PDFRenderer renderer(m_pdfDocument.get(), proxy->getFontCache(), proxy->getIccProfileCache(), cms.data(), &optionalContentActivity, proxy->getFeatures(), proxy->getMeshQualitySettings());
-
-        const pdf::PDFInteger lastPage = pageIndices.back();
-        for (const pdf::PDFInteger pageIndex : pageIndices)
-        {
-            const pdf::PDFPage* page = catalog->getPage(pageIndex);
-            Q_ASSERT(page);
-
-            QRectF mediaBox = page->getRotatedMediaBox();
-            QRectF paperRect = printer.pageLayout().fullRectPixels(printer.resolution());
-            QSizeF scaledSize = mediaBox.size().scaled(paperRect.size(), Qt::KeepAspectRatio);
-            mediaBox.setSize(scaledSize);
-            mediaBox.moveCenter(paperRect.center());
-
-            renderer.render(&painter, mediaBox, pageIndex);
-            m_progress->step();
-
-            if (pageIndex != lastPage)
-            {
-                if (!printer.newPage())
-                {
-                    break;
-                }
-            }
-        }
-
-        painter.end();
-        m_progress->finish();
+    const QSizeF paperSize(paperRect.right(), paperRect.bottom());
+    for (const pdf::PDFPrintSheet& sheet : pdf::PDFPrintLayout::layoutPage(pageIndex, pdf::PDFPrintLayout::getPageSize(page), paperSize, paperRect, settings))
+    {
+        PDFPrintRenderer::drawSheet(painter, sheet, QTransform(), document, proxy, false);
     }
 }
 
@@ -3879,7 +3839,7 @@ void PDFProgramController::onPageRenderingErrorsChanged(pdf::PDFInteger pageInde
 {
     if (errorsCount > 0)
     {
-        m_mainWindowInterface->setStatusBarMessage(tr("Rendering of page %1: %2 errors occured.").arg(pageIndex + 1).arg(errorsCount), 4000);
+        m_mainWindowInterface->setStatusBarMessage(tr("Rendering of page %1: %n error(s) occurred.", nullptr, errorsCount).arg(pageIndex + 1), 4000);
     }
 }
 
