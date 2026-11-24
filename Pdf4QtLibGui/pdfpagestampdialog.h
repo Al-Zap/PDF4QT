@@ -88,6 +88,26 @@ public:
     QImage getPreviewImage() const { return m_previewImage; }
 
     /// Updates the preview immediately (it is updated after a short delay, when the settings change)
+    /// The dialog edits a step of a batch (PDFBatchProcessingDialog): the settings are
+    /// set by the setters below, the pages are entered as a text (there is no current
+    /// page), the replacement of the existing stamps is always offered, Bates numbers can
+    /// continue over the files, the settings are not remembered and nothing is applied.
+    /// Call it before the setters.
+    void setBatchMode();
+    bool isBatchMode() const { return m_batchMode; }
+
+    void setHeaderFooterSettings(const pdf::PDFHeaderFooterSettings& settings);
+    void setWatermarkSettings(const pdf::PDFWatermarkSettings& settings);
+    void setReplaceExisting(bool replaceExisting);
+
+    /// Pages of the batch mode in the form "1-3, 5, 8-" (empty = all pages)
+    void setPageSelection(const QString& pages);
+    QString getPageSelection() const;
+
+    /// Bates numbers continue in the next file of the batch
+    void setContinueBatesNumbering(bool continueNumbering);
+    bool isContinueBatesNumbering() const;
+
     void updatePreview();
 
     virtual void accept() override;
@@ -112,6 +132,9 @@ private:
     pdf::PDFStampTextStyle getTextStyle() const;
     pdf::PDFStampVariables getVariables() const;
     QMarginsF getMargins() const;
+    void setTextStyle(const pdf::PDFStampTextStyle& style);
+    void setVariables(const pdf::PDFStampVariables& variables);
+    void setMargins(const QMarginsF& margins);
     QString getSettingsGroup() const;
 
     virtual bool eventFilter(QObject* watched, QEvent* event) override;
@@ -124,6 +147,7 @@ private:
     QImage m_watermarkImage;
     QImage m_previewImage;
     QTimer* m_previewTimer = nullptr;
+    bool m_batchMode = false;
 
     // Headers and footers
     std::array<QPlainTextEdit*, pdf::PDFHeaderFooterSettings::PositionCount> m_positionEdits = { };
@@ -139,6 +163,7 @@ private:
     QSpinBox* m_batesDigitsSpinBox = nullptr;
     QComboBox* m_batesPositionComboBox = nullptr;
     QLabel* m_batesRangeLabel = nullptr;
+    QCheckBox* m_continueBatesCheckBox = nullptr;
 
     // Watermark
     QRadioButton* m_watermarkTextRadioButton = nullptr;

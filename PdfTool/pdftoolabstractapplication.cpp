@@ -23,6 +23,7 @@
 #include "pdftoolabstractapplication.h"
 #include "pdftoolocr.h"
 #include "pdftoolstamp.h"
+#include "pdftoolbatch.h"
 #include "pdfdocumentreader.h"
 #include "pdfutils.h"
 
@@ -215,6 +216,11 @@ void PDFToolAbstractApplication::initializeCommandLineParser(QCommandLineParser*
     if (optionFlags.testFlag(PageStamp))
     {
         PDFToolStampApplication::initializeCommandLineParser(parser, getStandardString(Command));
+    }
+
+    if (optionFlags.testFlag(Batch))
+    {
+        PDFToolBatch::initializeCommandLineParser(parser);
     }
 
     if (optionFlags.testFlag(Redact))
@@ -639,6 +645,11 @@ PDFToolOptions PDFToolAbstractApplication::getOptions(QCommandLineParser* parser
     if (optionFlags.testFlag(PageStamp))
     {
         PDFToolStampApplication::readOptions(parser, getStandardString(Command), options.stamp);
+    }
+
+    if (optionFlags.testFlag(Batch))
+    {
+        PDFToolBatch::readOptions(parser, positionalArguments, options.batch);
     }
 
     if (optionFlags.testFlag(Redact))
