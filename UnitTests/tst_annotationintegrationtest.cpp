@@ -37,6 +37,7 @@
 #include "pdftexttospeech.h"
 #include "pdfbookmarkmanager.h"
 #include "pdfviewersettings.h"
+#include "pdfprogramcontroller.h"
 
 #include <QtTest>
 #include <QAction>
@@ -74,6 +75,7 @@ private slots:
     void undoRedoOfGeometry();
     void sidebarSelectionIsSynchronized();
     void editedDocumentIsSavedAndReopened();
+    void printedPageHasComments();
 
 private:
     QTemporaryDir m_settingsDirectory;
@@ -473,6 +475,45 @@ void AnnotationIntegrationTest::editedDocumentIsSavedAndReopened()
     const PDFAnnotationPtr reopenedPolygon = PDFAnnotation::parse(&reopened.getStorage(), newAnnotations.front());
     QVERIFY(QLineF(reopenedPolygon->getRectangle().normalized().topLeft(), QPointF(40, 40)).length() < 0.01);
     QVERIFY(QLineF(reopenedPolygon->getRectangle().normalized().bottomRight(), QPointF(190, 180)).length() < 0.01);
+}
+
+void AnnotationIntegrationTest::printedPageHasComments()
+{
+    // A yellow square comment on a white page. The printed page has the comment (it is
+    // not a part of the page content), and the inverted colors of the screen (dark mode)
+    // are not applied to the paper.
+    PDFDocumentBuilder builder;
+    const PDFObjectReference page = builder.appendPage(QRectF(0, 0, 300, 300));
+    builder.createAnnotationSquare(page, QRectF(50, 50, 60, 40), 1.0, Qt::yellow, Qt::black, "Title", "Subject", "Contents");
+    IntegrationFixture fixture(builder.build());
+
+    auto print = [&fixture]()
+    {
+        QImage image(300, 300, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::white);
+        QPainter painter(&image);
+        pdfviewer::PDFProgramController::drawPageForPrinting(&painter, QRectF(image.rect()), fixture.document.data(), 0, fixture.widget.getDrawWidgetProxy());
+        painter.end();
+        return image;
+    };
+
+    // The page is mapped 1:1 onto the image, the y axis goes down in the image
+    const QPoint insideComment(80, 300 - 70);
+    const QPoint paper(10, 10);
+
+    const QImage printed = print();
+    QCOMPARE(printed.pixelColor(insideComment).rgb(), QColor(Qt::yellow).rgb());
+    QCOMPARE(printed.pixelColor(paper).rgb(), QColor(Qt::white).rgb());
+
+    PDFDrawWidgetProxy* proxy = fixture.widget.getDrawWidgetProxy();
+    proxy->setFeatures(proxy->getFeatures() | PDFRenderer::ColorAdjust_Invert);
+    const QImage printedInDarkMode = print();
+    QCOMPARE(printedInDarkMode.pixelColor(insideComment).rgb(), QColor(Qt::yellow).rgb());
+    QCOMPARE(printedInDarkMode.pixelColor(paper).rgb(), QColor(Qt::white).rgb());
+
+    // Comments hidden on the screen are printed all the same
+    proxy->setFeatures(proxy->getFeatures() & ~PDFRenderer::DisplayAnnotations);
+    QCOMPARE(print().pixelColor(insideComment).rgb(), QColor(Qt::yellow).rgb());
 }
 
 QTEST_MAIN(AnnotationIntegrationTest)
