@@ -117,6 +117,8 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfbatchprocessor.h
     sources/pdfpagestamper.cpp
     sources/pdfpagestamper.h
+    sources/pdfvisualcompare.cpp
+    sources/pdfvisualcompare.h
     sources/pdfredact.cpp
     sources/pdfredact.h
     sources/pdfsecurityhandler.cpp
