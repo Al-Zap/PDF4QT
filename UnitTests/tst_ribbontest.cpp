@@ -40,6 +40,7 @@
 #include <QLineEdit>
 #include <QScrollBar>
 #include <QSettings>
+#include <QFontMetrics>
 #include <QWheelEvent>
 #include <QTemporaryDir>
 #include <QStandardPaths>
@@ -1105,12 +1106,16 @@ void RibbonTest::tabsAreOrganized()
         }
     }
 
-    // The View tab shows the texts of all its buttons in a maximized full HD window
+    // The View tab shows the texts of all its buttons in a maximized full HD window.
+    // The width is given for a font 14 pixels high (9 points at 96 dpi), platforms
+    // with a larger font (the offscreen platform of Windows) get a wider window.
     const QString currentPageId = ribbon->getCurrentPageId();
-    m_window->resize(1920, 1000);
+    const int fontHeight = QFontMetrics(ribbon->font()).height();
+    const int fullHdWidth = qMax(1920, qRound(1920.0 * fontHeight / 14.0));
+    m_window->resize(fullHdWidth, 1000);
     ribbon->setCurrentPage("view");
     QCoreApplication::processEvents();
-    if (ribbon->width() >= 1900)
+    if (ribbon->width() >= fullHdWidth - 20)
     {
         // The page is fitted to its width after the layout, the widths of the groups
         // without reduction are reported, if it is not wide enough
@@ -1133,7 +1138,8 @@ void RibbonTest::tabsAreOrganized()
             {
                 widths << QString("%1=%2").arg(group->getTitle()).arg(group->getReducedWidth(pdfviewer::PDFRibbonGroup::Reduction::None));
             }
-            QFAIL(qPrintable(QString("View tab reduced at the width %1: %2").arg(ribbon->width()).arg(widths.join(", "))));
+            const QFontMetrics fontMetrics(ribbon->font());
+            QFAIL(qPrintable(QString("View tab reduced at the width %1: %2 (font %3, average character width %4, height %5)").arg(ribbon->width()).arg(widths.join(", "), ribbon->font().toString()).arg(fontMetrics.averageCharWidth()).arg(fontMetrics.height())));
         }
     }
     ribbon->setCurrentPage(currentPageId);
