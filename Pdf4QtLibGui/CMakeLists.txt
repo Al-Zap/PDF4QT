@@ -84,6 +84,8 @@ add_library(Pdf4QtLibGui SHARED
     pdfpagestampdialog.h
     pdfvisualcomparedialog.cpp
     pdfvisualcomparedialog.h
+    pdfsheetlinksdialog.cpp
+    pdfsheetlinksdialog.h
     pdfmarkupslistwidget.cpp
     pdfmarkupslistwidget.h
     pdfcustomstampdialog.cpp

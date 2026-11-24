@@ -438,6 +438,19 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_actionManager->setAction(PDFActionManager::OptimizeImages, ui->actionOptimizeImages);
     m_actionManager->setAction(PDFActionManager::Sanitize, ui->actionSanitize);
     m_actionManager->setAction(PDFActionManager::RemoveExternalLinks, ui->actionRemoveExternalLinks);
+
+    // Links of the sheet references of a plan set ("SEE SHEET E-102") to the sheets
+    m_sheetLinksAction = new QAction(PDFEditorMainWindowHelper::getThemedIcon(QStringLiteral("hyperlink")), tr("S&heet Links..."), this);
+    m_sheetLinksAction->setObjectName("actionSheetLinks");
+    m_sheetLinksAction->setToolTip(tr("Link the references to other sheets (sheet numbers like E-102) to those sheets"));
+    m_removeSheetLinksAction = new QAction(PDFEditorMainWindowHelper::getIcon(QStringLiteral("ribbon-link-remove")), tr("Remove Sheet Links"), this);
+    m_removeSheetLinksAction->setObjectName("actionRemoveSheetLinks");
+    m_removeSheetLinksAction->setToolTip(tr("Remove the sheet links created by Sheet Links, other links are kept"));
+    ui->menuInsert->addSeparator();
+    ui->menuInsert->addAction(m_sheetLinksAction);
+    ui->menuInsert->addAction(m_removeSheetLinksAction);
+    m_actionManager->setAction(PDFActionManager::SheetLinks, m_sheetLinksAction);
+    m_actionManager->setAction(PDFActionManager::RemoveSheetLinks, m_removeSheetLinksAction);
     m_actionManager->setAction(PDFActionManager::HeaderFooter, ui->actionHeaderFooter);
     m_actionManager->setAction(PDFActionManager::BatesNumbering, ui->actionBatesNumbering);
     m_actionManager->setAction(PDFActionManager::Watermark, ui->actionWatermark);
@@ -974,6 +987,7 @@ void PDFEditorMainWindow::createRibbon()
     group->addLargeAction(ui->actionInlineText, tr("Text Box"));
     group->addLargeAction(ui->actionCreateHyperlink, tr("Web Link"));
     group->addMenu(Size::Large, tr("Link to Page"), Helper::getThemedIcon(QStringLiteral("hyperlink")), ui->menuHyperlinkToThisPDF);
+    group->addSmallAction(m_removeSheetLinksAction, tr("Remove Sheet Links"));
 
     // Group of the page content editor (plugin) is in front of the document group
     m_ribbon->getGroup("edit", "content", tr("Page Content"));
@@ -1027,6 +1041,10 @@ void PDFEditorMainWindow::createRibbon()
 
     // Lighting: tools made for the lighting plans (fixture count plugin)
     m_ribbon->getGroup("lighting", "count", tr("Fixture Count"));
+    m_ribbon->getGroup("lighting", "legend", tr("Legend"));
+    m_ribbon->getGroup("lighting", "footcandles", tr("Footcandles"));
+    m_ribbon->getGroup("lighting", "schedule", tr("Schedule"));
+    m_ribbon->getGroup("lighting", "wire", tr("Wire Takeoff"));
 
     // Pages: organizing actions are added, when the navigation pane is created
     m_ribbon->getGroup("pages", "organize", tr("Organize"));
@@ -1453,6 +1471,19 @@ QMenu* PDFEditorMainWindow::addPluginUserInterface(pdf::PDFPlugin* plugin,
         Helper::placeActions(group, remainingActions,
                              { "fixturecount_CountAction", "fixturecount_FindSimilarAction", "fixturecount_ShowPanelAction", "fixturecount_ExportAction" }, { },
                              { { "fixturecount_CountAction", tr("Count") }, { "fixturecount_ShowPanelAction", tr("Count Panel") }, { "fixturecount_ExportAction", tr("Export") } });
+
+        // Lighting tools of the same plugin have their own groups on the Lighting tab
+        Helper::placeActions(m_ribbon->getGroup("lighting", "legend", tr("Legend")), remainingActions,
+                             { "lighting_PlaceSheetLegendAction", "lighting_PlaceSetLegendAction" }, { "lighting_UpdateTablesAction" },
+                             { { "lighting_PlaceSheetLegendAction", tr("Sheet Legend") }, { "lighting_PlaceSetLegendAction", tr("Set Legend") },
+                               { "lighting_UpdateTablesAction", tr("Update Tables") } });
+        Helper::placeActions(m_ribbon->getGroup("lighting", "footcandles", tr("Footcandles")), remainingActions,
+                             { "lighting_FootcandleStatsAction" }, { }, { { "lighting_FootcandleStatsAction", tr("Grid Stats") } });
+        Helper::placeActions(m_ribbon->getGroup("lighting", "schedule", tr("Schedule")), remainingActions,
+                             { "lighting_ReadScheduleAction" }, { }, { { "lighting_ReadScheduleAction", tr("Read Schedule") } });
+        Helper::placeActions(m_ribbon->getGroup("lighting", "wire", tr("Wire Takeoff")), remainingActions,
+                             { "lighting_WireRunAction", "lighting_WireTakeoffAction" }, { },
+                             { { "lighting_WireRunAction", tr("Wire Run") }, { "lighting_WireTakeoffAction", tr("Takeoff") } });
         Helper::placeRemainingActions(group, remainingActions, tr("More"), moreIcon);
     }
     else if (pluginName == QLatin1String("Editor"))

@@ -149,6 +149,8 @@ public:
         OptimizeImages,
         Sanitize,
         RemoveExternalLinks,
+        SheetLinks,
+        RemoveSheetLinks,
         HeaderFooter,
         BatesNumbering,
         Watermark,
@@ -445,6 +447,8 @@ private:
     void onActionOptimizeImagesTriggered();
     void onActionSanitizeTriggered();
     void onActionRemoveExternalLinksTriggered();
+    void onActionSheetLinksTriggered();
+    void onActionRemoveSheetLinksTriggered();
     void onActionHeaderFooterTriggered();
     void onActionBatesNumberingTriggered();
     void onActionWatermarkTriggered();
