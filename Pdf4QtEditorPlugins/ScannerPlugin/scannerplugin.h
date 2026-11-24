@@ -34,7 +34,7 @@ private:
     using BaseClass = pdf::PDFPlugin;
 
 public:
-    ScannerPlugin();
+    Q_INVOKABLE ScannerPlugin();
 
     virtual void setWidget(pdf::PDFWidget* widget) override;
     virtual std::vector<QAction*> getActions() const override;

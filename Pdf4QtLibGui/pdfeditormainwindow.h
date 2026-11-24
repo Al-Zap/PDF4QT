@@ -52,8 +52,10 @@
 #include <QPointer>
 
 #include <map>
+#include <functional>
 
 class QLabel;
+class QSplitter;
 class QSpinBox;
 class QSettings;
 class QDoubleSpinBox;
@@ -77,6 +79,7 @@ namespace pdfviewer
 {
 class PDFSidebarWidget;
 class PDFAdvancedFindWidget;
+class PDFSplitViewWidget;
 class PDFMarkupsListWidget;
 
 class PDF4QTLIBGUILIBSHARED_EXPORT PDFEditorMainWindow : public QMainWindow, public IMainWindow
@@ -84,7 +87,12 @@ class PDF4QTLIBGUILIBSHARED_EXPORT PDFEditorMainWindow : public QMainWindow, pub
     Q_OBJECT
 
 public:
-    explicit PDFEditorMainWindow(QWidget *parent = nullptr);
+    /// Creates the main window of the editor. An embedded main window is
+    /// a page of a window with several documents in tabs (PDFEditorTabWindow),
+    /// it is not a top level window and it does not keep the window geometry.
+    /// \param parent Parent widget
+    /// \param isEmbedded Is the main window a tab of another window?
+    explicit PDFEditorMainWindow(QWidget* parent = nullptr, bool isEmbedded = false);
     virtual ~PDFEditorMainWindow() override;
 
     virtual void closeEvent(QCloseEvent* event) override;
@@ -102,6 +110,19 @@ public:
                                           const QString& pluginName,
                                           const std::vector<QAction*>& toolbarActions,
                                           bool& toolbarActionsPlaced) override;
+    virtual bool openDocumentElsewhere(const QString& fileName) override;
+
+    /// Sets the handler of the documents opened by the user (see IMainWindow::openDocumentElsewhere),
+    /// the window with the tabs opens them in other tabs.
+    void setOpenDocumentElsewhereHandler(std::function<bool(const QString&)> handler) { m_openDocumentElsewhereHandler = std::move(handler); }
+
+    /// Shows or hides the second pane of the split view
+    void setSplitViewVisible(bool visible);
+
+    /// Returns the second pane of the split view, or nullptr, if the split view is not shown
+    PDFSplitViewWidget* getSplitViewWidget() const { return m_splitViewWidget; }
+
+    QAction* getSplitViewAction() const { return m_splitViewAction; }
 
     /// Returns the ribbon, on which the features place their actions (see
     /// PDFRibbon::getGroup). Returns nullptr, if the classic layout is used.
@@ -180,6 +201,11 @@ private:
     QAction* m_commentsListAction = nullptr;
     QAction* m_compareDocumentsAction = nullptr;
     QAction* m_collapseRibbonAction;
+    QAction* m_splitViewAction = nullptr;
+    QSplitter* m_splitter = nullptr;
+    PDFSplitViewWidget* m_splitViewWidget = nullptr;
+    std::function<bool(const QString&)> m_openDocumentElsewhereHandler;
+
     QPointer<QAction> m_lastMeasureAction;
     int m_sidebarWidth;
 };

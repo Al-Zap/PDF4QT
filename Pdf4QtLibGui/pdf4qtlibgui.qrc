@@ -145,6 +145,7 @@
         <file>resources/ribbon-watermark.svg</file>
         <file>resources/ribbon-stamp-remove.svg</file>
         <file>resources/ribbon-compare.svg</file>
+        <file>resources/ribbon-split-view.svg</file>
         <file>resources/ribbon-page-extract.svg</file>
         <file>resources/ribbon-snap.svg</file>
         <file>resources/ribbon-scale-sheet.svg</file>

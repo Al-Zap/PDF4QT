@@ -69,6 +69,7 @@
 #include "pdfdocxexporter.h"
 #include "pdfoperationcontrol.h"
 
+#include <QSet>
 #include <QMenu>
 #include <QPrinter>
 #include <QPrintDialog>
@@ -455,6 +456,15 @@ PDFProgramController::~PDFProgramController()
     delete m_makeSearchable;
     m_makeSearchable = nullptr;
 
+    // Own instances of the plugins are destroyed while the widget exists
+    for (pdf::PDFPlugin* plugin : m_ownPlugins)
+    {
+        delete plugin;
+    }
+    m_ownPlugins.clear();
+    m_loadedPlugins.clear();
+
+
     // Application is closed normally, recovery copy is not needed
     removeRecoveryCopy(m_fileInfo.originalFileName);
 
@@ -766,7 +776,7 @@ void PDFProgramController::initialize(Features features,
 
     if (m_recentFileManager)
     {
-        connect(m_recentFileManager, &PDFRecentFileManager::fileOpenRequest, this, &PDFProgramController::openDocument);
+        connect(m_recentFileManager, &PDFRecentFileManager::fileOpenRequest, this, &PDFProgramController::requestOpenDocument);
 
         for (QAction* action : m_recentFileManager->getActions())
         {
@@ -2176,7 +2186,7 @@ void PDFProgramController::onActionCompareDocumentsTriggered()
 
     if (dialog.isOpenReportRequested())
     {
-        openDocument(dialog.getReportFileName());
+        requestOpenDocument(dialog.getReportFileName());
     }
 }
 
@@ -2396,7 +2406,7 @@ void PDFProgramController::onActionBatchRecognizeTextTriggered()
     PDFOCRBatchDialog dialog(m_mainWindow);
     if (dialog.exec() == QDialog::Accepted && !dialog.getDocumentToOpen().isEmpty())
     {
-        openDocument(dialog.getDocumentToOpen());
+        requestOpenDocument(dialog.getDocumentToOpen());
     }
 }
 
@@ -2406,7 +2416,7 @@ void PDFProgramController::onActionBatchProcessingTriggered()
     PDFBatchProcessingDialog dialog(m_mainWindow);
     if (dialog.exec() == QDialog::Accepted && !dialog.getDocumentToOpen().isEmpty())
     {
-        openDocument(dialog.getDocumentToOpen());
+        requestOpenDocument(dialog.getDocumentToOpen());
     }
 }
 
@@ -2679,8 +2689,14 @@ void PDFProgramController::readSettings(Settings settingsFlags)
 
     if (settingsFlags.testFlag(WindowSettings))
     {
-        QByteArray geometry = settings.value("geometry", QByteArray()).toByteArray();
-        if (geometry.isEmpty())
+        // A main window in a tab of a window with several documents has
+        // no geometry of its own, the window with the tabs keeps it.
+        QByteArray geometry = m_mainWindow->isWindow() ? settings.value("geometry", QByteArray()).toByteArray() : QByteArray();
+        if (!m_mainWindow->isWindow())
+        {
+            // Nothing to do, the geometry is given by the tab
+        }
+        else if (geometry.isEmpty())
         {
             QRect availableGeometry = QApplication::primaryScreen()->availableGeometry();
             QRect windowRect(0, 0, availableGeometry.width() / 2, availableGeometry.height() / 2);
@@ -2952,8 +2968,24 @@ void PDFProgramController::updateFileWatcher(bool forceDisable)
     }
 }
 
+void PDFProgramController::requestOpenDocument(const QString& fileName)
+{
+    if (m_mainWindowInterface && m_mainWindowInterface->openDocumentElsewhere(fileName))
+    {
+        return;
+    }
+
+    openDocument(fileName);
+}
+
+bool PDFProgramController::isDocumentModified() const
+{
+    return m_pdfDocument && m_undoRedoManager && !m_undoRedoManager->isCurrentSaved();
+}
+
 void PDFProgramController::openDocument(const QString& fileName)
 {
+
     // Unsaved changes of the old document would be lost (and its recovery
     // copy is removed, when it is closed), so user must decide first.
     if (!askForSaveDocumentBeforeClose())
@@ -3505,6 +3537,28 @@ void PDFProgramController::loadPlugins()
             pdf::PDFPlugin* plugin = qobject_cast<pdf::PDFPlugin*>(loader.instance());
             if (plugin)
             {
+                // The instance of a plugin library is shared by all main windows (tabs of the
+                // window with several documents), but a plugin works with a single widget.
+                // The first main window uses the instance of the library, the other ones
+                // create their own instances (the constructor of the plugin is invokable).
+                static QSet<QString> pluginsWithUsedInstance;
+                if (pluginsWithUsedInstance.contains(pluginFileName))
+                {
+                    pdf::PDFPlugin* ownPlugin = qobject_cast<pdf::PDFPlugin*>(plugin->metaObject()->newInstance());
+                    if (!ownPlugin)
+                    {
+                        qWarning("Plugin %s cannot be used in more windows, its constructor is not invokable.", qPrintable(pluginName));
+                        continue;
+                    }
+
+                    m_ownPlugins.push_back(ownPlugin);
+                    plugin = ownPlugin;
+                }
+                else
+                {
+                    pluginsWithUsedInstance.insert(pluginFileName);
+                }
+
                 m_loadedPlugins.push_back(std::make_pair(m_plugins.back(), plugin));
             }
         }
@@ -3591,7 +3645,11 @@ void PDFProgramController::writeSettings()
     Q_ASSERT(!m_isFactorySettingsBeingRestored);
 
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, QCoreApplication::organizationName(), QCoreApplication::applicationName());
-    settings.setValue("geometry", m_mainWindow->saveGeometry());
+    if (m_mainWindow->isWindow())
+    {
+        settings.setValue("geometry", m_mainWindow->saveGeometry());
+    }
+
     settings.setValue("windowState", m_mainWindow->saveState());
 
     m_settings->writeSettings(settings);
@@ -3646,7 +3704,8 @@ void PDFProgramController::resetSettings()
 
         QMessageBox::information(m_mainWindow, tr("Reset Settings"), tr("Default factory settings were restored. Application will be now closed."));
         m_isFactorySettingsBeingRestored = true;
-        m_mainWindow->close();
+        m_mainWindow->window()->close();
+
     }
 }
 
@@ -3720,7 +3779,7 @@ void PDFProgramController::onActionOpenTriggered()
     QString fileName = QFileDialog::getOpenFileName(m_mainWindow, tr("Select PDF document"), m_settings->getDirectory(), tr("PDF document (*.pdf)"));
     if (!fileName.isEmpty())
     {
-        openDocument(fileName);
+        requestOpenDocument(fileName);
     }
 }
 
@@ -3729,6 +3788,7 @@ void PDFProgramController::onActionCloseTriggered()
     if (askForSaveDocumentBeforeClose())
     {
         closeDocument();
+        Q_EMIT documentClosedByUser();
     }
 }
 

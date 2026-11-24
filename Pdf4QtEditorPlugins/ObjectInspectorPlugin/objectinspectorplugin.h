@@ -39,7 +39,7 @@ private:
     using BaseClass = pdf::PDFPlugin;
 
 public:
-    ObjectInspectorPlugin();
+    Q_INVOKABLE ObjectInspectorPlugin();
 
     virtual void setWidget(pdf::PDFWidget* widget) override;
     virtual void setCMSManager(pdf::PDFCMSManager* manager) override;

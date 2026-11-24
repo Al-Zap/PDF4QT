@@ -45,7 +45,7 @@ private:
     using BaseClass = pdf::PDFPlugin;
 
 public:
-    AudioBookPlugin();
+    Q_INVOKABLE AudioBookPlugin();
     virtual ~AudioBookPlugin() override;
 
     virtual void setWidget(pdf::PDFWidget* widget) override;

@@ -39,7 +39,7 @@ private:
     using BaseClass = pdf::PDFPlugin;
 
 public:
-    OutputPreviewPlugin();
+    Q_INVOKABLE OutputPreviewPlugin();
 
     virtual void setWidget(pdf::PDFWidget* widget) override;
     virtual void setDocument(const pdf::PDFModifiedDocument& document) override;
