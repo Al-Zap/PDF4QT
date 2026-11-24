@@ -1,4 +1,5 @@
 CURRENT:
+ - Compare documents (visual overlay of two revisions of drawing sheets): older revision red, newer green, unchanged gray, automatic alignment of shifted sheets, revision clouds and bookmarks for each change in a report document with a summary; ribbon Comment > Compare Documents, PdfTool command compare
  - Ribbon in narrow windows: groups get small buttons, then buttons without texts, then collapse into a drop down button, instead of scrolling behind an arrow; long status bar messages (hints of the tools) are no longer cut off by the page and zoom controls
  - Batch processing (ribbon Convert > Batch Process, PdfTool batch): a saved sequence of steps (headers and footers, Bates numbering continued over the files, watermarks, removal of stamps, flattening of forms, rotation, OCR, optimization, sanitization, password, export to Word, text and images) run over files or folders
  - Bates numbering, headers and footers and watermarks (text or image, over or behind the content): ribbon group Pages > Page Design with a preview dialog, undoable, stamps can be replaced or removed later; PdfTool commands bates, header-footer, watermark and remove-stamps
