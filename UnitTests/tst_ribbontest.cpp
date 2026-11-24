@@ -123,6 +123,7 @@ private:
 
     static void createTestRibbon(TestRibbon& testRibbon);
     static void resizeTestRibbon(TestRibbon& testRibbon, int width);
+    static QString describeTestRibbon(const TestRibbon& testRibbon);
     static std::vector<pdfviewer::PDFRibbonGroup::Reduction> getReductions(const TestRibbon& testRibbon);
 
     QTemporaryDir m_directory;
@@ -642,6 +643,21 @@ void RibbonTest::createTestRibbon(TestRibbon& testRibbon)
     resizeTestRibbon(testRibbon, 3000);
 }
 
+QString RibbonTest::describeTestRibbon(const TestRibbon& testRibbon)
+{
+    using Reduction = pdfviewer::PDFRibbonGroup::Reduction;
+
+    QStringList groups;
+    for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
+    {
+        groups << QString("%1 [%2] %3/%4/%5/%6 px, now %7 px").arg(group->getTitle()).arg(int(group->getReduction()))
+                  .arg(group->getReducedWidth(Reduction::None)).arg(group->getReducedWidth(Reduction::SmallButtons))
+                  .arg(group->getReducedWidth(Reduction::IconButtons)).arg(group->getReducedWidth(Reduction::Collapsed)).arg(group->width());
+    }
+
+    return QString("ribbon %1 px, page %2 px (hint %3 px): %4").arg(testRibbon.ribbon->width()).arg(testRibbon.page->width()).arg(testRibbon.page->sizeHint().width()).arg(groups.join(", "));
+}
+
 void RibbonTest::resizeTestRibbon(TestRibbon& testRibbon, int width)
 {
     testRibbon.ribbon->resize(width, testRibbon.ribbon->sizeHint().height());
@@ -673,7 +689,7 @@ void RibbonTest::groupsShrinkStepByStep()
     // Wide window: groups have their full size
     for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
     {
-        QCOMPARE(group->getReduction(), Reduction::None);
+        QVERIFY2(group->getReduction() == Reduction::None, qPrintable(describeTestRibbon(testRibbon)));
     }
 
     const int fullWidth = testRibbon.page->sizeHint().width();
