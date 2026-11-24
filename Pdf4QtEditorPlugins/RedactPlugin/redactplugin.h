@@ -24,8 +24,11 @@
 #define REDACTPLUGIN_H
 
 #include "pdfplugin.h"
+#include "pdftextlayout.h"
 
 #include <QObject>
+
+#include <optional>
 
 namespace pdfplugin
 {
@@ -52,6 +55,12 @@ private:
     void onRedactTextSelectionTriggered();
     void onRedactPageTriggered();
     void onCreateRedactedDocumentTriggered();
+    void onSearchRedactTriggered();
+    void onApplyRedactionsTriggered();
+
+    /// Returns text layouts of all pages of the current document (the layouts of the
+    /// widget are used, if they are ready, otherwise they are created and cached)
+    const pdf::PDFTextLayoutStorage* getTextLayouts();
 
     QString getRedactedFileName() const;
 
@@ -60,6 +69,11 @@ private:
     QAction* m_actionRedactTextSelection;
     QAction* m_actionRedactPage;
     QAction* m_actionCreateRedactedDocument;
+    QAction* m_actionSearchRedact;
+    QAction* m_actionApplyRedactions;
+
+    /// Text layouts of the current document, created by the plugin
+    std::optional<pdf::PDFTextLayoutStorage> m_textLayouts;
 };
 
 }   // namespace pdfplugin

@@ -138,6 +138,38 @@ struct PDFToolStampOptions
     QString invalidArgument;
 };
 
+/// Options of the command 'redact', which mark the content to be redacted
+/// (in addition to the redaction marks, which are already in the document)
+struct PDFToolRedactOptions
+{
+    /// Searched words or phrases
+    QStringList searchTexts;
+
+    /// Searched regular expressions
+    QStringList regularExpressions;
+
+    /// Searched predefined patterns
+    std::vector<pdf::PDFRedactSearch::Pattern> patterns;
+
+    bool caseSensitive = false;
+    bool wholeWords = false;
+
+    /// Marked areas - zero based page index and rectangle in the page space (points)
+    std::vector<std::pair<pdf::PDFInteger, QRectF>> areas;
+
+    /// Whole pages to be redacted (page range, for example "1,3-5")
+    QString pages;
+
+    /// Marks are only added (for review in the editor), they are not applied
+    bool markOnly = false;
+
+    /// Fill color of the redacted areas (invalid = color of each mark)
+    QColor fillColor = Qt::black;
+
+    /// Description of the first invalid value of an option (empty = all options are valid)
+    QString invalidArgument;
+};
+
 /// Options of the command 'compare' (visual comparison of two revisions)
 struct PDFToolVisualCompareOptions
 {
@@ -299,6 +331,7 @@ struct PDFToolOptions
     // For option 'Redact'
     pdf::PDFRedact::Options redactOptions = {};
     QString redactedDocument;
+    PDFToolRedactOptions redact;
 
     // For option 'Bitonal'
     QString bitonalDocument;

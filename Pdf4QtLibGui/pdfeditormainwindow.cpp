@@ -1445,9 +1445,9 @@ QMenu* PDFEditorMainWindow::addPluginUserInterface(pdf::PDFPlugin* plugin,
         std::vector<QAction*> remainingActions = actions;
         PDFRibbonGroup* group = m_ribbon->getGroup("protect", "redact", tr("Redact"));
         Helper::placeActions(group, remainingActions,
-                             { "redactplugin_RedactRectangle", "redactplugin_RedactText" },
+                             { "redactplugin_RedactRectangle", "redactplugin_RedactText", "redactplugin_SearchRedact" },
                              { "redactplugin_RedactTextSelection", "redactplugin_RedactPage" });
-        Helper::placeActions(group, remainingActions, { "redactplugin_CreateRedactedDocument" }, { });
+        Helper::placeActions(group, remainingActions, { "redactplugin_ApplyRedactions" }, { "redactplugin_CreateRedactedDocument" });
         Helper::placeRemainingActions(group, remainingActions, tr("More"), moreIcon);
     }
     else if (pluginName == QLatin1String("Scanner"))

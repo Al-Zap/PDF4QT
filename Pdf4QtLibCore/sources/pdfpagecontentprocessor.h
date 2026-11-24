@@ -171,6 +171,7 @@ public:
     void setCurrentTransformationMatrix(const QTransform& currentTransformationMatrix);
 
     const PDFAbstractColorSpace* getStrokeColorSpace() const { return m_strokeColorSpace.data(); }
+    const QSharedPointer<PDFAbstractColorSpace>& getStrokeColorSpacePointer() const { return m_strokeColorSpace; }
     void setStrokeColorSpace(const QSharedPointer<PDFAbstractColorSpace>& strokeColorSpace);
 
     const PDFAbstractColorSpace* getFillColorSpace() const { return m_fillColorSpace.data(); }
