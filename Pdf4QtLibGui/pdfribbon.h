@@ -32,6 +32,7 @@
 #include <QPointer>
 #include <QToolButton>
 
+#include <array>
 #include <vector>
 
 class QMenu;
@@ -41,6 +42,7 @@ class QTabBar;
 class QHBoxLayout;
 class QVBoxLayout;
 class QScrollArea;
+class QStatusBar;
 class QStackedWidget;
 
 namespace pdfviewer
@@ -88,6 +90,10 @@ public:
     QAction* getAction() const { return m_action; }
     Size getButtonSize() const { return m_size; }
 
+    /// Changes the size of the button (a group of the ribbon makes its buttons
+    /// smaller, when the window is narrow)
+    void setButtonSize(Size size);
+
     /// Returns the text of the action as it is displayed on a button
     /// (without the mnemonics and the ellipsis)
     static QString getCleanText(const QString& text);
@@ -98,7 +104,12 @@ public:
     virtual QSize sizeHint() const override;
     virtual QSize minimumSizeHint() const override;
 
+signals:
+    /// The text or the visibility of the button has changed, so has its size
+    void sizeHintChanged();
+
 private:
+    void applyButtonSize();
     void updateFromAction();
     void onClicked();
     void setDisplayedText(const QString& text);
@@ -112,6 +123,11 @@ private:
 /// Group of buttons on a page of the ribbon, with a caption below the buttons.
 /// The buttons are placed in columns from the left to the right: a large button
 /// takes a whole column, small buttons are stacked by three.
+///
+/// When the window is narrow, the group is reduced step by step (as in the office
+/// applications): large buttons become small buttons, then the buttons lose their
+/// texts, and at last the whole group is collapsed into a single button, which
+/// opens the group in a drop down window.
 class PDF4QTLIBGUILIBSHARED_EXPORT PDFRibbonGroup : public QWidget
 {
     Q_OBJECT
@@ -121,6 +137,15 @@ private:
 
 public:
     explicit PDFRibbonGroup(const QString& title, QWidget* parent);
+
+    enum class Reduction
+    {
+        None,           ///< Buttons have the size, which they were created with
+        SmallButtons,   ///< Large buttons are small buttons
+        IconButtons,    ///< Large and small buttons have no text
+        Collapsed,      ///< The group is a single button with a drop down window
+        Count
+    };
 
     /// Adds a large button of the action
     PDFRibbonButton* addLargeAction(QAction* action, const QString& text = QString());
@@ -159,17 +184,74 @@ public:
 
     QString getTitle() const;
 
-private:
-    PDFRibbonButton* createButton(PDFRibbonButton::Size size);
-    void placeButton(PDFRibbonButton* button);
-    void placeSmallWidget(QWidget* widget);
+    /// Returns the width of the group with a given reduction. The widths are
+    /// cached, the group is laid out only when a width is not known.
+    int getReducedWidth(Reduction reduction);
 
+    /// Reduces the group (or restores it with Reduction::None)
+    void setReduction(Reduction reduction);
+    Reduction getReduction() const { return m_reduction; }
+
+    /// Returns the button of the collapsed group, or nullptr, if the group was never collapsed
+    PDFRibbonButton* getCollapsedButton() const { return m_collapsedButton; }
+
+    /// Returns the drop down window of the collapsed group, or nullptr
+    QMenu* getCollapsedMenu() const { return m_collapsedMenu; }
+
+    /// Returns the widget, which contains the buttons of the group (it lies in the
+    /// drop down window, while the window of the collapsed group is open)
+    QWidget* getContentWidget() const { return m_contentWidget; }
+
+signals:
+    /// The size of the group has changed (texts or visibility of the buttons),
+    /// the widths of the reductions must be computed again
+    void reductionInvalidated();
+
+protected:
+    virtual void changeEvent(QEvent* event) override;
+
+private:
+    enum class ItemType
+    {
+        Button,
+        Widget,
+        SmallWidget,
+        ColumnBreak,
+        Separator
+    };
+
+    struct Item
+    {
+        ItemType type = ItemType::Widget;
+        QWidget* widget = nullptr;
+        PDFRibbonButton::Size size = PDFRibbonButton::Size::Large;
+    };
+
+    PDFRibbonButton* createButton(PDFRibbonButton::Size size);
+    void addItem(ItemType type, QWidget* widget);
+    void layoutContent(Reduction reduction);
+    void applyReduction(Reduction reduction);
+    void invalidateReduction();
+    void createCollapsedButton();
+    void closeCollapsedMenu();
+    void onCollapsedMenuAboutToShow();
+    void onCollapsedMenuAboutToHide();
+
+    QVBoxLayout* m_groupLayout;
+    QWidget* m_contentWidget;
     QHBoxLayout* m_contentLayout;
-    QVBoxLayout* m_smallColumnLayout;
-    QHBoxLayout* m_iconRowLayout;
     QLabel* m_titleLabel;
-    int m_smallColumnCount;
+    PDFRibbonButton* m_collapsedButton;
+    QMenu* m_collapsedMenu;
+    QWidget* m_collapsedMenuContainer;
+    std::vector<Item> m_items;
+    std::array<int, size_t(Reduction::Count)> m_reducedWidths;
+    Reduction m_reduction;
+    Reduction m_appliedReduction;
+    Reduction m_contentReduction;
     int m_itemCount;
+    bool m_isUpdatingLayout;
+    bool m_isCollapsedMenuOpen;
 };
 
 /// Page (tab) of the ribbon, it consists of the groups
@@ -194,6 +276,18 @@ public:
 
     /// Hides the groups without buttons
     void updateGroups();
+
+    /// Reduces the groups, so the page fits into a given width. The groups are reduced
+    /// from the right to the left, all groups get small buttons first, then they lose
+    /// the texts of the buttons, and then they are collapsed.
+    /// \return true, if the page fits
+    bool fitToWidth(int width);
+
+    /// Returns the groups of the page
+    std::vector<PDFRibbonGroup*> getGroups() const;
+
+signals:
+    void reductionInvalidated();
 
 private:
     QString m_id;
@@ -266,6 +360,8 @@ private:
     void onCurrentTabChanged(int index);
     void updateScrollButtons();
     void updateTabRow();
+    void updateReduction();
+    void scheduleReduction();
     void scrollPage(int direction);
 
     QToolButton* m_fileButton;
@@ -281,6 +377,42 @@ private:
     QToolButton* m_scrollRightButton;
     std::vector<PDFRibbonPage*> m_pages;
     bool m_isCollapsed;
+    bool m_isReductionScheduled;
+};
+
+/// Hides the less important permanent widgets of the status bar (page layout, zoom
+/// slider, ...), while a message is shown, which would be cut off by them. The
+/// widgets are shown again, when the message is cleared.
+class PDF4QTLIBGUILIBSHARED_EXPORT PDFStatusBarMessageFitter : public QObject
+{
+    Q_OBJECT
+
+private:
+    using BaseClass = QObject;
+
+public:
+    explicit PDFStatusBarMessageFitter(QStatusBar* statusBar);
+
+    /// Adds widgets, which are hidden together. Widgets added first are hidden first.
+    void addWidgets(const QList<QWidget*>& widgets);
+
+    /// Shows or hides the widgets for the current message and width of the status bar
+    void update();
+
+    /// Returns the width available for the message (between the left side of the
+    /// status bar and the first visible permanent widget)
+    int getMessageWidth() const;
+
+    /// Returns the width needed to show the message
+    static int getRequiredWidth(const QStatusBar* statusBar, const QString& message);
+
+protected:
+    virtual bool eventFilter(QObject* watched, QEvent* event) override;
+
+private:
+    QStatusBar* m_statusBar;
+    std::vector<std::vector<QPointer<QWidget>>> m_groups;
+    bool m_isUpdating;
 };
 
 }   // namespace pdfviewer
