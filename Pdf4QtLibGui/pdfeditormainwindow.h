@@ -210,6 +210,8 @@ private:
     QAction* m_navigationPaneAction;
     QAction* m_commentsListAction = nullptr;
     QAction* m_compareDocumentsAction = nullptr;
+    QAction* m_sheetLinksAction = nullptr;
+    QAction* m_removeSheetLinksAction = nullptr;
     QAction* m_collapseRibbonAction;
     QAction* m_splitViewAction = nullptr;
     QSplitter* m_splitter = nullptr;
