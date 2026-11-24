@@ -427,6 +427,10 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_actionManager->setAction(PDFActionManager::OptimizeImages, ui->actionOptimizeImages);
     m_actionManager->setAction(PDFActionManager::Sanitize, ui->actionSanitize);
     m_actionManager->setAction(PDFActionManager::RemoveExternalLinks, ui->actionRemoveExternalLinks);
+    m_actionManager->setAction(PDFActionManager::HeaderFooter, ui->actionHeaderFooter);
+    m_actionManager->setAction(PDFActionManager::BatesNumbering, ui->actionBatesNumbering);
+    m_actionManager->setAction(PDFActionManager::Watermark, ui->actionWatermark);
+    m_actionManager->setAction(PDFActionManager::RemoveStamps, ui->actionRemoveStamps);
     m_actionManager->setAction(PDFActionManager::PageGeometry, ui->actionPageGeometry);
     m_actionManager->setAction(PDFActionManager::CreateBitonalDocument, ui->actionCreateBitonalDocument);
     m_actionManager->setAction(PDFActionManager::RecognizeText, ui->actionRecognizeText);
@@ -921,6 +925,9 @@ void PDFEditorMainWindow::createRibbon()
     group->addLargeAction(ui->actionCreateHyperlink, tr("Web Link"));
     group->addMenu(Size::Large, tr("Link to Page"), Helper::getThemedIcon(QStringLiteral("hyperlink")), ui->menuHyperlinkToThisPDF);
     group->addLargeAction(ui->actionInsertPageNumbers, tr("Page Numbers"));
+    group->addSmallAction(ui->actionHeaderFooter, tr("Header/Footer"));
+    group->addSmallAction(ui->actionWatermark, tr("Watermark"));
+    group->addSmallAction(ui->actionBatesNumbering, tr("Bates Numbering"));
 
     // Group of the page content editor (plugin) is in front of the document group
     m_ribbon->getGroup("edit", "content", tr("Page Content"));
@@ -971,6 +978,12 @@ void PDFEditorMainWindow::createRibbon()
     group = m_ribbon->getGroup("pages", "setup", tr("Page Setup"));
     group->addLargeAction(ui->actionInsertPageNumbers, tr("Page Numbers"));
     group->addLargeAction(ui->actionPageGeometry);
+
+    group = m_ribbon->getGroup("pages", "design", tr("Page Design"));
+    group->addLargeAction(ui->actionHeaderFooter, tr("Header/Footer"));
+    group->addLargeAction(ui->actionWatermark, tr("Watermark"));
+    group->addLargeAction(ui->actionBatesNumbering, tr("Bates Numbering"));
+    group->addSmallAction(ui->actionRemoveStamps, tr("Remove"));
 
     group = m_ribbon->getGroup("pages", "scan", tr("Scanned Pages"));
     group->addLargeAction(ui->actionPrepareScannedPages, tr("Crop, Split and Deskew"));

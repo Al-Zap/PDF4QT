@@ -113,6 +113,8 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfplugin.h
     sources/pdfprogress.cpp
     sources/pdfprogress.h
+    sources/pdfpagestamper.cpp
+    sources/pdfpagestamper.h
     sources/pdfredact.cpp
     sources/pdfredact.h
     sources/pdfsecurityhandler.cpp

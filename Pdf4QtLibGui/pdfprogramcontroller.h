@@ -147,6 +147,10 @@ public:
         OptimizeImages,
         Sanitize,
         RemoveExternalLinks,
+        HeaderFooter,
+        BatesNumbering,
+        Watermark,
+        RemoveStamps,
         PageGeometry,
         CreateBitonalDocument,
         RecognizeText,
@@ -423,6 +427,11 @@ private:
     void onActionOptimizeImagesTriggered();
     void onActionSanitizeTriggered();
     void onActionRemoveExternalLinksTriggered();
+    void onActionHeaderFooterTriggered();
+    void onActionBatesNumberingTriggered();
+    void onActionWatermarkTriggered();
+    void onActionRemoveStampsTriggered();
+    void addPageStamp(int mode);
     void onActionPageGeometryTriggered();
     void onActionCreateBitonalDocumentTriggered();
     void onActionRecognizeTextTriggered();

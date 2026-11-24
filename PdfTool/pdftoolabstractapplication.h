@@ -34,6 +34,7 @@
 #include "pdfredact.h"
 #include "pdfbitonaldocumentcreator.h"
 #include "pdfocrdocumentrunner.h"
+#include "pdfpagestamper.h"
 
 #include <QtGlobal>
 #include <QString>
@@ -105,6 +106,31 @@ struct PDFToolOCROptions
     bool modelsProfileSet = false;
     QString modelsEngine = QStringLiteral("tesseract");
     bool modelsAcceptDownload = false;
+
+    /// Description of the first invalid value of an option (empty = all options are valid)
+    QString invalidArgument;
+};
+
+/// Options of the commands 'header-footer', 'bates', 'watermark' and 'remove-stamps'
+struct PDFToolStampOptions
+{
+    /// Output document (the source document is never overwritten)
+    QString target;
+
+    /// Settings of the commands 'header-footer' and 'bates'
+    pdf::PDFHeaderFooterSettings headerFooter;
+
+    /// Settings of the command 'watermark'
+    pdf::PDFWatermarkSettings watermark;
+
+    /// Image file of the watermark
+    QString watermarkImageFile;
+
+    /// Stamps of the same kind added previously are replaced
+    bool replace = false;
+
+    /// Kinds of the stamps removed by the command 'remove-stamps'
+    pdf::PDFPageStamper::StampKinds removedKinds = pdf::PDFPageStamper::AllKinds;
 
     /// Description of the first invalid value of an option (empty = all options are valid)
     QString invalidArgument;
@@ -254,6 +280,9 @@ struct PDFToolOptions
     // For options 'OCR' and 'OCRModels'
     PDFToolOCROptions ocr;
 
+    // For option 'PageStamp'
+    PDFToolStampOptions stamp;
+
     // For option 'Encrypt'
     pdf::PDFSecurityHandlerFactory::Algorithm encryptionAlgorithm = pdf::PDFSecurityHandlerFactory::Algorithm::AES_256;
     pdf::PDFSecurityHandlerFactory::EncryptContents encryptionContents = pdf::PDFSecurityHandlerFactory::EncryptContents::All;
@@ -351,6 +380,7 @@ public:
         Bitonal                         = 0x04000000,       ///< Settings for Bitonal tool
         OCR                             = 0x08000000,       ///< Settings for OCR tool (text recognition)
         OCRModels                       = 0x10000000,       ///< Settings for OCR language models tool
+        PageStamp                       = 0x20000000,       ///< Settings for headers, footers, Bates numbers and watermarks
     };
     Q_DECLARE_FLAGS(Options, Option)
 
