@@ -42,7 +42,7 @@ private:
     using BaseClass = pdf::PDFPlugin;
 
 public:
-    RedactPlugin();
+    Q_INVOKABLE RedactPlugin();
 
     virtual void setWidget(pdf::PDFWidget* widget) override;
     virtual void setDocument(const pdf::PDFModifiedDocument& document) override;

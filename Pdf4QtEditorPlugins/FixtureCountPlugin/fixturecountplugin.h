@@ -58,7 +58,7 @@ private:
     using BaseClass = pdf::PDFPlugin;
 
 public:
-    FixtureCountPlugin();
+    Q_INVOKABLE FixtureCountPlugin();
 
     virtual void setWidget(pdf::PDFWidget* widget) override;
     virtual void setDocument(const pdf::PDFModifiedDocument& document) override;

@@ -46,7 +46,7 @@ private:
     using BaseClass = pdf::PDFPlugin;
 
 public:
-    SignaturePlugin();
+    Q_INVOKABLE SignaturePlugin();
 
     virtual void setWidget(pdf::PDFWidget* widget) override;
     virtual void setDocument(const pdf::PDFModifiedDocument& document) override;

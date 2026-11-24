@@ -39,7 +39,7 @@ private:
     using BaseClass = pdf::PDFPlugin;
 
 public:
-    SoftProofingPlugin();
+    Q_INVOKABLE SoftProofingPlugin();
 
     virtual void setWidget(pdf::PDFWidget* widget) override;
     virtual void setCMSManager(pdf::PDFCMSManager* manager) override;

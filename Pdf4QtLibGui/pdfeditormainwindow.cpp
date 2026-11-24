@@ -51,6 +51,7 @@
 #include "pdfadvancedtools.h"
 #include "pdfwidgetutils.h"
 #include "pdfactioncombobox.h"
+#include "pdfsplitviewwidget.h"
 
 #include <QPainter>
 #include <QFileDialog>
@@ -81,6 +82,7 @@
 
 #include <QSlider>
 #include <QStatusBar>
+#include <QSplitter>
 
 #include <algorithm>
 #include <cmath>
@@ -282,7 +284,7 @@ public:
     }
 };
 
-PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
+PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent, bool isEmbedded) :
     QMainWindow(parent),
     ui(new Ui::PDFEditorMainWindow),
     m_actionManager(new PDFActionManager(this)),
@@ -310,6 +312,13 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_collapseRibbonAction(nullptr),
     m_sidebarWidth(0)
 {
+    if (isEmbedded)
+    {
+        // A page of the window with the tabs, the geometry is not restored
+        // from the settings (see PDFProgramController::readSettings).
+        setWindowFlags(Qt::Widget);
+    }
+
     ui->setupUi(this);
 
     setAcceptDrops(true);
@@ -434,6 +443,14 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_compareDocumentsAction->setToolTip(tr("Overlay two revisions of a document and mark the changes by revision clouds"));
     ui->menuTools->addAction(m_compareDocumentsAction);
     m_actionManager->setAction(PDFActionManager::CompareDocuments, m_compareDocumentsAction);
+
+    // Second pane next to the document (another place of the document, or another file)
+    m_splitViewAction = new QAction(PDFEditorMainWindowHelper::getIcon(QStringLiteral("ribbon-split-view")), tr("S&plit View"), this);
+    m_splitViewAction->setObjectName("actionSplitView");
+    m_splitViewAction->setCheckable(true);
+    m_splitViewAction->setToolTip(tr("Show a second pane next to the document: another page of the document, or another file (for example the previous revision of a sheet)"));
+    connect(m_splitViewAction, &QAction::toggled, this, &PDFEditorMainWindow::setSplitViewVisible);
+    ui->menuView->addAction(m_splitViewAction);
     m_actionManager->setAction(PDFActionManager::Optimize, ui->actionOptimize);
     m_actionManager->setAction(PDFActionManager::OptimizeImages, ui->actionOptimizeImages);
     m_actionManager->setAction(PDFActionManager::Sanitize, ui->actionSanitize);
@@ -545,7 +562,13 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     }
 
     m_programController->initialize(PDFProgramController::AllFeatures, this, this, m_actionManager, m_progress);
-    setCentralWidget(m_programController->getPdfWidget());
+
+    // The document is in a splitter, the second pane of the split view is added on demand
+    m_splitter = new QSplitter(Qt::Horizontal, this);
+    m_splitter->setObjectName("splitViewSplitter");
+    m_splitter->setChildrenCollapsible(false);
+    m_splitter->addWidget(m_programController->getPdfWidget());
+    setCentralWidget(m_splitter);
 
     if (pdf::PDFToolManager* toolManager = m_programController->getToolManager())
     {
@@ -758,6 +781,12 @@ PDFEditorMainWindow::~PDFEditorMainWindow()
     m_sidebarDockWidget = nullptr;
     m_sidebarWidget = nullptr;
     delete sidebarDockWidget;
+
+    // The split view uses the draw widget of the program controller
+    PDFSplitViewWidget* splitViewWidget = m_splitViewWidget;
+    m_splitViewWidget = nullptr;
+    delete splitViewWidget;
+
 
     delete m_programController;
     m_programController = nullptr;
@@ -1104,6 +1133,7 @@ void PDFEditorMainWindow::createRibbon()
     group = m_ribbon->getGroup("view", "panes", tr("Show"));
     group->addLargeAction(m_navigationPaneAction);
     group->addLargeAction(ui->actionFullscreenMode, tr("Full Screen"));
+    group->addLargeAction(m_splitViewAction, tr("Split View"));
 
     group = m_ribbon->getGroup("view", "layout", tr("Page Layout"));
     group->addSmallAction(ui->actionPageLayoutSinglePage);
@@ -1557,7 +1587,8 @@ void PDFEditorMainWindow::onSidebarVisibilityRequested()
 
 void PDFEditorMainWindow::onActionQuitTriggered()
 {
-    close();
+    // A tab of the window with several documents closes the whole window
+    window()->close();
 }
 
 void PDFEditorMainWindow::onPageNumberSpinboxEditingFinished()
@@ -1794,6 +1825,11 @@ void PDFEditorMainWindow::setDocument(const pdf::PDFModifiedDocument& document)
         m_advancedFindWidget->setDocument(document);
     }
 
+    if (m_splitViewWidget)
+    {
+        m_splitViewWidget->setMainDocument(document, m_programController->getOriginalFileName());
+    }
+
     if (m_markupsListWidget)
     {
         m_markupsListWidget->setDocument(document);
@@ -1886,7 +1922,7 @@ void PDFEditorMainWindow::closeEvent(QCloseEvent* event)
 void PDFEditorMainWindow::showEvent(QShowEvent* event)
 {
     QMainWindow::showEvent(event);
-    m_progressTaskbarIndicator->setWindow(windowHandle());
+    m_progressTaskbarIndicator->setWindow(window()->windowHandle());
 }
 
 void PDFEditorMainWindow::dragEnterEvent(QDragEnterEvent* event)
@@ -1914,10 +1950,59 @@ void PDFEditorMainWindow::dropEvent(QDropEvent* event)
         QList<QUrl> urls = event->mimeData()->urls();
         if (urls.size() == 1)
         {
-            m_programController->openDocument(urls.front().toLocalFile());
+            m_programController->requestOpenDocument(urls.front().toLocalFile());
+            event->acceptProposedAction();
+        }
+        else if (urls.size() > 1 && m_openDocumentElsewhereHandler)
+        {
+            // Several files are opened in the tabs
+            for (const QUrl& url : urls)
+            {
+                m_programController->requestOpenDocument(url.toLocalFile());
+            }
             event->acceptProposedAction();
         }
     }
 }
+
+bool PDFEditorMainWindow::openDocumentElsewhere(const QString& fileName)
+{
+    return m_openDocumentElsewhereHandler && m_openDocumentElsewhereHandler(fileName);
+}
+
+void PDFEditorMainWindow::setSplitViewVisible(bool visible)
+{
+    if (visible == (m_splitViewWidget != nullptr))
+    {
+        return;
+    }
+
+    if (visible)
+    {
+        pdf::PDFWidget* pdfWidget = m_programController->getPdfWidget();
+        m_splitViewWidget = new PDFSplitViewWidget(pdfWidget, m_splitter);
+        connect(m_splitViewWidget, &PDFSplitViewWidget::closeRequested, this, [this]() { setSplitViewVisible(false); });
+        m_splitter->addWidget(m_splitViewWidget);
+
+        if (pdf::PDFDocument* document = m_programController->getDocument())
+        {
+            m_splitViewWidget->setMainDocument(pdf::PDFModifiedDocument(document, m_programController->getOptionalContentActivity()), m_programController->getOriginalFileName());
+        }
+
+        const int width = qMax(m_splitter->width(), 2);
+        m_splitter->setSizes({ width / 2, width - width / 2 });
+    }
+    else
+    {
+        PDFSplitViewWidget* splitViewWidget = m_splitViewWidget;
+        m_splitViewWidget = nullptr;
+        delete splitViewWidget;
+        m_programController->getPdfWidget()->setFocus();
+    }
+
+    QSignalBlocker blocker(m_splitViewAction);
+    m_splitViewAction->setChecked(visible);
+}
+
 
 }   // namespace pdfviewer
