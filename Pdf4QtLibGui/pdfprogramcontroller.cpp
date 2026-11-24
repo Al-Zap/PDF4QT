@@ -942,25 +942,13 @@ void PDFProgramController::performPrint()
         printer.setFullPage(true);
         QPainter painter(&printer);
 
-        const pdf::PDFCatalog* catalog = m_pdfDocument->getCatalog();
         pdf::PDFDrawWidgetProxy* proxy = m_pdfWidget->getDrawWidgetProxy();
-        pdf::PDFOptionalContentActivity optionalContentActivity(m_pdfDocument.data(), pdf::OCUsage::Print, nullptr);
-        pdf::PDFCMSPointer cms = proxy->getCMSManager()->getCurrentCMS();
-        pdf::PDFRenderer renderer(m_pdfDocument.get(), proxy->getFontCache(), proxy->getIccProfileCache(), cms.data(), &optionalContentActivity, proxy->getFeatures(), proxy->getMeshQualitySettings());
 
         const pdf::PDFInteger lastPage = pageIndices.back();
         for (const pdf::PDFInteger pageIndex : pageIndices)
         {
-            const pdf::PDFPage* page = catalog->getPage(pageIndex);
-            Q_ASSERT(page);
-
-            QRectF mediaBox = page->getRotatedMediaBox();
-            QRectF paperRect = printer.pageLayout().fullRectPixels(printer.resolution());
-            QSizeF scaledSize = mediaBox.size().scaled(paperRect.size(), Qt::KeepAspectRatio);
-            mediaBox.setSize(scaledSize);
-            mediaBox.moveCenter(paperRect.center());
-
-            renderer.render(&painter, mediaBox, pageIndex);
+            const QRectF paperRect = printer.pageLayout().fullRectPixels(printer.resolution());
+            drawPageForPrinting(&painter, paperRect, m_pdfDocument.data(), pageIndex, proxy);
             m_progress->step();
 
             if (pageIndex != lastPage)
@@ -975,6 +963,43 @@ void PDFProgramController::performPrint()
         painter.end();
         m_progress->finish();
     }
+}
+
+void PDFProgramController::drawPageForPrinting(QPainter* painter,
+                                               const QRectF& paperRect,
+                                               pdf::PDFDocument* document,
+                                               pdf::PDFInteger pageIndex,
+                                               const pdf::PDFDrawWidgetProxy* proxy)
+{
+    const pdf::PDFPage* page = document->getCatalog()->getPage(pageIndex);
+    if (!page)
+    {
+        return;
+    }
+
+    QRectF mediaBox = page->getRotatedMediaBox();
+    QSizeF scaledSize = mediaBox.size().scaled(paperRect.size(), Qt::KeepAspectRatio);
+    mediaBox.setSize(scaledSize);
+    mediaBox.moveCenter(paperRect.center());
+
+    // Paper gets the colors of the document, not the colors of the screen (inverted
+    // colors of the dark mode, high contrast etc.), and the comments are printed too.
+    const pdf::PDFRenderer::Features printFeatures = (proxy->getFeatures() & ~pdf::PDFRenderer::getColorFeatures()) | pdf::PDFRenderer::DisplayAnnotations;
+    pdf::PDFOptionalContentActivity optionalContentActivity(document, pdf::OCUsage::Print, nullptr);
+    pdf::PDFCMSPointer cms = proxy->getCMSManager()->getCurrentCMS();
+    pdf::PDFRenderer renderer(document, proxy->getFontCache(), proxy->getIccProfileCache(), cms.data(), &optionalContentActivity, printFeatures, proxy->getMeshQualitySettings());
+    renderer.render(painter, mediaBox, pageIndex);
+
+    // Annotations (comments, clouds, measurements, fixture count markers, stamps,
+    // filled form fields) are not a part of the page content, they are drawn over it.
+    // Annotations marked as not printed are skipped by the print target.
+    pdf::PDFAnnotationManager annotationManager(proxy->getFontCache(), proxy->getIccProfileCache(), proxy->getCMSManager(), &optionalContentActivity, proxy->getMeshQualitySettings(), printFeatures, pdf::PDFAnnotationManager::Target::Print, nullptr);
+    annotationManager.setDocument(pdf::PDFModifiedDocument(document, &optionalContentActivity));
+
+    QList<pdf::PDFRenderError> errors;
+    pdf::PDFTextLayoutGetter textLayoutGetter(nullptr, pageIndex);
+    const QTransform pagePointToDevicePointMatrix = pdf::PDFRenderer::createPagePointToDevicePointMatrix(page, mediaBox);
+    annotationManager.drawPage(painter, pageIndex, nullptr, textLayoutGetter, pagePointToDevicePointMatrix, cms->getColorConvertor(), errors);
 }
 
 void PDFProgramController::onActionTriggered(const pdf::PDFAction* action)
@@ -3783,7 +3808,7 @@ void PDFProgramController::onPageRenderingErrorsChanged(pdf::PDFInteger pageInde
 {
     if (errorsCount > 0)
     {
-        m_mainWindowInterface->setStatusBarMessage(tr("Rendering of page %1: %2 errors occured.").arg(pageIndex + 1).arg(errorsCount), 4000);
+        m_mainWindowInterface->setStatusBarMessage(tr("Rendering of page %1: %n error(s) occurred.", nullptr, errorsCount).arg(pageIndex + 1), 4000);
     }
 }
 

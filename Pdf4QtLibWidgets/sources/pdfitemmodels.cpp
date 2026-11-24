@@ -31,6 +31,7 @@
 #include <QApplication>
 #include <QMimeDatabase>
 #include <QFileIconProvider>
+#include <QFileInfo>
 #include <QMimeData>
 #include <QDataStream>
 #include <QUrl>
