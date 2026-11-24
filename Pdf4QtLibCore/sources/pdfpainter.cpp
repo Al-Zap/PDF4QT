@@ -31,7 +31,10 @@
 #include <QCryptographicHash>
 #include <QtMath>
 
+#include <map>
 #include <numeric>
+#include <tuple>
+#include <unordered_map>
 
 #include "pdfdbgheap.h"
 
@@ -1528,6 +1531,285 @@ void PDFPrecompiledPage::removeText()
     };
 
     m_instructions.erase(std::remove_if(m_instructions.begin(), m_instructions.end(), isText), m_instructions.end());
+}
+
+void PDFPrecompiledPage::removeLargePaths(PDFReal maximalSize)
+{
+    auto isSmall = [maximalSize](const QRectF& rect)
+    {
+        return rect.width() <= maximalSize && rect.height() <= maximalSize;
+    };
+
+    // Paths are shared with the copies of the page, which can be drawn by other
+    // threads, so the paths are only read (their elements) and new paths are created
+    struct PathInfo
+    {
+        size_t instruction = 0;
+        QTransform matrix;
+        QRectF rect;
+        QPointF firstPoint;
+        QPointF lastPoint;
+        size_t style = 0;
+        size_t parent = 0;
+    };
+
+    std::vector<PathInfo> paths;
+    std::map<std::tuple<QRgb, PDFReal, int, int, QRgb>, size_t> styles;
+    std::vector<QTransform> matrixStack(1, QTransform());
+    for (size_t i = 0; i < m_instructions.size(); ++i)
+    {
+        const Instruction& instruction = m_instructions[i];
+        switch (instruction.type)
+        {
+            case InstructionType::SaveGraphicState:
+                matrixStack.push_back(matrixStack.back());
+                break;
+
+            case InstructionType::RestoreGraphicState:
+                if (matrixStack.size() > 1)
+                {
+                    matrixStack.pop_back();
+                }
+                break;
+
+            case InstructionType::SetWorldMatrix:
+                matrixStack.back() = m_matrices[instruction.dataIndex];
+                break;
+
+            case InstructionType::DrawPath:
+            {
+                const PathPaintData& pathData = m_paths[instruction.dataIndex];
+                const int elementCount = pathData.path.elementCount();
+                if (pathData.isText || pathData.bounds.isNull() || elementCount == 0)
+                {
+                    break;
+                }
+
+                PathInfo info;
+                info.instruction = i;
+                info.matrix = matrixStack.back();
+                info.rect = info.matrix.mapRect(pathData.bounds);
+                const QPainterPath::Element firstElement = pathData.path.elementAt(0);
+                const QPainterPath::Element lastElement = pathData.path.elementAt(elementCount - 1);
+                info.firstPoint = info.matrix.map(QPointF(firstElement.x, firstElement.y));
+                info.lastPoint = info.matrix.map(QPointF(lastElement.x, lastElement.y));
+
+                const bool isStroked = pathData.pen.style() != Qt::NoPen;
+                const bool isFilled = pathData.brush.style() != Qt::NoBrush;
+                const auto styleKey = std::make_tuple(isStroked ? pathData.pen.color().rgba() : QRgb(0),
+                                                      isStroked ? pathData.pen.widthF() : 0.0,
+                                                      isStroked ? int(pathData.pen.style()) : int(Qt::NoPen),
+                                                      int(pathData.brush.style()),
+                                                      isFilled ? pathData.brush.color().rgba() : QRgb(0));
+                info.style = styles.emplace(styleKey, styles.size()).first->second;
+                info.parent = paths.size();
+                paths.push_back(info);
+                break;
+            }
+
+            default:
+                break;
+        }
+    }
+
+    // Lines and curves are often drawn as chains of short paths (each segment
+    // of a polyline or of a curve is a separate path, in any order and direction).
+    // Paths of the same style, whose ends meet, are joined, and a chain larger
+    // than the size is removed as a whole.
+    auto findRoot = [&paths](size_t index)
+    {
+        while (paths[index].parent != index)
+        {
+            paths[index].parent = paths[paths[index].parent].parent;
+            index = paths[index].parent;
+        }
+        return index;
+    };
+
+    constexpr PDFReal chainTolerance = 0.05;
+    constexpr PDFReal cellSize = 2.0 * chainTolerance;
+    std::unordered_map<quint64, std::vector<std::pair<size_t, QPointF>>> cells;
+    auto getCellKey = [](size_t style, qint64 cellX, qint64 cellY)
+    {
+        constexpr qint64 offset = qint64(1) << 20;
+        constexpr qint64 mask = (qint64(1) << 21) - 1;
+        return (quint64(style) << 42) ^ (quint64((cellX + offset) & mask) << 21) ^ quint64((cellY + offset) & mask);
+    };
+
+    for (size_t i = 0; i < paths.size(); ++i)
+    {
+        if (!isSmall(paths[i].rect))
+        {
+            continue;
+        }
+
+        for (const QPointF& point : { paths[i].firstPoint, paths[i].lastPoint })
+        {
+            const qint64 cellX = qFloor(point.x() / cellSize);
+            const qint64 cellY = qFloor(point.y() / cellSize);
+            for (qint64 dy = -1; dy <= 1; ++dy)
+            {
+                for (qint64 dx = -1; dx <= 1; ++dx)
+                {
+                    auto it = cells.find(getCellKey(paths[i].style, cellX + dx, cellY + dy));
+                    if (it == cells.cend())
+                    {
+                        continue;
+                    }
+
+                    for (const auto& endPoint : it->second)
+                    {
+                        if (std::abs(endPoint.second.x() - point.x()) <= chainTolerance && std::abs(endPoint.second.y() - point.y()) <= chainTolerance)
+                        {
+                            paths[findRoot(endPoint.first)].parent = findRoot(i);
+                        }
+                    }
+                }
+            }
+            cells[getCellKey(paths[i].style, cellX, cellY)].emplace_back(i, point);
+        }
+    }
+
+    std::vector<QRectF> chainRects(paths.size());
+    std::vector<size_t> chainSizes(paths.size(), 0);
+    for (size_t i = 0; i < paths.size(); ++i)
+    {
+        const size_t root = findRoot(i);
+        chainRects[root] = chainRects[root].isNull() ? paths[i].rect : chainRects[root].united(paths[i].rect);
+        ++chainSizes[root];
+    }
+
+    std::vector<bool> isRemoved(m_instructions.size(), false);
+    for (size_t pathIndex = 0; pathIndex < paths.size(); ++pathIndex)
+    {
+        const PathInfo& info = paths[pathIndex];
+        const size_t root = findRoot(pathIndex);
+        if (isSmall(info.rect))
+        {
+            isRemoved[info.instruction] = chainSizes[root] > 1 && !isSmall(chainRects[root]);
+            continue;
+        }
+
+        // Subpaths of a large path with their bounds in the page coordinates
+        const Instruction& instruction = m_instructions[info.instruction];
+        const PathPaintData& pathData = m_paths[instruction.dataIndex];
+        const QTransform& matrix = info.matrix;
+        const QPainterPath& path = pathData.path;
+        std::vector<std::pair<int, int>> subpaths;
+        std::vector<QRectF> subpathRects;
+        const int elementCount = path.elementCount();
+        for (int elementIndex = 0; elementIndex < elementCount; ++elementIndex)
+        {
+            const QPainterPath::Element element = path.elementAt(elementIndex);
+            if (element.isMoveTo() || subpaths.empty())
+            {
+                subpaths.emplace_back(elementIndex, elementIndex + 1);
+                subpathRects.emplace_back(matrix.map(QPointF(element.x, element.y)), QSizeF(0.0, 0.0));
+            }
+            else
+            {
+                subpaths.back().second = elementIndex + 1;
+                const QPointF point = matrix.map(QPointF(element.x, element.y));
+                QRectF& rect = subpathRects.back();
+                rect.setLeft(qMin(rect.left(), point.x()));
+                rect.setRight(qMax(rect.right(), point.x()));
+                rect.setTop(qMin(rect.top(), point.y()));
+                rect.setBottom(qMax(rect.bottom(), point.y()));
+            }
+        }
+
+        const bool isFilled = pathData.brush.style() != Qt::NoBrush;
+        std::vector<QRectF> removedRects;
+        for (const QRectF& rect : subpathRects)
+        {
+            if (!isSmall(rect))
+            {
+                removedRects.push_back(rect);
+            }
+        }
+
+        QPainterPath smallPath;
+        smallPath.setFillRule(path.fillRule());
+        for (size_t subpathIndex = 0; subpathIndex < subpaths.size(); ++subpathIndex)
+        {
+            const QRectF& rect = subpathRects[subpathIndex];
+            if (!isSmall(rect) ||
+                (isFilled && std::any_of(removedRects.cbegin(), removedRects.cend(), [&rect](const QRectF& removedRect) { return removedRect.contains(rect); })))
+            {
+                continue;
+            }
+
+            for (int elementIndex = subpaths[subpathIndex].first; elementIndex < subpaths[subpathIndex].second; ++elementIndex)
+            {
+                const QPainterPath::Element element = path.elementAt(elementIndex);
+                if (elementIndex == subpaths[subpathIndex].first)
+                {
+                    smallPath.moveTo(element.x, element.y);
+                }
+                else if (element.isCurveTo() && elementIndex + 2 < subpaths[subpathIndex].second)
+                {
+                    const QPainterPath::Element control2 = path.elementAt(elementIndex + 1);
+                    const QPainterPath::Element end = path.elementAt(elementIndex + 2);
+                    smallPath.cubicTo(element.x, element.y, control2.x, control2.y, end.x, end.y);
+                    elementIndex += 2;
+                }
+                else
+                {
+                    smallPath.lineTo(element.x, element.y);
+                }
+            }
+        }
+
+        if (smallPath.isEmpty())
+        {
+            isRemoved[info.instruction] = true;
+        }
+        else
+        {
+            PathPaintData smallPathData(pathData.pen, pathData.brush, std::move(smallPath), pathData.isText);
+            m_paths[instruction.dataIndex] = std::move(smallPathData);
+        }
+    }
+
+    size_t keptCount = 0;
+    for (size_t i = 0; i < m_instructions.size(); ++i)
+    {
+        if (!isRemoved[i])
+        {
+            m_instructions[keptCount++] = m_instructions[i];
+        }
+    }
+    m_instructions.resize(keptCount);
+}
+
+void PDFPrecompiledPage::removePathsOfOtherColors(const QColor& color, int tolerance)
+{
+    auto isColorKept = [&color, tolerance](const QBrush& brush)
+    {
+        if (brush.style() != Qt::SolidPattern)
+        {
+            // Color of a pattern or of a gradient is not known
+            return true;
+        }
+
+        const QColor brushColor = brush.color();
+        return std::max({ std::abs(brushColor.red() - color.red()), std::abs(brushColor.green() - color.green()), std::abs(brushColor.blue() - color.blue()) }) <= tolerance;
+    };
+
+    auto isRemoved = [&](const Instruction& instruction)
+    {
+        if (instruction.type != InstructionType::DrawPath)
+        {
+            return false;
+        }
+
+        const PathPaintData& pathData = m_paths[instruction.dataIndex];
+        const bool isStroked = pathData.pen.style() != Qt::NoPen;
+        const bool isFilled = pathData.brush.style() != Qt::NoBrush;
+        return !(isStroked && isColorKept(pathData.pen.brush())) && !(isFilled && isColorKept(pathData.brush));
+    };
+
+    m_instructions.erase(std::remove_if(m_instructions.begin(), m_instructions.end(), isRemoved), m_instructions.end());
 }
 
 void PDFPrecompiledPage::optimize()

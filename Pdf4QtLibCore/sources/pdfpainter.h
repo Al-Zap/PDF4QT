@@ -292,6 +292,23 @@ public:
     /// and the images are drawn
     void removeText();
 
+    /// Removes the parts of the vector graphics, which are larger than the given
+    /// size in the page coordinates: whole paths, or the subpaths of a larger path
+    /// (subpaths of a filled path lying inside of a removed subpath are removed too,
+    /// so holes of the removed areas do not become filled shapes). Long lines,
+    /// curves and areas of a drawing are removed, small symbols stay. The text
+    /// is not changed.
+    /// \param maximalSize Maximal width and height of a path or subpath
+    void removeLargePaths(PDFReal maximalSize);
+
+    /// Removes the paths (also the text), whose color differs from the given color
+    /// (the largest difference of the red, green and blue channels is larger than
+    /// the tolerance). Paths, which are stroked or filled by the given color,
+    /// stay, and so do the paths painted by a pattern or a gradient.
+    /// \param color Color
+    /// \param tolerance Tolerance of the channels (0 - 255)
+    void removePathsOfOtherColors(const QColor& color, int tolerance);
+
     /// Optimizes page memory allocation to contain less space
     void optimize();
 

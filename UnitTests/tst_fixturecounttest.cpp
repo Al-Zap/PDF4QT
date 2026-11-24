@@ -24,15 +24,23 @@
 #include "fixturesymbolfinder.h"
 
 #include "pdfaction.h"
+#include "pdfcms.h"
+#include "pdfconstants.h"
 #include "pdfdocumentbuilder.h"
 #include "pdfdocumentreader.h"
 #include "pdfdocumentwriter.h"
+#include "pdfoptionalcontent.h"
 #include "pdfoutline.h"
 #include "pdfpainter.h"
+#include "pdfrenderer.h"
 #include "pdfutils.h"
 
 #include <QtTest>
 #include <QBuffer>
+#include <QElapsedTimer>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPainter>
 #include <QPainterPath>
 
@@ -69,6 +77,15 @@ private slots:
     void findSymmetricSymbols();
     void findSymbolsByInkColor();
     void precompiledPageWithoutImagesAndText();
+    void removeLargePaths();
+    void removePathsOfOtherColors();
+    void findOnPageRotatedAndMirrored();
+    void findOnPageCrossedByLines();
+    void findOnPageRejectsOtherSymbols();
+    void findOnPageWithoutMirrors();
+    void findOnPageSampleCrossedByLine();
+    void findLargeSample();
+    void realDocumentBenchmark();
 
 private:
     static FixtureType type(const QString& name, FixtureMarkerShape shape = FixtureMarkerShape::Circle, QColor color = Qt::red, const QString& description = QString());
@@ -78,6 +95,9 @@ private:
     static QImage createSheetImage();
     static int countMatchesNear(const std::vector<FixtureSymbolFinder::Match>& matches, const std::vector<QPointF>& points, qreal tolerance);
     static std::vector<QPointF> getFixturePositions(bool rotated);
+    static void addPoleSymbol(pdf::PDFPrecompiledPage& page, QPointF center, qreal angle, qreal scale = 1.0, bool mirrored = false);
+    static void addLine(pdf::PDFPrecompiledPage& page, const std::vector<QPointF>& points, QColor color, qreal width, bool asSegments);
+    static std::vector<FixtureSymbolFinder::Match> findOnPage(const pdf::PDFPrecompiledPage& compiledPage, QRectF sampleRect, const FixtureSymbolFinder::Settings& settings = FixtureSymbolFinder::Settings());
     static PDFDocument modify(const PDFDocument& document, const std::function<void(PDFDocumentBuilder*)>& function);
 };
 
@@ -895,8 +915,12 @@ void FixtureCountTest::findSymbolsByInkColor()
     QVERIFY(qGray(inkImage.pixel(300, 200)) > 192);     // green background
     QVERIFY(qGray(inkImage.pixel(700, 200)) > 224);     // white paper
 
+    // Colored lines leave gaps in the fixtures of the ink image (a raster image
+    // can't be drawn without them as a page), so a lower threshold is used
+    FixtureSymbolFinder::Settings settings;
+    settings.threshold = 0.8;
     const std::vector<QPointF> expected = getFixturePositions(true);
-    const std::vector<FixtureSymbolFinder::Match> matches = FixtureSymbolFinder::find(inkImage, sampleRect, FixtureSymbolFinder::Settings());
+    const std::vector<FixtureSymbolFinder::Match> matches = FixtureSymbolFinder::find(inkImage, sampleRect, settings);
     QCOMPARE(countMatchesNear(matches, expected, 8.0), int(expected.size()));
     QCOMPARE(matches.size(), expected.size());
 
@@ -956,6 +980,532 @@ void FixtureCountTest::precompiledPageWithoutImagesAndText()
 
     // The original page is not changed
     QCOMPARE(draw(page), fullImage);
+}
+
+void FixtureCountTest::addPoleSymbol(pdf::PDFPrecompiledPage& page, QPointF center, qreal angle, qreal scale, bool mirrored)
+{
+    // Pole of a site plan (in points): a filled head, an L shaped arm and a dot,
+    // so the rotations and the mirror image differ
+    QTransform transform;
+    transform.translate(center.x(), center.y());
+    transform.rotate(angle);
+    transform.scale(mirrored ? -scale : scale, scale);
+
+    QPainterPath head;
+    head.addRect(QRectF(-3.0, -2.0, 6.0, 4.0));
+    page.addPath(QPen(Qt::NoPen), QBrush(Qt::black), transform.map(head), false);
+
+    QPainterPath arm;
+    arm.moveTo(3.0, 0.0);
+    arm.lineTo(5.5, 0.0);
+    arm.lineTo(5.5, 2.0);
+    page.addPath(QPen(Qt::black, 0.5), QBrush(Qt::NoBrush), transform.map(arm), false);
+
+    QPainterPath dot;
+    dot.addEllipse(QPointF(-4.5, 1.2), 0.8, 0.8);
+    page.addPath(QPen(Qt::NoPen), QBrush(Qt::black), transform.map(dot), false);
+
+}
+
+void FixtureCountTest::addLine(pdf::PDFPrecompiledPage& page, const std::vector<QPointF>& points, QColor color, qreal width, bool asSegments)
+{
+    // A polyline as one path, or as separate paths of the segments in a mixed
+    // order and direction (as some CAD programs write isolines)
+    if (!asSegments)
+    {
+        QPainterPath path;
+        path.moveTo(points.front());
+        for (size_t i = 1; i < points.size(); ++i)
+        {
+            path.lineTo(points[i]);
+        }
+        page.addPath(QPen(color, width), QBrush(Qt::NoBrush), path, false);
+        return;
+    }
+
+    for (size_t i = 1; i < points.size(); i += 2)
+    {
+        QPainterPath path;
+        path.moveTo(points[i]);
+        path.lineTo(points[i - 1]);
+        page.addPath(QPen(color, width), QBrush(Qt::NoBrush), path, false);
+    }
+    for (size_t i = 2; i < points.size(); i += 2)
+    {
+        QPainterPath path;
+        path.moveTo(points[i - 1]);
+        path.lineTo(points[i]);
+        page.addPath(QPen(color, width), QBrush(Qt::NoBrush), path, false);
+    }
+}
+
+std::vector<FixtureSymbolFinder::Match> FixtureCountTest::findOnPage(const pdf::PDFPrecompiledPage& compiledPage, QRectF sampleRect, const FixtureSymbolFinder::Settings& settings)
+{
+    PDFDocumentBuilder builder;
+    builder.appendPage(QRectF(0, 0, 600, 400));
+    const PDFDocument document = builder.build();
+    const PDFPage* page = document.getCatalog()->getPage(0);
+    return FixtureSymbolFinder::findOnPage(compiledPage, page, sampleRect, pdf::PDFRenderer::getDefaultFeatures(), settings);
+}
+
+void FixtureCountTest::removeLargePaths()
+{
+    auto draw = [](const pdf::PDFPrecompiledPage& page)
+    {
+        QImage image(600, 400, QImage::Format_Grayscale8);
+        image.fill(Qt::white);
+        QPainter painter(&image);
+        page.draw(&painter, QRectF(0, 0, 600, 400), QTransform(), pdf::PDFRenderer::None, 1.0);
+        painter.end();
+        return image;
+    };
+
+    auto isInk = [](const QImage& image, int x, int y) { return qGray(image.pixel(x, y)) < 128; };
+
+    pdf::PDFPrecompiledPage page;
+
+    // Long line as a single path, as a chain of segments in a mixed order,
+    // a small symbol drawn as a chain of segments
+    addLine(page, { QPointF(10, 20), QPointF(590, 20) }, Qt::black, 3.0, false);
+    std::vector<QPointF> chain;
+    for (int i = 0; i <= 40; ++i)
+    {
+        chain.emplace_back(10 + 14.5 * i, 60 + 3.0 * std::sin(i * 0.5));
+    }
+    addLine(page, chain, Qt::black, 3.0, true);
+    addLine(page, { QPointF(100, 100), QPointF(110, 100), QPointF(110, 110), QPointF(100, 110), QPointF(100, 100) }, Qt::black, 3.0, true);
+
+    // Large path with a small subpath, large filled area with a small hole
+    QPainterPath mixed;
+    mixed.moveTo(10, 150);
+    mixed.lineTo(590, 150);
+    mixed.addRect(QRectF(200, 180, 10, 10));
+    page.addPath(QPen(Qt::black, 3.0), QBrush(Qt::NoBrush), mixed, false);
+
+    QPainterPath area;
+    area.addRect(QRectF(300, 250, 200, 100));
+    area.addRect(QRectF(390, 290, 10, 10));
+    area.setFillRule(Qt::OddEvenFill);
+    page.addPath(QPen(Qt::NoPen), QBrush(Qt::black), area, false);
+
+    // Text is not changed
+    QPainterPath text;
+    text.addRect(QRectF(20, 300, 200, 10));
+    page.addPath(QPen(Qt::NoPen), QBrush(Qt::black), text, true);
+
+    const QImage before = draw(page);
+    QVERIFY(isInk(before, 300, 20));
+    QVERIFY(isInk(before, 300, 150));
+    QVERIFY(isInk(before, 450, 300));
+
+    pdf::PDFPrecompiledPage reduced = page;
+    reduced.removeLargePaths(30.0);
+    const QImage after = draw(reduced);
+
+    QVERIFY(!isInk(after, 300, 20));      // long line
+    for (int x = 20; x < 580; x += 10)
+    {
+        QVERIFY2(!isInk(after, x, 57) && !isInk(after, x, 60) && !isInk(after, x, 63), "chain of segments");
+    }
+    QVERIFY(isInk(after, 100, 105));      // small chain (symbol)
+    QVERIFY(isInk(after, 105, 100));
+    QVERIFY(!isInk(after, 300, 150));     // large subpath
+    QVERIFY(isInk(after, 200, 185));      // small subpath of a large path
+    QVERIFY(!isInk(after, 450, 300));     // large area
+    QVERIFY(!isInk(after, 395, 295));     // hole of the large area does not become a filled square
+    QVERIFY(isInk(after, 100, 305));      // text
+
+    // The original page is not changed
+    QCOMPARE(draw(page), before);
+}
+
+void FixtureCountTest::removePathsOfOtherColors()
+{
+    pdf::PDFPrecompiledPage page;
+    addLine(page, { QPointF(10, 20), QPointF(590, 20) }, Qt::black, 3.0, false);
+    addLine(page, { QPointF(10, 40), QPointF(590, 40) }, QColor(30, 30, 30), 3.0, false);
+    addLine(page, { QPointF(10, 60), QPointF(590, 60) }, QColor(127, 127, 127), 3.0, false);
+    addLine(page, { QPointF(10, 80), QPointF(590, 80) }, Qt::blue, 3.0, false);
+
+    QPainterPath filled;
+    filled.addRect(QRectF(10, 100, 100, 20));
+    page.addPath(QPen(Qt::red, 1.0), QBrush(Qt::black), filled, false);
+
+    QPainterPath patterned;
+    patterned.addRect(QRectF(10, 150, 100, 20));
+    page.addPath(QPen(Qt::NoPen), QBrush(Qt::red, Qt::Dense3Pattern), patterned, false);
+
+    QPainterPath text;
+    text.addRect(QRectF(10, 200, 100, 20));
+    page.addPath(QPen(Qt::NoPen), QBrush(Qt::gray), text, true);
+
+    page.removePathsOfOtherColors(Qt::black, 48);
+
+    QImage image(600, 400, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    page.draw(&painter, QRectF(0, 0, 600, 400), QTransform(), pdf::PDFRenderer::None, 1.0);
+    painter.end();
+
+    QVERIFY(qGray(image.pixel(300, 20)) < 64);          // black
+    QVERIFY(qGray(image.pixel(300, 40)) < 64);          // almost black
+    QCOMPARE(image.pixel(300, 60), qRgb(255, 255, 255)); // gray
+    QCOMPARE(image.pixel(300, 80), qRgb(255, 255, 255)); // blue
+    QVERIFY(qGray(image.pixel(50, 110)) < 64);          // filled by black, red border
+    QVERIFY(image.pixel(50, 160) != qRgb(255, 255, 255) || image.pixel(51, 160) != qRgb(255, 255, 255)); // pattern
+    QCOMPARE(image.pixel(50, 210), qRgb(255, 255, 255)); // gray text
+}
+
+void FixtureCountTest::findOnPageRotatedAndMirrored()
+{
+    // Poles pointing in all directions, also mirrored and a little larger
+    const std::vector<QPointF> fixtures = { QPointF(60, 60), QPointF(160, 60), QPointF(260, 60), QPointF(360, 60), QPointF(460, 60), QPointF(60, 160), QPointF(160, 160) };
+    pdf::PDFPrecompiledPage page;
+    page.addSetWorldMatrix(QTransform());
+    addPoleSymbol(page, fixtures[0], 0.0);
+    addPoleSymbol(page, fixtures[1], 37.0);
+    addPoleSymbol(page, fixtures[2], 90.0);
+    addPoleSymbol(page, fixtures[3], 213.0);
+    addPoleSymbol(page, fixtures[4], 0.0, 1.0, true);
+    addPoleSymbol(page, fixtures[5], 128.0, 1.0, true);
+    addPoleSymbol(page, fixtures[6], 300.0, 1.06);
+
+    const std::vector<FixtureSymbolFinder::Match> matches = findOnPage(page, QRectF(52, 54, 16, 12));
+    QCOMPARE(countMatchesNear(matches, fixtures, 1.5), int(fixtures.size()));
+    QCOMPARE(matches.size(), fixtures.size());
+
+    auto findMatch = [&](QPointF point)
+    {
+        return *std::find_if(matches.cbegin(), matches.cend(), [&](const FixtureSymbolFinder::Match& match) { return QLineF(match.center, point).length() < 1.5; });
+    };
+
+    // Angles of the page (y axis up) are clockwise in the image, the mirror image is reported
+    const FixtureSymbolFinder::Match rotated = findMatch(fixtures[2]);
+    QVERIFY(!rotated.mirrored);
+    QVERIFY(qAbs(std::remainder(rotated.angle - 270.0, 360.0)) < 3.0);
+    QVERIFY(findMatch(fixtures[4]).mirrored);
+    QVERIFY(findMatch(fixtures[5]).mirrored);
+    QVERIFY(!findMatch(fixtures[1]).mirrored);
+    QVERIFY(qAbs(findMatch(fixtures[6]).scale - 1.06) < 0.04);
+    QVERIFY(qAbs(findMatch(fixtures[0]).scale - 1.0) < 0.03);
+    for (const FixtureSymbolFinder::Match& match : matches)
+    {
+        QVERIFY(match.score >= FixtureSymbolFinder::Settings().threshold);
+    }
+}
+
+void FixtureCountTest::findOnPageCrossedByLines()
+{
+    // Poles crossed by lines of the drawing (a curb as a single path, an isoline
+    // as a chain of segments, a colored isoline), by gray calculation points
+    // and partially covered by a short line running into the symbol
+    const std::vector<QPointF> fixtures = { QPointF(60, 60), QPointF(160, 100), QPointF(260, 140), QPointF(360, 180), QPointF(460, 220), QPointF(160, 300) };
+    pdf::PDFPrecompiledPage page;
+    page.addSetWorldMatrix(QTransform());
+    addPoleSymbol(page, fixtures[0], 0.0);
+    addPoleSymbol(page, fixtures[1], 20.0);
+    addPoleSymbol(page, fixtures[2], 75.0);
+    addPoleSymbol(page, fixtures[3], 160.0);
+    addPoleSymbol(page, fixtures[4], 250.0);
+    addPoleSymbol(page, fixtures[5], 10.0);
+
+    addLine(page, { QPointF(10, 95), QPointF(590, 105) }, Qt::black, 0.7, false);
+
+    std::vector<QPointF> isoline;
+    for (int i = 0; i <= 60; ++i)
+    {
+        const qreal angle = i * 2.0 * M_PI / 60.0;
+        isoline.emplace_back(260 + 60 * std::cos(angle) - 60, 140 + 40 * std::sin(angle));
+    }
+    addLine(page, isoline, Qt::black, 0.5, true);
+
+    addLine(page, { QPointF(300, 150), QPointF(420, 210) }, Qt::blue, 1.5, false);
+
+    for (int i = -1; i <= 1; ++i)
+    {
+        QPainterPath plus;
+        plus.moveTo(458 + 2 * i, 222);
+        plus.lineTo(462 + 2 * i, 222);
+        page.addPath(QPen(QColor(128, 128, 128), 0.4), QBrush(Qt::NoBrush), plus, false);
+    }
+
+    // Short line (not removed as a large path) running into the symbol
+    addLine(page, { QPointF(150, 307), QPointF(162, 299) }, Qt::black, 0.6, false);
+
+    const std::vector<FixtureSymbolFinder::Match> matches = findOnPage(page, QRectF(52, 54, 16, 12));
+    QCOMPARE(countMatchesNear(matches, fixtures, 1.5), int(fixtures.size()));
+    QCOMPARE(matches.size(), fixtures.size());
+}
+
+void FixtureCountTest::findOnPageRejectsOtherSymbols()
+{
+    // Symbols of the same shape, but of another size (other fixture types),
+    // a round head and a square are not found
+    const std::vector<QPointF> fixtures = { QPointF(60, 60), QPointF(160, 60), QPointF(260, 60) };
+    pdf::PDFPrecompiledPage page;
+    page.addSetWorldMatrix(QTransform());
+    addPoleSymbol(page, fixtures[0], 0.0);
+    addPoleSymbol(page, fixtures[1], 45.0);
+    addPoleSymbol(page, fixtures[2], 180.0);
+    addPoleSymbol(page, QPointF(60, 160), 0.0, 1.35);
+    addPoleSymbol(page, QPointF(160, 160), 90.0, 0.72);
+
+    QPainterPath roundHead;
+    roundHead.addEllipse(QPointF(360, 160), 3.0, 3.0);
+    roundHead.addEllipse(QPointF(355.5, 161.2), 0.8, 0.8);
+    page.addPath(QPen(Qt::NoPen), QBrush(Qt::black), roundHead, false);
+    QPainterPath roundHeadArm;
+    roundHeadArm.moveTo(363.0, 160.0);
+    roundHeadArm.lineTo(365.5, 160.0);
+    roundHeadArm.lineTo(365.5, 162.0);
+    page.addPath(QPen(Qt::black, 0.5), QBrush(Qt::NoBrush), roundHeadArm, false);
+
+    QPainterPath square;
+    square.addRect(QRectF(450, 150, 8, 8));
+    page.addPath(QPen(Qt::NoPen), QBrush(Qt::black), square, false);
+
+    const std::vector<FixtureSymbolFinder::Match> matches = findOnPage(page, QRectF(52, 54, 16, 12));
+    QCOMPARE(countMatchesNear(matches, fixtures, 1.5), int(fixtures.size()));
+    QCOMPARE(matches.size(), fixtures.size());
+}
+
+void FixtureCountTest::findOnPageWithoutMirrors()
+{
+    const std::vector<QPointF> fixtures = { QPointF(60, 60), QPointF(160, 60) };
+    pdf::PDFPrecompiledPage page;
+    page.addSetWorldMatrix(QTransform());
+    addPoleSymbol(page, fixtures[0], 0.0);
+    addPoleSymbol(page, fixtures[1], 60.0);
+    addPoleSymbol(page, QPointF(260, 60), 0.0, 1.0, true);
+    addPoleSymbol(page, QPointF(360, 60), 200.0, 1.0, true);
+
+    FixtureSymbolFinder::Settings settings;
+    settings.mirrors = false;
+    const std::vector<FixtureSymbolFinder::Match> matches = findOnPage(page, QRectF(52, 54, 16, 12), settings);
+    QCOMPARE(countMatchesNear(matches, fixtures, 1.5), int(fixtures.size()));
+    QCOMPARE(matches.size(), fixtures.size());
+
+    // A symmetric symbol is found once, the mirror image is the symbol rotated
+    pdf::PDFPrecompiledPage symmetricPage;
+    symmetricPage.addSetWorldMatrix(QTransform());
+    for (const QPointF& point : { QPointF(60, 60), QPointF(160, 60), QPointF(260, 60) })
+    {
+        QPainterPath head;
+        head.addRect(QRectF(point.x() - 3.0, point.y() - 2.0, 6.0, 4.0));
+        symmetricPage.addPath(QPen(Qt::NoPen), QBrush(Qt::black), head, false);
+        QPainterPath arm;
+        arm.moveTo(point + QPointF(3.0, 0.0));
+        arm.lineTo(point + QPointF(6.0, 0.0));
+        symmetricPage.addPath(QPen(Qt::black, 0.5), QBrush(Qt::NoBrush), arm, false);
+    }
+
+    const std::vector<FixtureSymbolFinder::Match> symmetricMatches = findOnPage(symmetricPage, QRectF(54, 55, 14, 10));
+    QCOMPARE(symmetricMatches.size(), size_t(3));
+}
+
+void FixtureCountTest::findOnPageSampleCrossedByLine()
+{
+    // The sample itself lies on a line, the line is not a part of the sample
+    const std::vector<QPointF> fixtures = { QPointF(60, 60), QPointF(160, 120), QPointF(260, 180), QPointF(360, 240) };
+    pdf::PDFPrecompiledPage page;
+    page.addSetWorldMatrix(QTransform());
+    for (size_t i = 0; i < fixtures.size(); ++i)
+    {
+        addPoleSymbol(page, fixtures[i], 33.0 * i);
+    }
+    addLine(page, { QPointF(10, 61), QPointF(590, 61) }, Qt::black, 0.7, false);
+
+    const std::vector<FixtureSymbolFinder::Match> matches = findOnPage(page, QRectF(52, 54, 16, 12));
+    QCOMPARE(countMatchesNear(matches, fixtures, 1.5), int(fixtures.size()));
+    QCOMPARE(matches.size(), fixtures.size());
+}
+
+void FixtureCountTest::findLargeSample()
+{
+    // A large sample in an image is confirmed in a reduced image
+    QImage image(1600, 900, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    const std::vector<std::pair<QPointF, qreal>> fixtures = { { QPointF(250, 250), 0.0 }, { QPointF(800, 300), 40.0 }, { QPointF(1300, 600), 200.0 } };
+
+    {
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::Antialiasing);
+        for (const auto& fixture : fixtures)
+        {
+            painter.save();
+            painter.translate(fixture.first);
+            painter.rotate(fixture.second);
+            painter.scale(4.0, 4.0);
+            drawFixtureSymbol(painter, QPointF(0, 0), 0.0);
+            painter.restore();
+        }
+    }
+
+    // Matches are reported at the center of the ink of the sample, which is
+    // not the origin of the symbol
+    const QRect sampleRect(150, 150, 240, 140);
+    const QImage grayImage = image.convertToFormat(QImage::Format_Grayscale8);
+    const QPointF offset = QRectF(FixtureSymbolFinder::getInkBoundingRect(grayImage, sampleRect)).center() - fixtures.front().first;
+    std::vector<QPointF> points;
+    for (const auto& fixture : fixtures)
+    {
+        QTransform rotation;
+        rotation.rotate(fixture.second);
+        points.push_back(fixture.first + rotation.map(offset));
+    }
+
+    const std::vector<FixtureSymbolFinder::Match> matches = FixtureSymbolFinder::find(image, sampleRect, FixtureSymbolFinder::Settings());
+    QCOMPARE(countMatchesNear(matches, points, 12.0), int(points.size()));
+    QCOMPARE(matches.size(), points.size());
+}
+
+void FixtureCountTest::realDocumentBenchmark()
+{
+    // Precision and recall of the search on real sheets. The cases are described
+    // by a JSON file: { "cases": [ { "name", "file", "page" (from 0), "sample":
+    // [x1, y1, x2, y2], "truth": [[x, y], ...], "ignore": [[x1, y1, x2, y2], ...],
+    // "tolerance" } ] } in the page coordinates. Matches inside the ignored
+    // rectangles (legends, schedules) are neither right nor wrong.
+    const QString benchmarkFileName = qEnvironmentVariable("PDF4QT_FIXTURE_FINDER_BENCHMARK");
+    if (benchmarkFileName.isEmpty())
+    {
+        QSKIP("Set PDF4QT_FIXTURE_FINDER_BENCHMARK to a JSON file with the cases");
+    }
+
+    QFile benchmarkFile(benchmarkFileName);
+    QVERIFY(benchmarkFile.open(QIODevice::ReadOnly));
+    const QJsonObject benchmark = QJsonDocument::fromJson(benchmarkFile.readAll()).object();
+    const QString directory = QFileInfo(benchmarkFileName).absolutePath();
+
+    auto toRect = [](const QJsonValue& value)
+    {
+        const QJsonArray array = value.toArray();
+        return QRectF(QPointF(array.at(0).toDouble(), array.at(1).toDouble()), QPointF(array.at(2).toDouble(), array.at(3).toDouble())).normalized();
+    };
+
+    QJsonArray dump;
+    int totalTruePositives = 0;
+    int totalFalsePositives = 0;
+    int totalFalseNegatives = 0;
+    qint64 totalTime = 0;
+
+    for (const QJsonValue& caseValue : benchmark.value("cases").toArray())
+    {
+        const QJsonObject caseObject = caseValue.toObject();
+        const QString fileName = QDir(directory).absoluteFilePath(caseObject.value("file").toString());
+        const PDFInteger pageIndex = caseObject.value("page").toInt();
+
+        pdf::PDFDocumentReader reader(nullptr, [](bool* ok) { *ok = false; return QString(); }, true, false);
+        const pdf::PDFDocument document = reader.readFromFile(fileName);
+        QVERIFY2(reader.getReadingResult() == pdf::PDFDocumentReader::Result::OK, qPrintable(fileName));
+
+        pdf::PDFFontCache fontCache(pdf::DEFAULT_FONT_CACHE_LIMIT, pdf::DEFAULT_REALIZED_FONT_CACHE_LIMIT);
+        pdf::PDFICCProfileCache iccProfileCache;
+        pdf::PDFOptionalContentActivity optionalContentActivity(&document, pdf::OCUsage::View, nullptr);
+        pdf::PDFModifiedDocument modifiedDocument(const_cast<pdf::PDFDocument*>(&document), &optionalContentActivity);
+        fontCache.setDocument(modifiedDocument);
+        iccProfileCache.setDocument(modifiedDocument);
+        pdf::PDFCMSGeneric cms;
+
+        pdf::PDFRenderer::Features features = pdf::PDFRenderer::getDefaultFeatures();
+        features.setFlag(pdf::PDFRenderer::DisplayAnnotations, false);
+        pdf::PDFRenderer renderer(&document, &fontCache, &iccProfileCache, &cms, &optionalContentActivity, features, pdf::PDFMeshQualitySettings());
+        pdf::PDFPrecompiledPage compiledPage;
+        renderer.compile(&compiledPage, size_t(pageIndex));
+        const pdf::PDFPage* page = document.getCatalog()->getPage(pageIndex);
+        QVERIFY(page);
+
+        const QRectF sampleRect = toRect(caseObject.value("sample"));
+        const qreal tolerance = caseObject.value("tolerance").toDouble(qMax(sampleRect.width(), sampleRect.height()) * 0.5);
+
+        std::vector<QPointF> truth;
+        for (const QJsonValue& value : caseObject.value("truth").toArray())
+        {
+            truth.emplace_back(value.toArray().at(0).toDouble(), value.toArray().at(1).toDouble());
+        }
+
+        std::vector<QRectF> ignoredRects;
+        for (const QJsonValue& value : caseObject.value("ignore").toArray())
+        {
+            ignoredRects.push_back(toRect(value));
+        }
+
+        QElapsedTimer timer;
+        timer.start();
+        const std::vector<FixtureSymbolFinder::Match> matches = FixtureSymbolFinder::findOnPage(compiledPage, page, sampleRect, features, FixtureSymbolFinder::Settings());
+        const qint64 time = timer.elapsed();
+
+        // Each true symbol is matched with the nearest found symbol at most once
+        std::vector<bool> isTruthFound(truth.size(), false);
+        int truePositives = 0;
+        int falsePositives = 0;
+        QJsonArray dumpMatches;
+        for (const FixtureSymbolFinder::Match& match : matches)
+        {
+            int nearest = -1;
+            qreal nearestDistance = tolerance;
+            for (size_t i = 0; i < truth.size(); ++i)
+            {
+                const qreal distance = QLineF(match.center, truth[i]).length();
+                if (!isTruthFound[i] && distance <= nearestDistance)
+                {
+                    nearest = int(i);
+                    nearestDistance = distance;
+                }
+            }
+
+            QString verdict;
+            if (nearest >= 0)
+            {
+                isTruthFound[nearest] = true;
+                ++truePositives;
+                verdict = "tp";
+            }
+            else if (std::any_of(ignoredRects.cbegin(), ignoredRects.cend(), [&](const QRectF& rect) { return rect.contains(match.center); }))
+            {
+                verdict = "ignored";
+            }
+            else
+            {
+                ++falsePositives;
+                verdict = "fp";
+            }
+
+            dumpMatches.append(QJsonObject{ { "x", match.center.x() }, { "y", match.center.y() }, { "score", match.score }, { "angle", match.angle }, { "verdict", verdict } });
+        }
+
+        QJsonArray dumpMissed;
+        for (size_t i = 0; i < truth.size(); ++i)
+        {
+            if (!isTruthFound[i])
+            {
+                dumpMissed.append(QJsonArray{ truth[i].x(), truth[i].y() });
+            }
+        }
+
+        const int falseNegatives = int(dumpMissed.size());
+        totalTruePositives += truePositives;
+        totalFalsePositives += falsePositives;
+        totalFalseNegatives += falseNegatives;
+        totalTime += time;
+
+        qInfo().noquote() << QString("%1: %2 symbols, found %3, wrong %4, missed %5, %6 ms").arg(caseObject.value("name").toString()).arg(truth.size()).arg(truePositives).arg(falsePositives).arg(falseNegatives).arg(time);
+        dump.append(QJsonObject{ { "name", caseObject.value("name") }, { "matches", dumpMatches }, { "missed", dumpMissed }, { "time", time } });
+    }
+
+    const int found = totalTruePositives + totalFalsePositives;
+    const int expected = totalTruePositives + totalFalseNegatives;
+    qInfo().noquote() << QString("Total: precision %1 % (%2 of %3 found are right), recall %4 % (%2 of %5 symbols found), %6 ms")
+                         .arg(found > 0 ? 100.0 * totalTruePositives / found : 100.0, 0, 'f', 1).arg(totalTruePositives).arg(found)
+                         .arg(expected > 0 ? 100.0 * totalTruePositives / expected : 100.0, 0, 'f', 1).arg(expected).arg(totalTime);
+
+    const QString dumpFileName = qEnvironmentVariable("PDF4QT_FIXTURE_FINDER_BENCHMARK_DUMP");
+    if (!dumpFileName.isEmpty())
+    {
+        QFile dumpFile(dumpFileName);
+        QVERIFY(dumpFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        dumpFile.write(QJsonDocument(dump).toJson());
+    }
 }
 
 QTEST_MAIN(FixtureCountTest)
