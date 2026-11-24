@@ -59,6 +59,7 @@
 #include <QDialogButtonBox>
 
 #include <array>
+#include <limits>
 
 #include "pdfdbgheap.h"
 
@@ -554,6 +555,14 @@ QWidget* PDFPageStampDialog::createBatesWidgets(bool withPosition)
         layout->addWidget(m_batesRangeLabel, 3, 1, 1, 3);
     }
 
+    // Offered only in the batch mode
+    m_continueBatesCheckBox = new QCheckBox(tr("Continue the numbers in the next file"), groupBox);
+    m_continueBatesCheckBox->setObjectName("continueBatesCheckBox");
+    m_continueBatesCheckBox->setChecked(true);
+    m_continueBatesCheckBox->setToolTip(tr("The first page of the next file gets the number following the last page of the previous file."));
+    m_continueBatesCheckBox->setVisible(false);
+    layout->addWidget(m_continueBatesCheckBox, layout->rowCount(), 0, 1, 4);
+
     return groupBox;
 }
 
@@ -888,7 +897,12 @@ void PDFPageStampDialog::updateEnabledState()
         m_colorButton->setEnabled(isText);
     }
 
-    if (m_batesRangeLabel)
+    if (m_batesRangeLabel && m_batchMode)
+    {
+        const pdf::PDFStampVariables variables = getVariables();
+        m_batesRangeLabel->setText(tr("from %1").arg(pdf::PDFPageStamper::formatBatesNumber(variables.batesPrefix, variables.batesStart, variables.batesDigits, variables.batesSuffix)));
+    }
+    else if (m_batesRangeLabel)
     {
         QString errorMessage;
         const pdf::PDFInteger count = pdf::PDFInteger(getPageIndices(&errorMessage).size());
@@ -1064,7 +1078,7 @@ std::vector<pdf::PDFInteger> PDFPageStampDialog::getPageIndices(QString* errorMe
 
 bool PDFPageStampDialog::isReplaceExisting() const
 {
-    return m_replaceCheckBox->isEnabled() && m_replaceCheckBox->isChecked();
+    return (m_batchMode || m_replaceCheckBox->isEnabled()) && m_replaceCheckBox->isChecked();
 }
 
 pdf::PDFPageStamper::Result PDFPageStampDialog::apply() const
@@ -1301,7 +1315,20 @@ void PDFPageStampDialog::saveSettings() const
 void PDFPageStampDialog::accept()
 {
     QString errorMessage;
-    if (getPageIndices(&errorMessage).empty())
+    if (m_batchMode)
+    {
+        // The documents of the batch are not known, only the form of the pages is checked
+        if (!getPageSelection().isEmpty())
+        {
+            pdf::PDFClosedIntervalSet::parse(1, std::numeric_limits<int>::max(), getPageSelection(), &errorMessage);
+        }
+        if (!errorMessage.isEmpty())
+        {
+            QMessageBox::warning(this, windowTitle(), errorMessage);
+            return;
+        }
+    }
+    else if (getPageIndices(&errorMessage).empty())
     {
         QMessageBox::warning(this, windowTitle(), errorMessage);
         return;
@@ -1323,8 +1350,149 @@ void PDFPageStampDialog::accept()
         }
     }
 
-    saveSettings();
+    if (!m_batchMode)
+    {
+        saveSettings();
+    }
     QDialog::accept();
+}
+
+void PDFPageStampDialog::setBatchMode()
+{
+    m_batchMode = true;
+    m_currentPageRadioButton->setVisible(false);
+    m_replaceCheckBox->setText(m_mode == Mode::Watermark ? tr("Replace existing watermarks") : tr("Replace existing headers, footers and Bates numbers"));
+    m_replaceCheckBox->setEnabled(true);
+    m_replaceCheckBox->setChecked(true);
+    if (m_continueBatesCheckBox)
+    {
+        m_continueBatesCheckBox->setVisible(true);
+    }
+    updateEnabledState();
+    schedulePreview();
+}
+
+void PDFPageStampDialog::setTextStyle(const pdf::PDFStampTextStyle& style)
+{
+    m_fontComboBox->setCurrentIndex(qMax(0, m_fontComboBox->findData(int(style.font))));
+    m_fontSizeSpinBox->setValue(style.fontSize);
+    m_color = style.color;
+    updateColorButton();
+    m_opacitySpinBox->setValue(qRound(style.opacity * 100.0));
+}
+
+void PDFPageStampDialog::setVariables(const pdf::PDFStampVariables& variables)
+{
+    if (m_startPageNumberSpinBox)
+    {
+        m_startPageNumberSpinBox->setValue(int(variables.startPageNumber));
+    }
+    if (m_dateFormatEdit)
+    {
+        m_dateFormatEdit->setText(variables.dateFormat);
+    }
+    if (m_batesPrefixEdit)
+    {
+        m_batesPrefixEdit->setText(variables.batesPrefix);
+        m_batesSuffixEdit->setText(variables.batesSuffix);
+        m_batesStartSpinBox->setValue(int(variables.batesStart));
+        m_batesDigitsSpinBox->setValue(variables.batesDigits);
+    }
+}
+
+void PDFPageStampDialog::setMargins(const QMarginsF& margins)
+{
+    m_marginSpinBoxes[0]->setValue(margins.left());
+    m_marginSpinBoxes[1]->setValue(margins.top());
+    m_marginSpinBoxes[2]->setValue(margins.right());
+    m_marginSpinBoxes[3]->setValue(margins.bottom());
+}
+
+void PDFPageStampDialog::setHeaderFooterSettings(const pdf::PDFHeaderFooterSettings& settings)
+{
+    setTextStyle(settings.style);
+    setMargins(settings.margins);
+    setVariables(settings.variables);
+
+    if (m_mode == Mode::Bates)
+    {
+        for (int i = 0; i < pdf::PDFHeaderFooterSettings::PositionCount; ++i)
+        {
+            if (settings.texts[i].contains(QLatin1String("{bates}")))
+            {
+                m_batesPositionComboBox->setCurrentIndex(qMax(0, m_batesPositionComboBox->findData(i)));
+                break;
+            }
+        }
+    }
+    else
+    {
+        for (size_t i = 0; i < settings.texts.size(); ++i)
+        {
+            if (m_positionEdits[i])
+            {
+                m_positionEdits[i]->setPlainText(settings.texts[i]);
+            }
+        }
+    }
+
+    updateEnabledState();
+    schedulePreview();
+}
+
+void PDFPageStampDialog::setWatermarkSettings(const pdf::PDFWatermarkSettings& settings)
+{
+    setTextStyle(settings.style);
+    setMargins(settings.margins);
+    setVariables(settings.variables);
+
+    if (m_mode == Mode::Watermark)
+    {
+        const bool useImage = settings.text.isEmpty() && !settings.image.isNull();
+        m_watermarkImage = settings.image;
+        m_watermarkTextEdit->setPlainText(settings.text);
+        m_watermarkImageEdit->setText(useImage ? tr("(image of the sequence)") : QString());
+        m_watermarkTextRadioButton->setChecked(!useImage);
+        m_watermarkImageRadioButton->setChecked(useImage);
+        m_rotationSpinBox->setValue(settings.rotation);
+        m_relativeSizeSpinBox->setValue(qRound(settings.relativeSize * 100.0));
+        m_alignmentComboBox->setCurrentIndex(qMax(0, m_alignmentComboBox->findData(int(settings.alignment))));
+        m_behindContentCheckBox->setChecked(settings.behindContent);
+    }
+
+    updateEnabledState();
+    schedulePreview();
+}
+
+void PDFPageStampDialog::setReplaceExisting(bool replaceExisting)
+{
+    m_replaceCheckBox->setChecked(replaceExisting);
+}
+
+void PDFPageStampDialog::setPageSelection(const QString& pages)
+{
+    m_pageRangeEdit->setText(pages.trimmed());
+    m_allPagesRadioButton->setChecked(pages.trimmed().isEmpty());
+    m_pageRangeRadioButton->setChecked(!pages.trimmed().isEmpty());
+    updateEnabledState();
+}
+
+QString PDFPageStampDialog::getPageSelection() const
+{
+    return m_pageRangeRadioButton->isChecked() ? m_pageRangeEdit->text().trimmed() : QString();
+}
+
+void PDFPageStampDialog::setContinueBatesNumbering(bool continueNumbering)
+{
+    if (m_continueBatesCheckBox)
+    {
+        m_continueBatesCheckBox->setChecked(continueNumbering);
+    }
+}
+
+bool PDFPageStampDialog::isContinueBatesNumbering() const
+{
+    return m_continueBatesCheckBox && m_continueBatesCheckBox->isChecked();
 }
 
 }   // namespace pdfviewer
