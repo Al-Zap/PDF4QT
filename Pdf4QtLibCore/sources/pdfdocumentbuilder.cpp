@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 #include "pdfdocumentbuilder.h"
+#include "pdfcustomstamp.h"
 #include "pdfencoding.h"
 #include "pdfconstants.h"
 #include "pdfdocumentreader.h"
@@ -1609,6 +1610,19 @@ void PDFDocumentBuilder::updateAnnotationAppearanceStreams(PDFObjectReference an
     if (!annotation)
     {
         return;
+    }
+
+    // Jakub Melka: custom stamps (PDF4QT custom stamps, dynamic stamps of other applications)
+    // have their own appearance, which can't be recreated from the entries of the annotation -
+    // it would be replaced by the text of a standard stamp.
+    if (annotation->getType() == AnnotationType::Stamp && !annotation->getAppearanceStreams().getAppearanceKeys().empty())
+    {
+        const PDFDictionary* stampDictionary = m_storage.getDictionaryFromObject(m_storage.getObject(annotationReference));
+        PDFDocumentDataLoaderDecorator stampLoader(&m_storage);
+        if (stampDictionary && PDFCustomStampLibrary::isCustomStampName(stampLoader.readNameFromDictionary(stampDictionary, "Name")))
+        {
+            return;
+        }
     }
 
     if (const PDFHighlightAnnotation* highlightAnnotation = dynamic_cast<const PDFHighlightAnnotation*>(annotation.data()))

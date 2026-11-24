@@ -26,6 +26,9 @@
 #include "pdfaboutdialog.h"
 #include "pdfsidebarwidget.h"
 #include "pdfmarkupslistwidget.h"
+#include "pdftoolchestwidget.h"
+#include "pdfplacemarkuptool.h"
+#include "pdfwidgetannotation.h"
 #include "pdfadvancedfindwidget.h"
 #include "pdfviewersettingsdialog.h"
 #include "pdfdocumentpropertiesdialog.h"
@@ -671,6 +674,8 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     ui->menuView->addSeparator();
     ui->menuView->addAction(m_markupsListAction);
 
+    createToolChest();
+
     ui->menuView->addSeparator();
     ui->menuView->addAction(m_sidebarDockWidget->toggleViewAction());
     m_sidebarDockWidget->toggleViewAction()->setObjectName("actionSidebar");
@@ -1002,7 +1007,13 @@ void PDFEditorMainWindow::createRibbon()
     group->addSmallAction(ui->actionCreateFreehandCurve, tr("Freehand"));
 
     group = m_ribbon->getGroup("comment", "stamps", tr("Stamps"));
-    group->addMenu(Size::Large, tr("Stamp"), Helper::getThemedIcon(QStringLiteral("ribbon-stamp")), stampActions);
+    m_stampMenu = new QMenu(this);
+    m_stampMenu->setObjectName("ribbonStampMenu");
+    m_stampMenu->addActions(stampActions);
+    group->addMenu(Size::Large, tr("Stamp"), Helper::getThemedIcon(QStringLiteral("ribbon-stamp")), m_stampMenu);
+
+    // Filled, when the tool chest is created (custom stamps manager, tool chest)
+    m_ribbon->getGroup("comment", "toolchest", tr("Tool Chest"));
 
     group = m_ribbon->getGroup("comment", "manage", tr("Manage"));
     group->addLargeAction(m_markupsListAction);
@@ -1675,6 +1686,93 @@ QMenu* PDFEditorMainWindow::addToolMenu(QString name, pdf::PDFPlugin::PluginMenu
     return parentMenu->addMenu(name);
 }
 
+void PDFEditorMainWindow::createToolChest()
+{
+    pdf::PDFToolManager* toolManager = m_programController->getToolManager();
+    m_toolChestWidget = new PDFToolChestWidget(m_programController->getPdfWidget()->getDrawWidgetProxy(), toolManager, this);
+    m_toolChestDockWidget = new QDockWidget(tr("Tool Chest"), this);
+    m_toolChestDockWidget->setObjectName("ToolChestDockWidget");
+    m_toolChestDockWidget->setWidget(m_toolChestWidget);
+    addDockWidget(Qt::RightDockWidgetArea, m_toolChestDockWidget);
+    m_toolChestDockWidget->hide();
+
+    m_toolChestAction = m_toolChestDockWidget->toggleViewAction();
+    m_toolChestAction->setObjectName("actionToolChest");
+    m_toolChestAction->setText(tr("&Tool Chest"));
+    m_toolChestAction->setIcon(PDFEditorMainWindowHelper::getIcon(QStringLiteral("ribbon-tool-chest")));
+    m_toolChestAction->setShortcut(QKeySequence(Qt::ALT | Qt::Key_T));
+    m_toolChestAction->setToolTip(tr("Show the custom stamps and the markups saved for reuse (styled clouds, callouts with standard texts, ...)"));
+    m_actionManager->addAdditionalAction(m_toolChestAction);
+
+    m_addToToolChestAction = new QAction(PDFEditorMainWindowHelper::getIcon(QStringLiteral("ribbon-tool-chest-add")), tr("&Add to Tool Chest"), this);
+    m_addToToolChestAction->setObjectName("actionAddToToolChest");
+    m_addToToolChestAction->setToolTip(tr("Save the selected markups (with their style, text and appearance) to the tool chest to place them again later"));
+    connect(m_addToToolChestAction, &QAction::triggered, this, [this]()
+    {
+        if (m_toolChestWidget->addSelectedMarkups())
+        {
+            m_toolChestDockWidget->show();
+            m_toolChestDockWidget->raise();
+        }
+    });
+    m_actionManager->addAdditionalAction(m_addToToolChestAction);
+
+    m_customStampsAction = new QAction(PDFEditorMainWindowHelper::getIcon(QStringLiteral("ribbon-stamp-custom")), tr("&Custom Stamps..."), this);
+    m_customStampsAction->setObjectName("actionManageCustomStamps");
+    m_customStampsAction->setToolTip(tr("Create and edit the custom stamps (for example REVIEWED with the company, the author, the date and a logo)"));
+    connect(m_customStampsAction, &QAction::triggered, m_toolChestWidget, &PDFToolChestWidget::editStamps);
+    m_actionManager->addAdditionalAction(m_customStampsAction);
+
+    if (pdf::PDFWidgetAnnotationManager* annotationManager = m_programController->getPdfWidget()->getDrawWidgetProxy()->getAnnotationManager())
+    {
+        connect(annotationManager, &pdf::PDFWidgetAnnotationManager::selectionChanged, this, &PDFEditorMainWindow::updateToolChestActions);
+    }
+
+    // Custom stamps are listed in the menus of the stamps, they are created again
+    // each time the menu is shown (the stamps can be edited)
+    QMenu* stampMenu = m_stampMenu ? m_stampMenu : ui->menuStamp;
+    QAction* customStampsSeparator = stampMenu->addSeparator();
+    stampMenu->addAction(m_customStampsAction);
+    connect(stampMenu, &QMenu::aboutToShow, this, [this, stampMenu, customStampsSeparator]()
+    {
+        qDeleteAll(m_customStampActions);
+        m_customStampActions = m_toolChestWidget->createStampActions(stampMenu);
+        stampMenu->insertActions(customStampsSeparator, m_customStampActions);
+        if (!m_customStampActions.isEmpty())
+        {
+            stampMenu->insertSeparator(m_customStampActions.front());
+        }
+    });
+
+    if (m_ribbon)
+    {
+        m_ribbon->getGroup("comment", "stamps", tr("Stamps"))->addSmallAction(m_customStampsAction, tr("Custom Stamps"));
+
+        PDFRibbonGroup* group = m_ribbon->getGroup("comment", "toolchest", tr("Tool Chest"));
+        group->addLargeAction(m_toolChestAction);
+        group->addSmallAction(m_addToToolChestAction, tr("Add Selected"));
+    }
+    else
+    {
+        ui->menuStamp->addAction(m_addToToolChestAction);
+        ui->menuView->addAction(m_toolChestAction);
+    }
+
+    updateToolChestActions();
+}
+
+void PDFEditorMainWindow::updateToolChestActions()
+{
+    if (!m_toolChestWidget)
+    {
+        return;
+    }
+
+    pdf::PDFWidgetAnnotationManager* annotationManager = m_programController->getPdfWidget()->getDrawWidgetProxy()->getAnnotationManager();
+    const bool hasSelection = annotationManager && !annotationManager->getSelectedAnnotations().empty();
+    m_addToToolChestAction->setEnabled(m_programController->getDocument() && hasSelection);
+}
+
 void PDFEditorMainWindow::setStatusBarMessage(QString message, int time)
 {
     statusBar()->showMessage(message, time);
@@ -1695,6 +1793,12 @@ void PDFEditorMainWindow::setDocument(const pdf::PDFModifiedDocument& document)
     if (m_markupsListWidget)
     {
         m_markupsListWidget->setDocument(document);
+    }
+
+    if (m_toolChestWidget)
+    {
+        m_toolChestWidget->setDocument(document);
+        updateToolChestActions();
     }
 
     if (m_sidebarWidget && m_ribbon)
