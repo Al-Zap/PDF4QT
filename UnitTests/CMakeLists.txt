@@ -426,6 +426,16 @@ if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
     add_test(UnitTestsRibbon "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsRibbon")
     set_tests_properties(UnitTestsRibbon PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+    add_executable(UnitTestsPrint tst_printtest.cpp)
+    target_link_libraries(UnitTestsPrint PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::PrintSupport Qt6::Test)
+    set_target_properties(UnitTestsPrint PROPERTIES
+        WIN32_EXECUTABLE OFF
+        MACOSX_BUNDLE OFF
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+    )
+    add_test(UnitTestsPrint "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsPrint")
+    set_tests_properties(UnitTestsPrint PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(UnitTestsPageStampDialog tst_pagestampdialogtest.cpp)
     target_link_libraries(UnitTestsPageStampDialog PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
     set_target_properties(UnitTestsPageStampDialog PROPERTIES
