@@ -1112,9 +1112,28 @@ void RibbonTest::tabsAreOrganized()
     QCoreApplication::processEvents();
     if (ribbon->width() >= 1900)
     {
-        for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage("view")->getGroups())
+        // The page is fitted to its width after the layout, the widths of the groups
+        // without reduction are reported, if it is not wide enough
+        auto isNotReduced = [ribbon]()
         {
-            QVERIFY2(group->getReduction() == pdfviewer::PDFRibbonGroup::Reduction::None, qPrintable(group->getTitle()));
+            for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage("view")->getGroups())
+            {
+                if (group->getReduction() != pdfviewer::PDFRibbonGroup::Reduction::None)
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(isNotReduced(), 2000);
+        if (!isNotReduced())
+        {
+            QStringList widths;
+            for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage("view")->getGroups())
+            {
+                widths << QString("%1=%2").arg(group->getTitle()).arg(group->getReducedWidth(pdfviewer::PDFRibbonGroup::Reduction::None));
+            }
+            QFAIL(qPrintable(QString("View tab reduced at the width %1: %2").arg(ribbon->width()).arg(widths.join(", "))));
         }
     }
     ribbon->setCurrentPage(currentPageId);
