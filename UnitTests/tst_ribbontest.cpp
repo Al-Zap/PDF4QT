@@ -612,7 +612,7 @@ void RibbonTest::createTestRibbon(TestRibbon& testRibbon)
 
     testRibbon.page = testRibbon.ribbon->addPage("home", "Home");
 
-    const QStringList groupNames = { "Clipboard", "Pages", "Markup", "Measure" };
+    const QStringList groupNames = { "Edit", "Pages", "Markup", "Measure" };
     for (int groupIndex = 0; groupIndex < groupNames.size(); ++groupIndex)
     {
         pdfviewer::PDFRibbonGroup* group = testRibbon.page->getGroup(groupNames[groupIndex], groupNames[groupIndex]);
@@ -693,10 +693,15 @@ void RibbonTest::groupsShrinkStepByStep()
     }
 
     const int fullWidth = testRibbon.page->sizeHint().width();
-    const int collapsedWidth = testRibbon.groups.front()->getReducedWidth(Reduction::Collapsed);
-    QVERIFY2(collapsedWidth < testRibbon.groups.front()->getReducedWidth(Reduction::IconButtons), qPrintable(QString("Collapsed %1 px, icons %2 px").arg(collapsedWidth).arg(testRibbon.groups.front()->getReducedWidth(Reduction::IconButtons))));
-    QVERIFY(testRibbon.groups.front()->getReducedWidth(Reduction::IconButtons) < testRibbon.groups.front()->getReducedWidth(Reduction::SmallButtons));
-    QVERIFY(testRibbon.groups.front()->getReducedWidth(Reduction::SmallButtons) < testRibbon.groups.front()->getReducedWidth(Reduction::None));
+    // Each reduction makes the groups narrower
+    int collapsedWidth = 0;
+    for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
+    {
+        collapsedWidth = qMax(collapsedWidth, group->getReducedWidth(Reduction::Collapsed));
+        QVERIFY2(group->getReducedWidth(Reduction::Collapsed) < group->getReducedWidth(Reduction::IconButtons), qPrintable(describeTestRibbon(testRibbon)));
+        QVERIFY2(group->getReducedWidth(Reduction::IconButtons) < group->getReducedWidth(Reduction::SmallButtons), qPrintable(describeTestRibbon(testRibbon)));
+        QVERIFY2(group->getReducedWidth(Reduction::SmallButtons) < group->getReducedWidth(Reduction::None), qPrintable(describeTestRibbon(testRibbon)));
+    }
 
     // Slightly narrower window: only the last group gets small buttons
     resizeTestRibbon(testRibbon, fullWidth - 10);
