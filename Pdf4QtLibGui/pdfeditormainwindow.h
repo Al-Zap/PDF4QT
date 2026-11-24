@@ -77,6 +77,7 @@ namespace pdfviewer
 {
 class PDFSidebarWidget;
 class PDFAdvancedFindWidget;
+class PDFMarkupsListWidget;
 
 class PDF4QTLIBGUILIBSHARED_EXPORT PDFEditorMainWindow : public QMainWindow, public IMainWindow
 {
@@ -155,6 +156,9 @@ private:
     QDockWidget* m_sidebarDockWidget;
     PDFAdvancedFindWidget* m_advancedFindWidget;
     QDockWidget* m_advancedFindDockWidget;
+    PDFMarkupsListWidget* m_markupsListWidget = nullptr;
+    QDockWidget* m_markupsListDockWidget = nullptr;
+    QAction* m_markupsListAction = nullptr;
     QSpinBox* m_pageNumberSpinBox;
     QLabel* m_pageNumberLabel;
     QDoubleSpinBox* m_pageZoomSpinBox;

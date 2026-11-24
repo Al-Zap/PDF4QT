@@ -25,6 +25,7 @@
 
 #include "pdfaboutdialog.h"
 #include "pdfsidebarwidget.h"
+#include "pdfmarkupslistwidget.h"
 #include "pdfadvancedfindwidget.h"
 #include "pdfviewersettingsdialog.h"
 #include "pdfdocumentpropertiesdialog.h"
@@ -658,6 +659,31 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
         m_ribbon->getGroup("home", "find", tr("Find"))->addSmallAction(toggleAdvancedFindAction, tr("Advanced Find"));
     }
 
+    // Markups list: table of all markups below the pages
+    m_markupsListWidget = new PDFMarkupsListWidget(m_programController->getPdfWidget()->getDrawWidgetProxy(), this);
+    m_markupsListDockWidget = new QDockWidget(tr("Markups List"), this);
+    m_markupsListDockWidget->setObjectName("MarkupsListDockWidget");
+    m_markupsListDockWidget->setAllowedAreas(Qt::TopDockWidgetArea | Qt::BottomDockWidgetArea | Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    m_markupsListDockWidget->setWidget(m_markupsListWidget);
+    addDockWidget(Qt::BottomDockWidgetArea, m_markupsListDockWidget);
+    m_markupsListDockWidget->hide();
+    connect(m_markupsListWidget, &PDFMarkupsListWidget::documentModified, m_programController, &PDFProgramController::onDocumentModified);
+    if (!m_markupsListAction)
+    {
+        // Classic layout: the action of the dock widget is used
+        m_markupsListAction = m_markupsListDockWidget->toggleViewAction();
+        m_markupsListAction->setObjectName("actionMarkupsList");
+        m_markupsListAction->setText(tr("&Markups List"));
+        m_actionManager->addAdditionalAction(m_markupsListAction);
+    }
+    else
+    {
+        connect(m_markupsListAction, &QAction::toggled, m_markupsListDockWidget, &QDockWidget::setVisible);
+        connect(m_markupsListDockWidget->toggleViewAction(), &QAction::toggled, m_markupsListAction, &QAction::setChecked);
+    }
+    ui->menuView->addSeparator();
+    ui->menuView->addAction(m_markupsListAction);
+
     ui->menuView->addSeparator();
     ui->menuView->addAction(m_sidebarDockWidget->toggleViewAction());
     m_sidebarDockWidget->toggleViewAction()->setObjectName("actionSidebar");
@@ -860,6 +886,13 @@ void PDFEditorMainWindow::createRibbon()
     m_commentsListAction->setToolTip(tr("Show the list of all comments and markups in the navigation pane"));
     m_actionManager->addAdditionalAction(m_commentsListAction);
 
+    m_markupsListAction = new QAction(Helper::getIcon(QStringLiteral("ribbon-markups-list")), tr("&Markups List"), this);
+    m_markupsListAction->setObjectName("actionMarkupsList");
+    m_markupsListAction->setCheckable(true);
+    m_markupsListAction->setShortcut(QKeySequence(Qt::ALT | Qt::Key_L));
+    m_markupsListAction->setToolTip(tr("Show the table of all markups, counts and measurements of all sheets with their status, the takeoff summary and the export to CSV or PDF"));
+    m_actionManager->addAdditionalAction(m_markupsListAction);
+
     m_collapseRibbonAction = new QAction(Helper::getIcon(QStringLiteral("ribbon-ribbon-collapse")), tr("&Collapse the Ribbon"), this);
     m_collapseRibbonAction->setObjectName("actionCollapseRibbon");
     m_collapseRibbonAction->setCheckable(true);
@@ -986,6 +1019,7 @@ void PDFEditorMainWindow::createRibbon()
     group->addMenu(Size::Large, tr("Stamp"), Helper::getThemedIcon(QStringLiteral("ribbon-stamp")), stampActions);
 
     group = m_ribbon->getGroup("comment", "manage", tr("Manage"));
+    group->addLargeAction(m_markupsListAction);
     group->addLargeAction(m_commentsListAction);
     group->addLargeAction(ui->actionDeleteAnnotation, tr("Delete Comments"));
 
@@ -1651,6 +1685,11 @@ void PDFEditorMainWindow::setDocument(const pdf::PDFModifiedDocument& document)
     if (m_advancedFindWidget)
     {
         m_advancedFindWidget->setDocument(document);
+    }
+
+    if (m_markupsListWidget)
+    {
+        m_markupsListWidget->setDocument(document);
     }
 
     if (m_sidebarWidget && m_ribbon)
