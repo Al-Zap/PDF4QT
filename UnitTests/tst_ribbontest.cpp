@@ -43,14 +43,23 @@
 #include <QWheelEvent>
 #include <QTemporaryDir>
 #include <QStandardPaths>
+#include <QStatusBar>
+#include <QPainter>
+#include <QMenu>
+#include <QToolButton>
+#include <QBoxLayout>
+#include <QScrollArea>
+#include <QSpinBox>
 
 #include <cmath>
 #include <memory>
 
 /// Tests of the ribbon layout of the editor main window: the setting of the mouse wheel
 /// (the wheel scrolls / the wheel zooms), the zoom slider of the status bar, the keyboard
-/// shortcuts of the actions (there is no menu bar, which would own them) and the row of
-/// the tabs in narrow windows.
+/// shortcuts of the actions (there is no menu bar, which would own them), the row of
+/// the tabs in narrow windows, groups of the ribbon reduced in narrow windows (small
+/// buttons, buttons without texts, collapsed groups) and messages of the status bar,
+/// which are not cut off by its widgets.
 class RibbonTest : public QObject
 {
     Q_OBJECT
@@ -81,6 +90,11 @@ private slots:
     void zoomShortcutWorksWithoutMenuBar();
     void tabRowFitsNarrowWindow();
     void largeButtonLabelsFit();
+    void groupsShrinkStepByStep();
+    void collapsedGroupOpensDropDown();
+    void groupWidthFollowsButtonText();
+    void editorRibbonFitsNarrowWindow();
+    void statusBarMessageIsNotCutOff();
     void bookmarkListOutlivesBookmarkManager();
 
 private:
@@ -95,6 +109,20 @@ private:
     void resetView(pdf::PDFReal zoom);
 
     static int expectedSliderValue(pdf::PDFReal zoom);
+    static QIcon createIcon(QColor color);
+
+    /// Standalone ribbon with one page of groups of large and small buttons
+    struct TestRibbon
+    {
+        QWidget window;
+        pdfviewer::PDFRibbon* ribbon = nullptr;
+        pdfviewer::PDFRibbonPage* page = nullptr;
+        std::vector<pdfviewer::PDFRibbonGroup*> groups;
+        std::vector<QAction*> actions;
+    };
+
+    static void createTestRibbon(TestRibbon& testRibbon);
+    static std::vector<pdfviewer::PDFRibbonGroup::Reduction> getReductions(const TestRibbon& testRibbon);
 
     QTemporaryDir m_directory;
     QString m_documentFileName;
@@ -497,6 +525,10 @@ void RibbonTest::tabRowFitsNarrowWindow()
 
 void RibbonTest::largeButtonLabelsFit()
 {
+    // Buttons have their full size only in a window wide enough for all groups
+    m_window->resize(3000, 900);
+    QCoreApplication::processEvents();
+
     const QList<pdfviewer::PDFRibbonButton*> buttons = m_window->getRibbon()->findChildren<pdfviewer::PDFRibbonButton*>();
     QVERIFY(!buttons.isEmpty());
 
@@ -561,6 +593,425 @@ void RibbonTest::bookmarkListOutlivesBookmarkManager()
     bookmarksView->repaint();
     QCoreApplication::processEvents();
     QCOMPARE(bookmarksView->model()->rowCount(), 0);
+}
+
+QIcon RibbonTest::createIcon(QColor color)
+{
+    QPixmap pixmap(32, 32);
+    pixmap.fill(color);
+    return QIcon(pixmap);
+}
+
+void RibbonTest::createTestRibbon(TestRibbon& testRibbon)
+{
+    QVBoxLayout* layout = new QVBoxLayout(&testRibbon.window);
+    layout->setContentsMargins(0, 0, 0, 0);
+    testRibbon.ribbon = new pdfviewer::PDFRibbon(&testRibbon.window);
+    layout->addWidget(testRibbon.ribbon);
+    layout->addStretch(1);
+
+    testRibbon.page = testRibbon.ribbon->addPage("home", "Home");
+
+    const QStringList groupNames = { "Clipboard", "Pages", "Markup", "Measure" };
+    for (int groupIndex = 0; groupIndex < groupNames.size(); ++groupIndex)
+    {
+        pdfviewer::PDFRibbonGroup* group = testRibbon.page->getGroup(groupNames[groupIndex], groupNames[groupIndex]);
+        testRibbon.groups.push_back(group);
+
+        for (int i = 0; i < 3; ++i)
+        {
+            QAction* action = new QAction(createIcon(QColor::fromHsv(groupIndex * 60 + i * 15, 200, 200)), QString("%1 Action %2").arg(groupNames[groupIndex]).arg(i + 1), &testRibbon.window);
+            action->setObjectName(QString("action_%1_%2").arg(groupIndex).arg(i));
+            testRibbon.actions.push_back(action);
+            group->addLargeAction(action);
+        }
+
+        for (int i = 0; i < 6; ++i)
+        {
+            QAction* action = new QAction(createIcon(QColor::fromHsv(groupIndex * 60 + i * 15, 120, 230)), QString("Small %1").arg(i + 1), &testRibbon.window);
+            testRibbon.actions.push_back(action);
+            group->addSmallAction(action);
+        }
+    }
+
+    testRibbon.ribbon->updateGroups();
+    testRibbon.window.resize(3000, 200);
+    testRibbon.window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&testRibbon.window));
+    QCoreApplication::processEvents();
+}
+
+std::vector<pdfviewer::PDFRibbonGroup::Reduction> RibbonTest::getReductions(const TestRibbon& testRibbon)
+{
+    std::vector<pdfviewer::PDFRibbonGroup::Reduction> reductions;
+    for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
+    {
+        reductions.push_back(group->getReduction());
+    }
+    return reductions;
+}
+
+void RibbonTest::groupsShrinkStepByStep()
+{
+    using Reduction = pdfviewer::PDFRibbonGroup::Reduction;
+
+    TestRibbon testRibbon;
+    createTestRibbon(testRibbon);
+    if (QTest::currentTestFailed())
+    {
+        return;
+    }
+
+    // Wide window: groups have their full size
+    for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
+    {
+        QCOMPARE(group->getReduction(), Reduction::None);
+    }
+
+    const int fullWidth = testRibbon.page->sizeHint().width();
+    const int collapsedWidth = testRibbon.groups.front()->getReducedWidth(Reduction::Collapsed);
+    QVERIFY(collapsedWidth < testRibbon.groups.front()->getReducedWidth(Reduction::IconButtons));
+    QVERIFY(testRibbon.groups.front()->getReducedWidth(Reduction::IconButtons) < testRibbon.groups.front()->getReducedWidth(Reduction::SmallButtons));
+    QVERIFY(testRibbon.groups.front()->getReducedWidth(Reduction::SmallButtons) < testRibbon.groups.front()->getReducedWidth(Reduction::None));
+
+    // Slightly narrower window: only the last group gets small buttons
+    testRibbon.window.resize(fullWidth - 10, 200);
+    QCoreApplication::processEvents();
+    std::vector<Reduction> reductions = getReductions(testRibbon);
+    QCOMPARE(reductions.back(), Reduction::SmallButtons);
+    QCOMPARE(reductions.front(), Reduction::None);
+
+    // Shrinking the window step by step: no group is ever enlarged, all groups get small
+    // buttons before any group loses the texts, and the page always fits into the window
+    std::vector<Reduction> previousReductions = reductions;
+    for (int width = fullWidth - 10; width >= 4 * collapsedWidth + 10; width -= 15)
+    {
+        testRibbon.window.resize(width, 200);
+        QCoreApplication::processEvents();
+
+        reductions = getReductions(testRibbon);
+        const Reduction maximum = *std::max_element(reductions.cbegin(), reductions.cend());
+        const Reduction minimum = *std::min_element(reductions.cbegin(), reductions.cend());
+
+        for (size_t i = 0; i < reductions.size(); ++i)
+        {
+            QVERIFY2(reductions[i] >= previousReductions[i], qPrintable(QString("Width %1: group %2 was enlarged").arg(width).arg(i)));
+
+            // Groups on the right are reduced first
+            if (i + 1 < reductions.size())
+            {
+                QVERIFY2(reductions[i] <= reductions[i + 1], qPrintable(QString("Width %1: group %2 is smaller than the group on its right").arg(width).arg(i)));
+            }
+        }
+
+        QVERIFY2(int(maximum) - int(minimum) <= 1, qPrintable(QString("Width %1: reductions differ by more than one step").arg(width)));
+        QVERIFY2(testRibbon.page->sizeHint().width() <= testRibbon.ribbon->width(), qPrintable(QString("Width %1: page needs %2 px").arg(width).arg(testRibbon.page->sizeHint().width())));
+        QVERIFY2(!testRibbon.ribbon->findChild<QScrollArea*>("ribbonPages")->horizontalScrollBar()->maximum(), qPrintable(QString("Width %1: page is scrolled").arg(width)));
+
+        // Buttons follow the reduction of their groups
+        for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
+        {
+            const QList<pdfviewer::PDFRibbonButton*> buttons = group->getContentWidget()->findChildren<pdfviewer::PDFRibbonButton*>();
+            for (pdfviewer::PDFRibbonButton* button : buttons)
+            {
+                switch (group->getReduction())
+                {
+                    case Reduction::None:
+                        break;
+                    case Reduction::SmallButtons:
+                        QVERIFY(button->getButtonSize() == pdfviewer::PDFRibbonButton::Size::Small);
+                        break;
+                    case Reduction::IconButtons:
+                        QVERIFY(button->getButtonSize() == pdfviewer::PDFRibbonButton::Size::IconOnly);
+                        QVERIFY(!button->toolTip().isEmpty());
+                        break;
+                    case Reduction::Collapsed:
+                        QVERIFY(!group->getContentWidget()->isVisible());
+                        QVERIFY(group->getCollapsedButton() && group->getCollapsedButton()->isVisible());
+                        break;
+                    default:
+                        QFAIL("Invalid reduction");
+                }
+            }
+        }
+
+        previousReductions = reductions;
+    }
+
+    // All groups are collapsed in a window, which is just wide enough for the collapsed groups
+    int allCollapsedWidth = 4;
+    for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
+    {
+        allCollapsedWidth += group->getReducedWidth(Reduction::Collapsed);
+    }
+    testRibbon.window.resize(allCollapsedWidth + 2, 200);
+    QCoreApplication::processEvents();
+    for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
+    {
+        QCOMPARE(group->getReduction(), Reduction::Collapsed);
+    }
+
+    // Too narrow even for the collapsed groups: the page can be scrolled again
+    testRibbon.window.resize(allCollapsedWidth - 20, 200);
+    QCoreApplication::processEvents();
+    QVERIFY(testRibbon.ribbon->findChild<QScrollArea*>("ribbonPages")->horizontalScrollBar()->maximum() > 0);
+
+    // Wide window again: full size of all groups, large buttons
+    testRibbon.window.resize(3000, 200);
+    QCoreApplication::processEvents();
+    for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
+    {
+        QCOMPARE(group->getReduction(), Reduction::None);
+        QVERIFY(group->getContentWidget()->isVisible());
+        QVERIFY(!group->getCollapsedButton() || !group->getCollapsedButton()->isVisible());
+    }
+    QCOMPARE(testRibbon.page->sizeHint().width(), fullWidth);
+}
+
+void RibbonTest::collapsedGroupOpensDropDown()
+{
+    using Reduction = pdfviewer::PDFRibbonGroup::Reduction;
+
+    TestRibbon testRibbon;
+    createTestRibbon(testRibbon);
+    if (QTest::currentTestFailed())
+    {
+        return;
+    }
+
+    pdfviewer::PDFRibbonGroup* group = testRibbon.groups.back();
+    const int collapsedWidth = group->getReducedWidth(Reduction::Collapsed);
+    testRibbon.window.resize(4 * collapsedWidth + 10, 200);
+    QCoreApplication::processEvents();
+    QCOMPARE(group->getReduction(), Reduction::Collapsed);
+
+    pdfviewer::PDFRibbonButton* collapsedButton = group->getCollapsedButton();
+    QVERIFY(collapsedButton);
+    QVERIFY(collapsedButton->isVisible());
+    QCOMPARE(collapsedButton->text(), QString("Measure"));
+    QVERIFY(!collapsedButton->icon().isNull());
+    QCOMPARE(collapsedButton->menu(), group->getCollapsedMenu());
+
+    // The drop down window shows the full group with large buttons
+    QMenu* menu = group->getCollapsedMenu();
+    menu->popup(collapsedButton->mapToGlobal(QPoint(0, collapsedButton->height())));
+    QTRY_VERIFY(menu->isVisible());
+    QWidget* content = group->getContentWidget();
+    QCOMPARE(content->window(), static_cast<QWidget*>(menu));
+    QVERIFY(content->isVisible());
+
+    QAction* firstAction = testRibbon.actions[27];
+    QCOMPARE(firstAction->objectName(), QString("action_3_0"));
+    pdfviewer::PDFRibbonButton* firstButton = nullptr;
+    for (pdfviewer::PDFRibbonButton* button : content->findChildren<pdfviewer::PDFRibbonButton*>())
+    {
+        if (button->getAction() == firstAction)
+        {
+            firstButton = button;
+        }
+    }
+    QVERIFY(firstButton);
+    QVERIFY(firstButton->isVisible());
+    QVERIFY(firstButton->getButtonSize() == pdfviewer::PDFRibbonButton::Size::Large);
+    QVERIFY(menu->sizeHint().width() >= content->sizeHint().width());
+
+    // The window is too narrow, but the window of the collapsed group keeps its content
+    testRibbon.window.resize(4 * collapsedWidth + 20, 200);
+    QCoreApplication::processEvents();
+    QCOMPARE(content->window(), static_cast<QWidget*>(menu));
+
+    // A click on a button triggers the action and closes the window, the buttons return to the group
+    QSignalSpy triggeredSpy(firstAction, &QAction::triggered);
+    QTest::mouseClick(firstButton, Qt::LeftButton);
+    QCOMPARE(triggeredSpy.count(), 1);
+    QTRY_VERIFY(!menu->isVisible());
+    QCOMPARE(content->parentWidget(), static_cast<QWidget*>(group));
+    QVERIFY(!content->isVisible());
+    QVERIFY(collapsedButton->isVisible());
+
+    // The group gets its buttons back in a wide window
+    testRibbon.window.resize(3000, 200);
+    QCoreApplication::processEvents();
+    QCOMPARE(group->getReduction(), Reduction::None);
+    QVERIFY(content->isVisible());
+    QVERIFY(!collapsedButton->isVisible());
+    QVERIFY(firstButton->isVisible());
+    QVERIFY(group->geometry().right() <= testRibbon.ribbon->width());
+}
+
+void RibbonTest::groupWidthFollowsButtonText()
+{
+    using Reduction = pdfviewer::PDFRibbonGroup::Reduction;
+
+    TestRibbon testRibbon;
+    createTestRibbon(testRibbon);
+    if (QTest::currentTestFailed())
+    {
+        return;
+    }
+
+    const int fullWidth = testRibbon.page->sizeHint().width();
+    testRibbon.window.resize(fullWidth + 5, 200);
+    QCoreApplication::processEvents();
+    QCOMPARE(testRibbon.groups.back()->getReduction(), Reduction::None);
+
+    // A longer text of a button makes the page wider, the ribbon reduces the last group
+    testRibbon.actions.back()->setText("Small button with a very very long text");
+    QTRY_COMPARE(testRibbon.groups.back()->getReduction(), Reduction::SmallButtons);
+    QVERIFY(testRibbon.page->sizeHint().width() <= testRibbon.ribbon->width());
+
+    // A hidden button makes it narrower again
+    testRibbon.actions.back()->setText("S");
+    QTRY_COMPARE(testRibbon.groups.back()->getReduction(), Reduction::None);
+}
+
+void RibbonTest::editorRibbonFitsNarrowWindow()
+{
+    using Reduction = pdfviewer::PDFRibbonGroup::Reduction;
+
+    pdfviewer::PDFRibbon* ribbon = m_window->getRibbon();
+    QTabBar* tabBar = m_window->findChild<QTabBar*>("ribbonTabBar");
+    QScrollArea* scrollArea = ribbon->findChild<QScrollArea*>("ribbonPages");
+    QVERIFY(tabBar);
+    QVERIFY(scrollArea);
+
+    QStringList pageIds;
+    for (QObject* child : ribbon->findChildren<pdfviewer::PDFRibbonPage*>())
+    {
+        pageIds << static_cast<pdfviewer::PDFRibbonPage*>(child)->getId();
+    }
+    QVERIFY(pageIds.size() > 3);
+
+    const QString currentPageId = ribbon->getCurrentPageId();
+
+    // Windows about 1000 px wide (and narrower) show all groups of every page without
+    // scrolling, the groups are reduced instead
+    for (const int width : { 1400, 1000, 900, 800 })
+    {
+        m_window->resize(width, 800);
+        QCoreApplication::processEvents();
+
+        int reducedGroups = 0;
+        for (const QString& pageId : pageIds)
+        {
+            ribbon->setCurrentPage(pageId);
+            QCoreApplication::processEvents();
+
+            pdfviewer::PDFRibbonPage* page = ribbon->getPage(pageId);
+            QVERIFY2(page->sizeHint().width() <= ribbon->width(), qPrintable(QString("Width %1: page '%2' needs %3 px of %4 px").arg(width).arg(pageId).arg(page->sizeHint().width()).arg(ribbon->width())));
+            QVERIFY2(scrollArea->horizontalScrollBar()->maximum() == 0, qPrintable(QString("Width %1: page '%2' scrolls").arg(width).arg(pageId)));
+
+            for (pdfviewer::PDFRibbonGroup* group : page->getGroups())
+            {
+                if (group->isEmpty() || group->isHidden())
+                {
+                    continue;
+                }
+
+                // Every group is visible inside of the window
+                const QRect groupRect(group->mapTo(ribbon, QPoint(0, 0)), group->size());
+                QVERIFY2(groupRect.right() <= ribbon->width(), qPrintable(QString("Width %1: group '%2' is outside of the window").arg(width).arg(group->getTitle())));
+
+                if (group->getReduction() != Reduction::None)
+                {
+                    ++reducedGroups;
+                }
+            }
+        }
+
+        if (width <= 1000)
+        {
+            QVERIFY2(reducedGroups > 0, qPrintable(QString("Width %1: no group is reduced").arg(width)));
+        }
+    }
+
+    // A wide window shows all groups in full size
+    m_window->resize(3000, 800);
+    QCoreApplication::processEvents();
+    for (const QString& pageId : pageIds)
+    {
+        ribbon->setCurrentPage(pageId);
+        QCoreApplication::processEvents();
+
+        for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage(pageId)->getGroups())
+        {
+            QVERIFY2(group->getReduction() == Reduction::None, qPrintable(QString("Group '%1' of '%2' is reduced in a wide window").arg(group->getTitle(), pageId)));
+        }
+    }
+
+    ribbon->setCurrentPage(currentPageId);
+}
+
+void RibbonTest::statusBarMessageIsNotCutOff()
+{
+    QStatusBar* statusBar = m_window->statusBar();
+    pdfviewer::PDFStatusBarMessageFitter* fitter = statusBar->findChild<pdfviewer::PDFStatusBarMessageFitter*>("statusBarMessageFitter");
+    QSlider* slider = zoomSlider();
+    QVERIFY(fitter);
+    QVERIFY(slider);
+
+    // Buttons of the first and the last page are hidden last
+    QToolButton* firstPageButton = nullptr;
+    for (QToolButton* button : statusBar->findChildren<QToolButton*>())
+    {
+        if (button->defaultAction() && button->defaultAction()->objectName() == "actionGoToDocumentStart")
+        {
+            firstPageButton = button;
+        }
+    }
+    QVERIFY(firstPageButton);
+
+    // The message fits, or all widgets, which can be hidden, are hidden (the progress
+    // bar of a long operation takes the space too)
+    auto checkMessageFits = [&](int requiredWidth)
+    {
+        const bool fits = fitter->getMessageWidth() >= requiredWidth;
+        return fits || (!firstPageButton->isVisible() && !slider->isVisible());
+    };
+
+    const QString longMessage = "Click to add the next point of the polyline, double click or press Enter to finish it.";
+
+    // In a window about 1000 px wide, the long message of a tool was cut off by the widgets of the status bar
+    for (const int width : { 1000, 900, 1200 })
+    {
+        m_window->resize(width, 800);
+        QCoreApplication::processEvents();
+        statusBar->clearMessage();
+        QVERIFY(slider->isVisible());
+
+        // Other messages (errors of the rendering) can replace the message, while the events are processed
+        statusBar->showMessage(longMessage);
+        const int requiredWidth = pdfviewer::PDFStatusBarMessageFitter::getRequiredWidth(statusBar, longMessage);
+        QVERIFY2(checkMessageFits(requiredWidth), qPrintable(QString("Width %1: message needs %2 px, it has %3 px").arg(width).arg(requiredWidth).arg(fitter->getMessageWidth())));
+        if (width <= 1000)
+        {
+            QVERIFY(!slider->isVisible());
+        }
+
+        // Page number and zoom value stay visible
+        for (QAbstractSpinBox* spinBox : statusBar->findChildren<QAbstractSpinBox*>())
+        {
+            QVERIFY(spinBox->isVisible());
+        }
+
+        // The window is resized while the message is shown
+        m_window->resize(width - 50, 800);
+        QCoreApplication::processEvents();
+        statusBar->showMessage(longMessage);
+        QVERIFY2(checkMessageFits(requiredWidth), qPrintable(QString("Width %1: message needs %2 px, it has %3 px, status bar %4 px").arg(width - 50).arg(requiredWidth).arg(fitter->getMessageWidth()).arg(statusBar->width())));
+
+        // The widgets are shown again, when the message disappears
+        statusBar->clearMessage();
+        QVERIFY(slider->isVisible());
+    }
+
+    // A short message does not hide anything
+    m_window->resize(1400, 800);
+    QCoreApplication::processEvents();
+    statusBar->showMessage("Ready");
+    QVERIFY(slider->isVisible());
+    statusBar->clearMessage();
+    QVERIFY(slider->isVisible());
 }
 
 QTEST_MAIN(RibbonTest)

@@ -1,4 +1,5 @@
 CURRENT:
+ - Ribbon in narrow windows: groups get small buttons, then buttons without texts, then collapse into a drop down button, instead of scrolling behind an arrow; long status bar messages (hints of the tools) are no longer cut off by the page and zoom controls
  - Page organizing: moving, deleting and inserting pages keeps the object numbers of the document and no longer runs the full optimizer pass (faster on large plan sets); thumbnails dropped next to one of the dragged pages, onto a dragged page or into the space between the thumbnails are moved
  - OCR on Windows: user words and patterns work also when the path of the OCR data contains characters outside of the code page of Windows (user profile with accented letters); unit tests run in the Windows build
  - Fixture count and measurement CSV export uses the list separator of the regional settings (semicolon in the locales with the decimal comma, so Excel opens the file in columns), measured values with the decimal point of the system
