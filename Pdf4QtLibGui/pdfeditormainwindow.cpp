@@ -557,7 +557,8 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent, bool isEmbedded) :
     ui->menuView->addAction(classicLayoutAction);
     if (m_ribbon)
     {
-        m_ribbon->getGroup("view", "window", tr("Window"))->addSmallAction(classicLayoutAction, tr("Classic Menus"));
+        // A preference of the window, it is next to the options
+        m_ribbon->getGroup("help", "settings", tr("Settings"))->addSmallAction(classicLayoutAction, tr("Classic Menus"));
     }
 
     m_programController->initialize(PDFProgramController::AllFeatures, this, this, m_actionManager, m_progress);
@@ -993,6 +994,7 @@ void PDFEditorMainWindow::createRibbon()
     group->addActionList(Size::Large, highlightActions);
     group->addActionList(Size::Large, stickyNoteActions, true, tr("Sticky Note"));
     group->addLargeAction(ui->actionInlineText, tr("Text Box"));
+    group->addActionList(Size::Large, { ui->actionCreateCloudRectangle, ui->actionCreateCloudPolygon });
 
     group = m_ribbon->getGroup("home", "convert", tr("Convert"));
     group->addLargeAction(ui->actionMakeSearchable, tr("Make Searchable"));
@@ -1014,18 +1016,12 @@ void PDFEditorMainWindow::createRibbon()
     group->addLargeAction(ui->actionInlineText, tr("Text Box"));
     group->addLargeAction(ui->actionCreateHyperlink, tr("Web Link"));
     group->addMenu(Size::Large, tr("Link to Page"), Helper::getThemedIcon(QStringLiteral("hyperlink")), ui->menuHyperlinkToThisPDF);
-    group->addLargeAction(m_sheetLinksAction, tr("Sheet Links"));
     group->addSmallAction(m_removeSheetLinksAction, tr("Remove Sheet Links"));
-    group->addLargeAction(ui->actionInsertPageNumbers, tr("Page Numbers"));
-    group->addSmallAction(ui->actionHeaderFooter, tr("Header/Footer"));
-    group->addSmallAction(ui->actionWatermark, tr("Watermark"));
-    group->addSmallAction(ui->actionBatesNumbering, tr("Bates Numbering"));
 
     // Group of the page content editor (plugin) is in front of the document group
     m_ribbon->getGroup("edit", "content", tr("Page Content"));
 
     group = m_ribbon->getGroup("edit", "document", tr("Document"));
-    group->addLargeAction(ui->actionPageGeometry);
     group->addLargeAction(ui->actionRemoveExternalLinks, tr("Remove Links"));
 
     // Comment
@@ -1084,17 +1080,15 @@ void PDFEditorMainWindow::createRibbon()
     m_ribbon->getGroup("pages", "rotate", tr("Rotate"));
 
     group = m_ribbon->getGroup("pages", "setup", tr("Page Setup"));
-    group->addLargeAction(ui->actionInsertPageNumbers, tr("Page Numbers"));
     group->addLargeAction(ui->actionPageGeometry);
+    group->addLargeAction(ui->actionPrepareScannedPages, tr("Crop, Split and Deskew"));
 
     group = m_ribbon->getGroup("pages", "design", tr("Page Design"));
     group->addLargeAction(ui->actionHeaderFooter, tr("Header/Footer"));
     group->addLargeAction(ui->actionWatermark, tr("Watermark"));
     group->addLargeAction(ui->actionBatesNumbering, tr("Bates Numbering"));
+    group->addSmallAction(ui->actionInsertPageNumbers, tr("Page Numbers"));
     group->addSmallAction(ui->actionRemoveStamps, tr("Remove"));
-
-    group = m_ribbon->getGroup("pages", "scan", tr("Scanned Pages"));
-    group->addLargeAction(ui->actionPrepareScannedPages, tr("Crop, Split and Deskew"));
 
     // Forms
     group = m_ribbon->getGroup("forms", "fill", tr("Fill In"));
@@ -1111,7 +1105,6 @@ void PDFEditorMainWindow::createRibbon()
     group->addLargeAction(ui->actionMakeSearchable, tr("Make Searchable"));
     group->addLargeAction(ui->actionRecognizeText, tr("Recognize and Review"));
     group->addSmallAction(ui->actionBatchRecognizeText, tr("Batch of Files"));
-    group->addSmallAction(ui->actionPrepareScannedPages, tr("Prepare Scanned Pages"));
     group->addSmallAction(ui->actionManageOCRLanguages, tr("Languages"));
 
     group = m_ribbon->getGroup("convert", "export", tr("Export"));
@@ -1142,12 +1135,6 @@ void PDFEditorMainWindow::createRibbon()
     group->addLargeAction(ui->actionFullscreenMode, tr("Full Screen"));
     group->addLargeAction(m_splitViewAction, tr("Split View"));
 
-    group = m_ribbon->getGroup("view", "goto", tr("Go To"));
-    group->addSmallAction(ui->actionGoToDocumentStart, tr("First Page"));
-    group->addSmallAction(ui->actionGoToPreviousPage, tr("Previous Page"));
-    group->addSmallAction(ui->actionGoToNextPage, tr("Next Page"));
-    group->addSmallAction(ui->actionGoToDocumentEnd, tr("Last Page"));
-
     group = m_ribbon->getGroup("view", "layout", tr("Page Layout"));
     group->addSmallAction(ui->actionPageLayoutSinglePage);
     group->addSmallAction(ui->actionPageLayoutContinuous);
@@ -1164,8 +1151,8 @@ void PDFEditorMainWindow::createRibbon()
 
     group = m_ribbon->getGroup("view", "bookmarks", tr("Bookmarks"));
     group->addLargeAction(ui->actionBookmarkPage);
-    group->addSmallAction(ui->actionGotoNextBookmark, tr("Next Bookmark"));
-    group->addSmallAction(ui->actionGotoPreviousBookmark, tr("Previous Bookmark"));
+    group->addSmallAction(ui->actionGotoNextBookmark, tr("Next"));
+    group->addSmallAction(ui->actionGotoPreviousBookmark, tr("Previous"));
     group->addMenu(Size::Small, tr("Settings"), Helper::getThemedIcon(QStringLiteral("settings")), ui->menuBookmarkSettings);
 
     group = m_ribbon->getGroup("view", "display", tr("Display"));
@@ -1176,13 +1163,10 @@ void PDFEditorMainWindow::createRibbon()
     group->addSmallAction(ui->actionColorCustom, tr("Custom Colors"));
     group->addMenu(Size::Small, tr("Rendering"), Helper::getThemedIcon(QStringLiteral("rendering")), ui->menuRendering_Options);
 
-    m_ribbon->getGroup("view", "window", tr("Window"));
 
     // Advanced
     group = m_ribbon->getGroup("advanced", "tools", tr("Tools"));
     group->addLargeAction(ui->actionExtractImage);
-    group->addLargeAction(ui->actionScreenshot, tr("Snapshot"));
-    group->addLargeAction(ui->actionMagnifier);
 
     group = m_ribbon->getGroup("advanced", "document", tr("Document"));
     group->addLargeAction(ui->actionProperties);
@@ -1546,7 +1530,7 @@ QMenu* PDFEditorMainWindow::addPluginUserInterface(pdf::PDFPlugin* plugin,
         PDFRibbonGroup* group = m_ribbon->getGroup("protect", "sign", tr("Sign"));
         Helper::placeActions(group, remainingActions,
                              { "signaturetool_signDigitallyAction", "signaturetool_signElectronicallyAction", "signaturetool_activateAction" },
-                             { });
+                             { }, { { "signaturetool_activateAction", tr("Signature Tools") } });
         Helper::placeRemainingActions(group, remainingActions, tr("Draw Signature"), Helper::getThemedIcon(QStringLiteral("signature")), { "signaturetool_certificatesAction" });
         Helper::placeActions(group, remainingActions, { }, { "signaturetool_certificatesAction" });
     }
@@ -1569,7 +1553,12 @@ QMenu* PDFEditorMainWindow::addPluginUserInterface(pdf::PDFPlugin* plugin,
     {
         std::vector<QAction*> remainingActions = actions;
         PDFRibbonGroup* group = m_ribbon->getGroup("advanced", "plugin_" + pluginName, pluginTitle);
-        Helper::placeActions(group, remainingActions, { "actionAudioBook_CreateTextStream", "actionAudioBook_CreateAudioBook" }, { });
+        Helper::placeActions(group, remainingActions, { "actionAudioBook_CreateTextStream", "actionAudioBook_CreateAudioBook" },
+                             { "actionAudioBook_SynchronizeFromTableToGraphics", "actionAudioBook_SynchronizeFromGraphicsToTable", "actionAudioBook_Clear" },
+                             { { "actionAudioBook_CreateTextStream", tr("Create Text Stream") },
+                               { "actionAudioBook_SynchronizeFromTableToGraphics", tr("Sync Table to Page") },
+                               { "actionAudioBook_SynchronizeFromGraphicsToTable", tr("Sync Page to Table") },
+                               { "actionAudioBook_Clear", tr("Clear Text Stream") } });
         Helper::placeRemainingActions(group, remainingActions, tr("Text Stream"), moreIcon);
     }
     else

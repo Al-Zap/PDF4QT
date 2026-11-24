@@ -40,6 +40,7 @@
 #include <QLineEdit>
 #include <QScrollBar>
 #include <QSettings>
+#include <QFontMetrics>
 #include <QWheelEvent>
 #include <QTemporaryDir>
 #include <QStandardPaths>
@@ -96,6 +97,7 @@ private slots:
     void editorRibbonFitsNarrowWindow();
     void statusBarMessageIsNotCutOff();
     void bookmarkListOutlivesBookmarkManager();
+    void tabsAreOrganized();
 
 private:
     pdfviewer::PDFProgramController* controller() const { return m_window->getProgramController(); }
@@ -1043,6 +1045,106 @@ void RibbonTest::statusBarMessageIsNotCutOff()
     QVERIFY(slider->isVisible());
     statusBar->clearMessage();
     QVERIFY(slider->isVisible());
+}
+
+void RibbonTest::tabsAreOrganized()
+{
+    pdfviewer::PDFRibbon* ribbon = m_window->getRibbon();
+    QTabBar* tabBar = m_window->findChild<QTabBar*>("ribbonTabBar");
+    QVERIFY(tabBar);
+
+    // Lighting tools have their own tab, right after the general measuring
+    QStringList tabs;
+    for (int i = 0; i < tabBar->count(); ++i)
+    {
+        tabs << tabBar->tabText(i).remove('&');
+    }
+    QCOMPARE(tabs, QStringList({ "Home", "Edit", "Comment", "Measure", "Lighting", "Pages", "Forms", "Convert", "Protect", "View", "Advanced", "Help" }));
+
+    auto pageActions = [ribbon](const QString& pageId)
+    {
+        QSet<QAction*> actions;
+        for (pdfviewer::PDFRibbonButton* button : ribbon->getPage(pageId)->findChildren<pdfviewer::PDFRibbonButton*>())
+        {
+            if (button->getAction())
+            {
+                actions.insert(button->getAction());
+            }
+        }
+        return actions;
+    };
+
+    if (QAction* countAction = m_window->findChild<QAction*>("fixturecount_CountAction"))
+    {
+        QVERIFY(pageActions("lighting").contains(countAction));
+        QVERIFY(!pageActions("measure").contains(countAction));
+    }
+
+    // A command has one place outside of the Home tab (Home is a selection of the commands
+    // used most). The exceptions are the commands, which finish the work of a tab (save,
+    // print, the tools for filling the forms) and the text tools used for comments and edits.
+    const QStringList sharedCommands = { "actionSave", "actionSaveFlattenedCopy", "actionPrint", "actionHandTool",
+                                         "actionCreateTypewriter", "actionInlineText", "actionSelectText" };
+    QHash<QAction*, QString> placeOfAction;
+    for (QObject* child : ribbon->findChildren<pdfviewer::PDFRibbonPage*>())
+    {
+        const QString pageId = static_cast<pdfviewer::PDFRibbonPage*>(child)->getId();
+        if (pageId == "home")
+        {
+            continue;
+        }
+
+        for (QAction* action : pageActions(pageId))
+        {
+            if (sharedCommands.contains(action->objectName()))
+            {
+                continue;
+            }
+
+            QVERIFY2(!placeOfAction.contains(action), qPrintable(QString("'%1' is on the tabs '%2' and '%3'").arg(action->objectName(), placeOfAction.value(action), pageId)));
+            placeOfAction.insert(action, pageId);
+        }
+    }
+
+    // The View tab shows the texts of all its buttons in a maximized full HD window.
+    // The width is given for a font 14 pixels high with characters 6 pixels wide
+    // (9 points at 96 dpi), platforms with a larger font (the offscreen platform
+    // of Windows has no real fonts) get a wider window.
+    const QString currentPageId = ribbon->getCurrentPageId();
+    const QFontMetrics ribbonFontMetrics(ribbon->font());
+    const double fontScale = qMax(1.0, qMax(ribbonFontMetrics.height() / 14.0, ribbonFontMetrics.averageCharWidth() / 6.0));
+    const int fullHdWidth = qRound(1920.0 * fontScale);
+    m_window->resize(fullHdWidth, 1000);
+    ribbon->setCurrentPage("view");
+    QCoreApplication::processEvents();
+    if (ribbon->width() >= fullHdWidth - 20)
+    {
+        // The page is fitted to its width after the layout, the widths of the groups
+        // without reduction are reported, if it is not wide enough
+        auto isNotReduced = [ribbon]()
+        {
+            for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage("view")->getGroups())
+            {
+                if (group->getReduction() != pdfviewer::PDFRibbonGroup::Reduction::None)
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const bool fitted = QTest::qWaitFor(isNotReduced, 2000);
+        if (!fitted || qEnvironmentVariableIsSet("PDF4QT_RIBBON_DUMP"))
+        {
+            QStringList widths;
+            for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage("view")->getGroups())
+            {
+                widths << QString("%1=%2").arg(group->getTitle()).arg(group->getReducedWidth(pdfviewer::PDFRibbonGroup::Reduction::None));
+            }
+            const QFontMetrics fontMetrics(ribbon->font());
+            QFAIL(qPrintable(QString("View tab reduced at the width %1: %2 (font %3, average character width %4, height %5)").arg(ribbon->width()).arg(widths.join(", "), ribbon->font().toString()).arg(fontMetrics.averageCharWidth()).arg(fontMetrics.height())));
+        }
+    }
+    ribbon->setCurrentPage(currentPageId);
 }
 
 QTEST_MAIN(RibbonTest)
