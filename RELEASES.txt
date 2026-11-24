@@ -1,4 +1,5 @@
 CURRENT:
+ - Compare documents (visual overlay of two revisions of drawing sheets): older revision red, newer green, unchanged gray, automatic alignment of shifted sheets, revision clouds and bookmarks for each change in a report document with a summary; ribbon Comment > Compare Documents, PdfTool command compare
  - Bates numbering, headers and footers and watermarks (text or image, over or behind the content): ribbon group Pages > Page Design with a preview dialog, undoable, stamps can be replaced or removed later; PdfTool commands bates, header-footer, watermark and remove-stamps
  - Page organizing: moving, deleting and inserting pages keeps the object numbers of the document and no longer runs the full optimizer pass (faster on large plan sets); thumbnails dropped next to one of the dragged pages, onto a dragged page or into the space between the thumbnails are moved
  - OCR on Windows: user words and patterns work also when the path of the OCR data contains characters outside of the code page of Windows (user profile with accented letters); unit tests run in the Windows build

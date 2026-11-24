@@ -423,6 +423,13 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_actionManager->setAction(PDFActionManager::SendByMail, ui->actionSend_by_E_Mail);
     m_actionManager->setAction(PDFActionManager::RenderToImages, ui->actionRender_to_Images);
     m_actionManager->setAction(PDFActionManager::ExportToWord, ui->actionExport_to_Word);
+
+    // Visual comparison of two revisions (it is also available without an open document)
+    m_compareDocumentsAction = new QAction(PDFEditorMainWindowHelper::getIcon(QStringLiteral("ribbon-compare")), tr("Compare &Documents..."), this);
+    m_compareDocumentsAction->setObjectName("actionCompareDocuments");
+    m_compareDocumentsAction->setToolTip(tr("Overlay two revisions of a document and mark the changes by revision clouds"));
+    ui->menuTools->addAction(m_compareDocumentsAction);
+    m_actionManager->setAction(PDFActionManager::CompareDocuments, m_compareDocumentsAction);
     m_actionManager->setAction(PDFActionManager::Optimize, ui->actionOptimize);
     m_actionManager->setAction(PDFActionManager::OptimizeImages, ui->actionOptimizeImages);
     m_actionManager->setAction(PDFActionManager::Sanitize, ui->actionSanitize);
@@ -964,6 +971,9 @@ void PDFEditorMainWindow::createRibbon()
     group = m_ribbon->getGroup("comment", "manage", tr("Manage"));
     group->addLargeAction(m_commentsListAction);
     group->addLargeAction(ui->actionDeleteAnnotation, tr("Delete Comments"));
+
+    group = m_ribbon->getGroup("comment", "compare", tr("Compare"));
+    group->addLargeAction(m_compareDocumentsAction, tr("Compare Documents"));
 
     // Measure: filled by the plugins (measuring and fixture count)
     m_ribbon->getGroup("measure", "scale", tr("Scale"));

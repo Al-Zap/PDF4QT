@@ -50,6 +50,8 @@ add_executable(PdfTool
     pdftoolremoveexternallinks.h
     pdftoolstamp.cpp
     pdftoolstamp.h
+    pdftoolcompare.cpp
+    pdftoolcompare.h
     pdftoolseparate.cpp 
     pdftoolstatistics.cpp 
     pdftoolunite.cpp 

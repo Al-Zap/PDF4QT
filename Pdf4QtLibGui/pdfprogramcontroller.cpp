@@ -40,6 +40,7 @@
 #include "pdfoptimizeimagesdialog.h"
 #include "pdfsanitizedocumentdialog.h"
 #include "pdfpagestampdialog.h"
+#include "pdfvisualcomparedialog.h"
 #include "pdfpagestamper.h"
 #include "pdfcreatebitonaldocumentdialog.h"
 #include "pdfocrdocumentdialog.h"
@@ -584,6 +585,10 @@ void PDFProgramController::initialize(Features features,
     if (QAction* action = m_actionManager->getAction(PDFActionManager::ExportToWord))
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::onActionExportToWordTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::CompareDocuments))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionCompareDocumentsTriggered);
     }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::Optimize))
     {
@@ -2124,6 +2129,27 @@ void PDFProgramController::onActionRemoveExternalLinksTriggered()
     m_mainWindowInterface->setStatusBarMessage(tr("External link annotations removed: %1.").arg(annotationsToRemove.size()), 4000);
 }
 
+void PDFProgramController::onActionCompareDocumentsTriggered()
+{
+    // Unsaved changes of the open document are compared as they are (the document
+    // in the memory is used), only the Diff application needs the saved file
+    const QString openFileName = m_pdfDocument ? m_fileInfo.originalFileName : QString();
+    PDFVisualCompareDialog dialog(m_pdfDocument.data(), openFileName, m_mainWindow);
+    if (dialog.exec() != QDialog::Accepted)
+    {
+        return;
+    }
+
+    const pdf::PDFVisualCompareResult& result = dialog.getResult();
+    const QString message = tr("Comparison finished: %1 changes on %2 of %3 compared pages.").arg(result.getChangeCount()).arg(result.getChangedPageCount()).arg(result.pages.size());
+    m_mainWindowInterface->setStatusBarMessage(message, 10000);
+
+    if (dialog.isOpenReportRequested())
+    {
+        openDocument(dialog.getReportFileName());
+    }
+}
+
 void PDFProgramController::onActionHeaderFooterTriggered()
 {
     addPageStamp(int(PDFPageStampDialog::Mode::HeaderFooter));
@@ -2739,6 +2765,7 @@ void PDFProgramController::updateActionsAvailability()
     m_actionManager->setEnabled(PDFActionManager::Print, hasValidDocument && canPrint);
     m_actionManager->setEnabled(PDFActionManager::RenderToImages, hasValidDocument && canPrint);
     m_actionManager->setEnabled(PDFActionManager::ExportToWord, hasValidDocument);
+    m_actionManager->setEnabled(PDFActionManager::CompareDocuments, true);
     m_actionManager->setEnabled(PDFActionManager::Optimize, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::OptimizeImages, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Sanitize, hasValidDocument);

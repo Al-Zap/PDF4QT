@@ -35,6 +35,7 @@
 #include "pdfbitonaldocumentcreator.h"
 #include "pdfocrdocumentrunner.h"
 #include "pdfpagestamper.h"
+#include "pdfvisualcompare.h"
 
 #include <QtGlobal>
 #include <QString>
@@ -131,6 +132,22 @@ struct PDFToolStampOptions
 
     /// Kinds of the stamps removed by the command 'remove-stamps'
     pdf::PDFPageStamper::StampKinds removedKinds = pdf::PDFPageStamper::AllKinds;
+
+    /// Description of the first invalid value of an option (empty = all options are valid)
+    QString invalidArgument;
+};
+
+/// Options of the command 'compare' (visual comparison of two revisions)
+struct PDFToolVisualCompareOptions
+{
+    pdf::PDFVisualCompareSettings settings;
+
+    /// Report document (empty = no report is written)
+    QString reportFile;
+
+    /// Page ranges of the old and new document (empty = all pages)
+    QString oldPages;
+    QString newPages;
 
     /// Description of the first invalid value of an option (empty = all options are valid)
     QString invalidArgument;
@@ -283,6 +300,9 @@ struct PDFToolOptions
     // For option 'PageStamp'
     PDFToolStampOptions stamp;
 
+    // For option 'VisualCompare'
+    PDFToolVisualCompareOptions visualCompare;
+
     // For option 'Encrypt'
     pdf::PDFSecurityHandlerFactory::Algorithm encryptionAlgorithm = pdf::PDFSecurityHandlerFactory::Algorithm::AES_256;
     pdf::PDFSecurityHandlerFactory::EncryptContents encryptionContents = pdf::PDFSecurityHandlerFactory::EncryptContents::All;
@@ -381,6 +401,7 @@ public:
         OCR                             = 0x08000000,       ///< Settings for OCR tool (text recognition)
         OCRModels                       = 0x10000000,       ///< Settings for OCR language models tool
         PageStamp                       = 0x20000000,       ///< Settings for headers, footers, Bates numbers and watermarks
+        VisualCompare                   = 0x40000000,       ///< Settings for the visual comparison of revisions
     };
     Q_DECLARE_FLAGS(Options, Option)
 
