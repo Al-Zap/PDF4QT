@@ -87,6 +87,11 @@ public:
     /// Returns the image of the current preview
     QImage getPreviewImage() const { return m_previewImage; }
 
+    /// Returns the image of the headers and footers at a readable size, which is
+    /// shown below the preview, when the text is too small in the preview of the
+    /// whole page (large drawings). Null, when it is not shown.
+    QImage getDetailImage() const { return m_detailImage; }
+
     /// Updates the preview immediately (it is updated after a short delay, when the settings change)
     /// The dialog edits a step of a batch (PDFBatchProcessingDialog): the settings are
     /// set by the setters below, the pages are entered as a text (there is no current
@@ -139,6 +144,10 @@ private:
 
     virtual bool eventFilter(QObject* watched, QEvent* event) override;
 
+    /// Font size in pixels of the preview of the whole page, below which the
+    /// headers and footers are shown once more at a readable size
+    static constexpr qreal MINIMAL_READABLE_PREVIEW_FONT_SIZE = 7.0;
+
     Mode m_mode;
     const pdf::PDFDocument* m_document;
     pdf::PDFInteger m_currentPageIndex;
@@ -146,6 +155,7 @@ private:
     QColor m_color;
     QImage m_watermarkImage;
     QImage m_previewImage;
+    QImage m_detailImage;
     QTimer* m_previewTimer = nullptr;
     bool m_batchMode = false;
 
@@ -191,6 +201,8 @@ private:
     QCheckBox* m_replaceCheckBox = nullptr;
 
     QLabel* m_previewLabel = nullptr;
+    QLabel* m_detailCaptionLabel = nullptr;
+    QLabel* m_detailLabel = nullptr;
 };
 
 }   // namespace pdfviewer

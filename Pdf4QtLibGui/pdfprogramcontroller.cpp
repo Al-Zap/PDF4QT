@@ -2699,6 +2699,7 @@ void PDFProgramController::readSettings(Settings settingsFlags)
         settings.beginGroup("Plugins");
         m_loadAllPlugins = !settings.contains("EnabledPlugins");
         m_enabledPlugins = settings.value("EnabledPlugins").toStringList();
+        m_enabledPlugins.removeDuplicates(); // Older versions could store a new plugin twice
         if (settings.contains("KnownPlugins"))
         {
             m_knownPlugins = settings.value("KnownPlugins").toStringList();
@@ -3470,8 +3471,9 @@ void PDFProgramController::loadPlugins()
                 continue;
             }
 
-            if (m_loadAllPlugins)
+            if (m_loadAllPlugins && !m_enabledPlugins.contains(pluginName))
             {
+                // A plugin seen for the first time is already in the list
                 m_enabledPlugins << pluginName;
             }
 
