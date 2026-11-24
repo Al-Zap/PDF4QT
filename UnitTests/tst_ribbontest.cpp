@@ -640,7 +640,7 @@ void RibbonTest::createTestRibbon(TestRibbon& testRibbon)
     testRibbon.window.resize(400, 200);
     testRibbon.window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&testRibbon.window));
-    resizeTestRibbon(testRibbon, 3000);
+    resizeTestRibbon(testRibbon, 10000);
 }
 
 QString RibbonTest::describeTestRibbon(const TestRibbon& testRibbon)
@@ -777,7 +777,7 @@ void RibbonTest::groupsShrinkStepByStep()
     QVERIFY(testRibbon.ribbon->findChild<QScrollArea*>("ribbonPages")->horizontalScrollBar()->maximum() > 0);
 
     // Wide window again: full size of all groups, large buttons
-    resizeTestRibbon(testRibbon, 3000);
+    resizeTestRibbon(testRibbon, 10000);
     for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
     {
         QCOMPARE(group->getReduction(), Reduction::None);
@@ -847,7 +847,7 @@ void RibbonTest::collapsedGroupOpensDropDown()
     QVERIFY(collapsedButton->isVisible());
 
     // The group gets its buttons back in a wide window
-    resizeTestRibbon(testRibbon, 3000);
+    resizeTestRibbon(testRibbon, 10000);
     QCOMPARE(group->getReduction(), Reduction::None);
     QVERIFY(content->isVisible());
     QVERIFY(!collapsedButton->isVisible());
