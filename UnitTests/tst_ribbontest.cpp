@@ -80,6 +80,7 @@ private slots:
     void shortcutsBelongToWindow();
     void zoomShortcutWorksWithoutMenuBar();
     void tabRowFitsNarrowWindow();
+    void largeButtonLabelsFit();
     void bookmarkListOutlivesBookmarkManager();
 
 private:
@@ -492,6 +493,37 @@ void RibbonTest::tabRowFitsNarrowWindow()
     QTest::qWait(20);
     QVERIFY(searchBox->isVisible());
     QVERIFY(!tabBar->usesScrollButtons());
+}
+
+void RibbonTest::largeButtonLabelsFit()
+{
+    const QList<pdfviewer::PDFRibbonButton*> buttons = m_window->getRibbon()->findChildren<pdfviewer::PDFRibbonButton*>();
+    QVERIFY(!buttons.isEmpty());
+
+    int largeButtonsWithMenu = 0;
+    for (pdfviewer::PDFRibbonButton* button : buttons)
+    {
+        if (button->property("ribbonSize").toString() != QLatin1String("large"))
+        {
+            continue;
+        }
+
+        button->ensurePolished();
+        const QString text = button->text();
+
+        // The arrow of the menu lies under the text, a second line of the text would be cut off (Sticky Note)
+        if (button->menu())
+        {
+            ++largeButtonsWithMenu;
+            QVERIFY2(!text.contains(QChar('\n')), qPrintable(QString("'%1' has a menu and a wrapped text").arg(text)));
+        }
+
+        // The fixed height of a large button holds its icon, all lines of its text and the arrow of its menu
+        const QSize contentSize = button->QToolButton::sizeHint();
+        QVERIFY2(contentSize.height() <= button->sizeHint().height(), qPrintable(QString("'%1' needs %2 px, the button has %3 px").arg(text).arg(contentSize.height()).arg(button->sizeHint().height())));
+    }
+
+    QVERIFY(largeButtonsWithMenu > 0);
 }
 
 void RibbonTest::bookmarkListOutlivesBookmarkManager()
