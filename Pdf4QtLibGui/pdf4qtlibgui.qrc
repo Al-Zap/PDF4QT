@@ -154,6 +154,9 @@
         <file>resources/ribbon-text-blocks.svg</file>
         <file>resources/ribbon-comments-list.svg</file>
         <file>resources/ribbon-markups-list.svg</file>
+        <file>resources/ribbon-tool-chest.svg</file>
+        <file>resources/ribbon-tool-chest-add.svg</file>
+        <file>resources/ribbon-stamp-custom.svg</file>
         <file>resources/nav-outline.svg</file>
         <file>resources/nav-thumbnails.svg</file>
         <file>resources/nav-layers.svg</file>

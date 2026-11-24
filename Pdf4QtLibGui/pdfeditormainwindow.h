@@ -81,6 +81,7 @@ class PDFSidebarWidget;
 class PDFAdvancedFindWidget;
 class PDFSplitViewWidget;
 class PDFMarkupsListWidget;
+class PDFToolChestWidget;
 
 class PDF4QTLIBGUILIBSHARED_EXPORT PDFEditorMainWindow : public QMainWindow, public IMainWindow
 {
@@ -157,6 +158,8 @@ private:
     void createClassicToolbar(QToolButton* insertStickyNoteButton);
     void createRibbon();
     void createRibbonStatusBar();
+    void createToolChest();
+    void updateToolChestActions();
     void finishRibbon();
     void setRibbonShortcuts();
     void onNavigationCollapsedChanged(bool collapsed);
@@ -180,6 +183,13 @@ private:
     PDFMarkupsListWidget* m_markupsListWidget = nullptr;
     QDockWidget* m_markupsListDockWidget = nullptr;
     QAction* m_markupsListAction = nullptr;
+    PDFToolChestWidget* m_toolChestWidget = nullptr;
+    QDockWidget* m_toolChestDockWidget = nullptr;
+    QAction* m_toolChestAction = nullptr;
+    QAction* m_addToToolChestAction = nullptr;
+    QAction* m_customStampsAction = nullptr;
+    QMenu* m_stampMenu = nullptr;
+    QList<QAction*> m_customStampActions;
     QSpinBox* m_pageNumberSpinBox;
     QLabel* m_pageNumberLabel;
     QDoubleSpinBox* m_pageZoomSpinBox;

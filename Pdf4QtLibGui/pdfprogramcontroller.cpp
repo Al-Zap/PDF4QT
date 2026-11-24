@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 #include "pdfprogramcontroller.h"
+#include "pdfprintdialog.h"
 #include "pdfdrawwidget.h"
 #include "pdfannotation.h"
 #include "pdfform.h"
@@ -896,83 +897,30 @@ void PDFProgramController::performPrint()
         printerMode = QPrinter::ScreenResolution;
     }
 
-    // Run print dialog
-    QPrinter printer(printerMode);
-    QPrintDialog printDialog(&printer, m_mainWindow);
-    printDialog.setOptions(QPrintDialog::PrintPageRange | QPrintDialog::PrintShowPageSize | QPrintDialog::PrintCollateCopies | QPrintDialog::PrintSelection);
-    printDialog.setOption(QPrintDialog::PrintCurrentPage, m_pdfWidget->getDrawWidget()->getCurrentPages().size() == 1);
-    printDialog.setMinMax(1, int(m_pdfDocument->getCatalog()->getPageCount()));
-    if (printDialog.exec() == QPrintDialog::Accepted)
+    // Run print dialog (scale, tiles, preview)
+    pdf::PDFDrawWidgetProxy* proxy = m_pdfWidget->getDrawWidgetProxy();
+    const std::vector<pdf::PDFInteger> currentPages = m_pdfWidget->getDrawWidget()->getCurrentPages();
+    const pdf::PDFInteger currentPageIndex = !currentPages.empty() ? currentPages.front() : -1;
+
+    PDFPrintDialog printDialog(m_pdfDocument.data(), currentPageIndex, proxy, printerMode, m_mainWindow);
+    if (printDialog.exec() != QDialog::Accepted)
     {
-        std::vector<pdf::PDFInteger> pageIndices;
-        switch (printDialog.printRange())
-        {
-            case QAbstractPrintDialog::AllPages:
-            {
-                pageIndices.resize(m_pdfDocument->getCatalog()->getPageCount(), 0);
-                std::iota(pageIndices.begin(), pageIndices.end(), 0);
-                break;
-            }
-
-            case QAbstractPrintDialog::Selection:
-            case QAbstractPrintDialog::CurrentPage:
-            {
-                pageIndices = m_pdfWidget->getDrawWidget()->getCurrentPages();
-                break;
-            }
-
-            case QAbstractPrintDialog::PageRange:
-            {
-                const pdf::PDFInteger fromPage = printDialog.fromPage();
-                const pdf::PDFInteger toPage = printDialog.toPage();
-                const pdf::PDFInteger pageCount = toPage - fromPage + 1;
-                if (pageCount > 0)
-                {
-                    pageIndices.resize(pageCount, 0);
-                    std::iota(pageIndices.begin(), pageIndices.end(), fromPage - 1);
-                }
-                break;
-            }
-
-            default:
-                Q_ASSERT(false);
-                break;
-        }
-
-        if (pageIndices.empty())
-        {
-            // Nothing to be printed
-            return;
-        }
-
-        pdf::ProgressStartupInfo info;
-        info.showDialog = true;
-        info.text = tr("Printing document");
-        m_progress->start(pageIndices.size(), qMove(info));
-        printer.setFullPage(true);
-        QPainter painter(&printer);
-
-        pdf::PDFDrawWidgetProxy* proxy = m_pdfWidget->getDrawWidgetProxy();
-
-        const pdf::PDFInteger lastPage = pageIndices.back();
-        for (const pdf::PDFInteger pageIndex : pageIndices)
-        {
-            const QRectF paperRect = printer.pageLayout().fullRectPixels(printer.resolution());
-            drawPageForPrinting(&painter, paperRect, m_pdfDocument.data(), pageIndex, proxy);
-            m_progress->step();
-
-            if (pageIndex != lastPage)
-            {
-                if (!printer.newPage())
-                {
-                    break;
-                }
-            }
-        }
-
-        painter.end();
-        m_progress->finish();
+        return;
     }
+
+    const std::vector<pdf::PDFPrintSheet> sheets = printDialog.getSheets();
+    if (sheets.empty())
+    {
+        // Nothing to be printed
+        return;
+    }
+
+    pdf::ProgressStartupInfo info;
+    info.showDialog = true;
+    info.text = tr("Printing document");
+    m_progress->start(sheets.size(), qMove(info));
+    PDFPrintRenderer::print(printDialog.getPrinter(), sheets, m_pdfDocument.data(), proxy, printDialog.getPrintSettings().tileMarks, [this]() { m_progress->step(); return true; });
+    m_progress->finish();
 }
 
 void PDFProgramController::drawPageForPrinting(QPainter* painter,
@@ -987,29 +935,16 @@ void PDFProgramController::drawPageForPrinting(QPainter* painter,
         return;
     }
 
-    QRectF mediaBox = page->getRotatedMediaBox();
-    QSizeF scaledSize = mediaBox.size().scaled(paperRect.size(), Qt::KeepAspectRatio);
-    mediaBox.setSize(scaledSize);
-    mediaBox.moveCenter(paperRect.center());
+    // Page scaled to fit the paper and centered, the paper rectangle is in the device coordinates
+    pdf::PDFPrintSettings settings;
+    settings.scaleMode = pdf::PDFPrintSettings::ScaleMode::FitToPaper;
+    settings.autoRotate = false;
 
-    // Paper gets the colors of the document, not the colors of the screen (inverted
-    // colors of the dark mode, high contrast etc.), and the comments are printed too.
-    const pdf::PDFRenderer::Features printFeatures = (proxy->getFeatures() & ~pdf::PDFRenderer::getColorFeatures()) | pdf::PDFRenderer::DisplayAnnotations;
-    pdf::PDFOptionalContentActivity optionalContentActivity(document, pdf::OCUsage::Print, nullptr);
-    pdf::PDFCMSPointer cms = proxy->getCMSManager()->getCurrentCMS();
-    pdf::PDFRenderer renderer(document, proxy->getFontCache(), proxy->getIccProfileCache(), cms.data(), &optionalContentActivity, printFeatures, proxy->getMeshQualitySettings());
-    renderer.render(painter, mediaBox, pageIndex);
-
-    // Annotations (comments, clouds, measurements, fixture count markers, stamps,
-    // filled form fields) are not a part of the page content, they are drawn over it.
-    // Annotations marked as not printed are skipped by the print target.
-    pdf::PDFAnnotationManager annotationManager(proxy->getFontCache(), proxy->getIccProfileCache(), proxy->getCMSManager(), &optionalContentActivity, proxy->getMeshQualitySettings(), printFeatures, pdf::PDFAnnotationManager::Target::Print, nullptr);
-    annotationManager.setDocument(pdf::PDFModifiedDocument(document, &optionalContentActivity));
-
-    QList<pdf::PDFRenderError> errors;
-    pdf::PDFTextLayoutGetter textLayoutGetter(nullptr, pageIndex);
-    const QTransform pagePointToDevicePointMatrix = pdf::PDFRenderer::createPagePointToDevicePointMatrix(page, mediaBox);
-    annotationManager.drawPage(painter, pageIndex, nullptr, textLayoutGetter, pagePointToDevicePointMatrix, cms->getColorConvertor(), errors);
+    const QSizeF paperSize(paperRect.right(), paperRect.bottom());
+    for (const pdf::PDFPrintSheet& sheet : pdf::PDFPrintLayout::layoutPage(pageIndex, pdf::PDFPrintLayout::getPageSize(page), paperSize, paperRect, settings))
+    {
+        PDFPrintRenderer::drawSheet(painter, sheet, QTransform(), document, proxy, false);
+    }
 }
 
 void PDFProgramController::onActionTriggered(const pdf::PDFAction* action)
