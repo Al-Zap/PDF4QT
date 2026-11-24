@@ -273,6 +273,21 @@ set_target_properties(UnitTestsFixtureCount PROPERTIES
 )
 add_test(UnitTestsFixtureCount  "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsFixtureCount")
 
+add_executable(UnitTestsRedact
+	tst_redacttest.cpp
+)
+
+target_link_libraries(UnitTestsRedact PRIVATE Pdf4QtLibCore Qt6::Core Qt6::Gui Qt6::Test)
+
+set_target_properties(UnitTestsRedact PROPERTIES
+    WIN32_EXECUTABLE OFF
+    MACOSX_BUNDLE OFF
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_LIB_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+)
+add_test(UnitTestsRedact  "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsRedact")
+set_tests_properties(UnitTestsRedact PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 add_executable(UnitTestsFormFieldFormat
 	tst_formfieldformattest.cpp
 )
@@ -420,6 +435,20 @@ if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
     )
     add_test(UnitTestsPageStampDialog "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsPageStampDialog")
     set_tests_properties(UnitTestsPageStampDialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    add_executable(UnitTestsRedactDialog
+        tst_redactdialogtest.cpp
+        ../Pdf4QtEditorPlugins/RedactPlugin/searchredactdialog.cpp
+    )
+    target_include_directories(UnitTestsRedactDialog PRIVATE ${CMAKE_SOURCE_DIR}/Pdf4QtEditorPlugins/RedactPlugin)
+    target_link_libraries(UnitTestsRedactDialog PRIVATE Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
+    set_target_properties(UnitTestsRedactDialog PROPERTIES
+        WIN32_EXECUTABLE OFF
+        MACOSX_BUNDLE OFF
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+    )
+    add_test(UnitTestsRedactDialog "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsRedactDialog")
+    set_tests_properties(UnitTestsRedactDialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     add_executable(UnitTestsFormFields tst_formfieldstest.cpp)
     target_link_libraries(UnitTestsFormFields PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)

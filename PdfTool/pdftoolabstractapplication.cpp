@@ -21,6 +21,7 @@
 // SOFTWARE.
 
 #include "pdftoolabstractapplication.h"
+#include "pdftoolredact.h"
 #include "pdftoolocr.h"
 #include "pdftoolstamp.h"
 #include "pdfdocumentreader.h"
@@ -223,6 +224,7 @@ void PDFToolAbstractApplication::initializeCommandLineParser(QCommandLineParser*
         parser->addOption(QCommandLineOption("redact-copy-title", "Copy source title into the redacted document."));
         parser->addOption(QCommandLineOption("redact-copy-metadata", "Copy source metadata into the redacted document."));
         parser->addOption(QCommandLineOption("redact-copy-outline", "Copy source outline into the redacted document."));
+        PDFToolRedact::initializeCommandLineParser(parser);
     }
 
     if (optionFlags.testFlag(SignatureVerification))
@@ -661,6 +663,8 @@ PDFToolOptions PDFToolAbstractApplication::getOptions(QCommandLineParser* parser
         {
             options.redactOptions |= pdf::PDFRedact::CopyOutline;
         }
+
+        PDFToolRedact::readOptions(parser, options.redact);
     }
 
     if (optionFlags.testFlag(Separate))

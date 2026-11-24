@@ -28,12 +28,26 @@
 namespace pdftool
 {
 
+/// Applies the redaction marks of the document and writes the redacted document.
+/// Content can also be marked from the command line - words, phrases, regular
+/// expressions, predefined patterns, areas and whole pages.
 class PDFToolRedact : public PDFToolAbstractApplication
 {
 public:
     virtual QString getStandardString(StandardString standardString) const override;
     virtual int execute(const PDFToolOptions& options) override;
     virtual Options getOptionsFlags() const override;
+
+    /// Adds the marking options of the command to the parser
+    static void initializeCommandLineParser(QCommandLineParser* parser);
+
+    /// Reads the marking options of the command. An invalid value is
+    /// reported by PDFToolRedactOptions::invalidArgument.
+    static void readOptions(QCommandLineParser* parser, PDFToolRedactOptions& options);
+
+    /// Parses the area in the form "page:x,y,width,height" (page is one based,
+    /// coordinates are in points of the page space, origin in the bottom left corner)
+    static bool parseArea(const QString& text, pdf::PDFInteger* pageIndex, QRectF* rectangle);
 };
 
 }   // namespace pdftool

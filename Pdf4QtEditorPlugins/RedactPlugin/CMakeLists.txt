@@ -23,6 +23,7 @@
 add_library(RedactPlugin SHARED
     createredacteddocumentdialog.cpp
     redactplugin.cpp
+    searchredactdialog.cpp
     createredacteddocumentdialog.ui
     icons.qrc
 )
