@@ -80,6 +80,8 @@ add_library(Pdf4QtLibGui SHARED
     pdfviewersettingsdialog.ui
     pdfpagestampdialog.cpp
     pdfpagestampdialog.h
+    pdfvisualcomparedialog.cpp
+    pdfvisualcomparedialog.h
     pdfsanitizedocumentdialog.ui
     pdfsanitizedocumentdialog.cpp
     pdfsanitizedocumentdialog.h

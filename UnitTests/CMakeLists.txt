@@ -450,6 +450,22 @@ if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
     add_test(UnitTestsRedactDialog "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsRedactDialog")
     set_tests_properties(UnitTestsRedactDialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+    add_executable(UnitTestsVisualCompare tst_visualcomparetest.cpp)
+    target_link_libraries(UnitTestsVisualCompare PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
+    if(TARGET PdfTool)
+        target_compile_definitions(UnitTestsVisualCompare PRIVATE PDF4QT_PDFTOOL_PATH="$<TARGET_FILE:PdfTool>")
+        add_dependencies(UnitTestsVisualCompare PdfTool)
+    else()
+        target_compile_definitions(UnitTestsVisualCompare PRIVATE PDF4QT_PDFTOOL_PATH="")
+    endif()
+    set_target_properties(UnitTestsVisualCompare PROPERTIES
+        WIN32_EXECUTABLE OFF
+        MACOSX_BUNDLE OFF
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+    )
+    add_test(UnitTestsVisualCompare "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsVisualCompare")
+    set_tests_properties(UnitTestsVisualCompare PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(UnitTestsBatchProcessingDialog tst_batchprocessingdialogtest.cpp)
     target_link_libraries(UnitTestsBatchProcessingDialog PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
     set_target_properties(UnitTestsBatchProcessingDialog PROPERTIES

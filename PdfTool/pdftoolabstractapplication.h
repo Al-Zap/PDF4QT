@@ -35,6 +35,7 @@
 #include "pdfbitonaldocumentcreator.h"
 #include "pdfocrdocumentrunner.h"
 #include "pdfpagestamper.h"
+#include "pdfvisualcompare.h"
 #include "pdfbatchprocessor.h"
 
 #include <QtGlobal>
@@ -164,6 +165,22 @@ struct PDFToolRedactOptions
 
     /// Fill color of the redacted areas (invalid = color of each mark)
     QColor fillColor = Qt::black;
+
+    /// Description of the first invalid value of an option (empty = all options are valid)
+    QString invalidArgument;
+};
+
+/// Options of the command 'compare' (visual comparison of two revisions)
+struct PDFToolVisualCompareOptions
+{
+    pdf::PDFVisualCompareSettings settings;
+
+    /// Report document (empty = no report is written)
+    QString reportFile;
+
+    /// Page ranges of the old and new document (empty = all pages)
+    QString oldPages;
+    QString newPages;
 
     /// Description of the first invalid value of an option (empty = all options are valid)
     QString invalidArgument;
@@ -344,6 +361,9 @@ struct PDFToolOptions
     // For option 'PageStamp'
     PDFToolStampOptions stamp;
 
+    // For option 'VisualCompare'
+    PDFToolVisualCompareOptions visualCompare;
+
     // For option 'Batch'
     PDFToolBatchOptions batch;
 
@@ -413,7 +433,7 @@ public:
         Description     ///< Description (what this application does)
     };
 
-    enum Option
+    enum Option : quint32
     {
         ConsoleFormat                   = 0x00000001,       ///< Set format of console output (text, xml or html)
         OpenDocument                    = 0x00000002,       ///< Flags for document reading
@@ -446,6 +466,7 @@ public:
         OCRModels                       = 0x10000000,       ///< Settings for OCR language models tool
         PageStamp                       = 0x20000000,       ///< Settings for headers, footers, Bates numbers and watermarks
         Batch                           = 0x40000000,       ///< Settings for batch processing
+        VisualCompare                   = 0x80000000,       ///< Settings for the visual comparison of revisions
     };
     Q_DECLARE_FLAGS(Options, Option)
 

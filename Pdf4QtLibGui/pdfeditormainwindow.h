@@ -174,6 +174,7 @@ private:
     QAction* m_measureShortcutAction;
     QAction* m_navigationPaneAction;
     QAction* m_commentsListAction = nullptr;
+    QAction* m_compareDocumentsAction = nullptr;
     QAction* m_collapseRibbonAction;
     QPointer<QAction> m_lastMeasureAction;
     int m_sidebarWidth;

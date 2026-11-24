@@ -143,6 +143,7 @@ public:
         SendByMail,
         RenderToImages,
         ExportToWord,
+        CompareDocuments,
         Optimize,
         OptimizeImages,
         Sanitize,
@@ -424,6 +425,7 @@ private:
     void onActionSendByEMailTriggered();
     void onActionRenderToImagesTriggered();
     void onActionExportToWordTriggered();
+    void onActionCompareDocumentsTriggered();
     void onActionOptimizeTriggered();
     void onActionOptimizeImagesTriggered();
     void onActionSanitizeTriggered();
