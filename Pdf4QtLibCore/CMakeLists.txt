@@ -121,6 +121,8 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfprogress.h
     sources/pdfbatchprocessor.cpp
     sources/pdfbatchprocessor.h
+    sources/pdfprintlayout.cpp
+    sources/pdfprintlayout.h
     sources/pdfpagestamper.cpp
     sources/pdfpagestamper.h
     sources/pdfvisualcompare.cpp
