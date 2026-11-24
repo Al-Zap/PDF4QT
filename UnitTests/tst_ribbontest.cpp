@@ -626,9 +626,11 @@ void RibbonTest::createTestRibbon(TestRibbon& testRibbon)
             group->addLargeAction(action);
         }
 
-        for (int i = 0; i < 6; ++i)
+        // Many small buttons: the buttons without the texts take more space than the
+        // collapsed group with any font
+        for (int i = 0; i < 12; ++i)
         {
-            QAction* action = new QAction(createIcon(QColor::fromHsv(groupIndex * 60 + i * 15, 120, 230)), QString("Small %1").arg(i + 1), &testRibbon.window);
+            QAction* action = new QAction(createIcon(QColor::fromHsv(groupIndex * 60 + i * 5, 120, 230)), QString("Small %1").arg(i + 1), &testRibbon.window);
             testRibbon.actions.push_back(action);
             group->addSmallAction(action);
         }
@@ -670,7 +672,7 @@ void RibbonTest::groupsShrinkStepByStep()
 
     const int fullWidth = testRibbon.page->sizeHint().width();
     const int collapsedWidth = testRibbon.groups.front()->getReducedWidth(Reduction::Collapsed);
-    QVERIFY(collapsedWidth < testRibbon.groups.front()->getReducedWidth(Reduction::IconButtons));
+    QVERIFY2(collapsedWidth < testRibbon.groups.front()->getReducedWidth(Reduction::IconButtons), qPrintable(QString("Collapsed %1 px, icons %2 px").arg(collapsedWidth).arg(testRibbon.groups.front()->getReducedWidth(Reduction::IconButtons))));
     QVERIFY(testRibbon.groups.front()->getReducedWidth(Reduction::IconButtons) < testRibbon.groups.front()->getReducedWidth(Reduction::SmallButtons));
     QVERIFY(testRibbon.groups.front()->getReducedWidth(Reduction::SmallButtons) < testRibbon.groups.front()->getReducedWidth(Reduction::None));
 
@@ -800,8 +802,8 @@ void RibbonTest::collapsedGroupOpensDropDown()
     QCOMPARE(content->window(), static_cast<QWidget*>(menu));
     QVERIFY(content->isVisible());
 
-    QAction* firstAction = testRibbon.actions[27];
-    QCOMPARE(firstAction->objectName(), QString("action_3_0"));
+    QAction* firstAction = testRibbon.window.findChild<QAction*>("action_3_0");
+    QVERIFY(firstAction);
     pdfviewer::PDFRibbonButton* firstButton = nullptr;
     for (pdfviewer::PDFRibbonButton* button : content->findChildren<pdfviewer::PDFRibbonButton*>())
     {
@@ -925,7 +927,8 @@ void RibbonTest::editorRibbonFitsNarrowWindow()
         }
     }
 
-    // A wide window shows all groups in full size
+    // A wide window shows all groups in full size, if they fit (the platform can limit
+    // the size of the window to the size of the screen)
     m_window->resize(3000, 800);
     QCoreApplication::processEvents();
     for (const QString& pageId : pageIds)
@@ -933,10 +936,20 @@ void RibbonTest::editorRibbonFitsNarrowWindow()
         ribbon->setCurrentPage(pageId);
         QCoreApplication::processEvents();
 
+        int fullWidth = 4;
         for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage(pageId)->getGroups())
         {
-            QVERIFY2(group->getReduction() == Reduction::None, qPrintable(QString("Group '%1' of '%2' is reduced in a wide window").arg(group->getTitle(), pageId)));
+            if (!group->isEmpty() && !group->isHidden())
+            {
+                fullWidth += group->getReducedWidth(Reduction::None);
+            }
         }
+
+        for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage(pageId)->getGroups())
+        {
+            QVERIFY2(group->getReduction() == Reduction::None || fullWidth > ribbon->width(), qPrintable(QString("Group '%1' of '%2' is reduced, the full page needs %3 px of %4 px").arg(group->getTitle(), pageId).arg(fullWidth).arg(ribbon->width())));
+        }
+        QVERIFY(ribbon->getPage(pageId)->sizeHint().width() <= ribbon->width());
     }
 
     ribbon->setCurrentPage(currentPageId);
