@@ -35,6 +35,7 @@
 #include "pdfbitonaldocumentcreator.h"
 #include "pdfocrdocumentrunner.h"
 #include "pdfpagestamper.h"
+#include "pdfbatchprocessor.h"
 
 #include <QtGlobal>
 #include <QString>
@@ -163,6 +164,33 @@ struct PDFToolRedactOptions
 
     /// Fill color of the redacted areas (invalid = color of each mark)
     QColor fillColor = Qt::black;
+
+    /// Description of the first invalid value of an option (empty = all options are valid)
+    QString invalidArgument;
+};
+
+/// Options of the command 'batch'
+struct PDFToolBatchOptions
+{
+    /// Files and folders to process
+    QStringList inputs;
+
+    /// JSON file of the sequence of the actions
+    QString sequenceFile;
+
+    QString outputDirectory;
+    bool nextToOriginal = false;
+    QString suffix;
+    bool suffixSet = false;
+    QString existing;
+    bool recursive = false;
+
+    /// Password of the protected originals
+    QString password;
+
+    /// Passwords of the action 'password' (never stored in the sequence)
+    QString userPassword;
+    QString ownerPassword;
 
     /// Description of the first invalid value of an option (empty = all options are valid)
     QString invalidArgument;
@@ -316,6 +344,9 @@ struct PDFToolOptions
     // For option 'PageStamp'
     PDFToolStampOptions stamp;
 
+    // For option 'Batch'
+    PDFToolBatchOptions batch;
+
     // For option 'Encrypt'
     pdf::PDFSecurityHandlerFactory::Algorithm encryptionAlgorithm = pdf::PDFSecurityHandlerFactory::Algorithm::AES_256;
     pdf::PDFSecurityHandlerFactory::EncryptContents encryptionContents = pdf::PDFSecurityHandlerFactory::EncryptContents::All;
@@ -414,6 +445,7 @@ public:
         OCR                             = 0x08000000,       ///< Settings for OCR tool (text recognition)
         OCRModels                       = 0x10000000,       ///< Settings for OCR language models tool
         PageStamp                       = 0x20000000,       ///< Settings for headers, footers, Bates numbers and watermarks
+        Batch                           = 0x40000000,       ///< Settings for batch processing
     };
     Q_DECLARE_FLAGS(Options, Option)
 

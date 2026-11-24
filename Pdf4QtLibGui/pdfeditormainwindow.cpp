@@ -437,6 +437,7 @@ PDFEditorMainWindow::PDFEditorMainWindow(QWidget* parent) :
     m_actionManager->setAction(PDFActionManager::ManageOCRLanguages, ui->actionManageOCRLanguages);
     m_actionManager->setAction(PDFActionManager::PrepareScannedPages, ui->actionPrepareScannedPages);
     m_actionManager->setAction(PDFActionManager::BatchRecognizeText, ui->actionBatchRecognizeText);
+    m_actionManager->setAction(PDFActionManager::BatchProcessing, ui->actionBatchProcessing);
     m_actionManager->setAction(PDFActionManager::MakeSearchable, ui->actionMakeSearchable);
     m_actionManager->setAction(PDFActionManager::Encryption, ui->actionEncryption);
     m_actionManager->setAction(PDFActionManager::FitPage, ui->actionFitPage);
@@ -771,6 +772,7 @@ void PDFEditorMainWindow::createRibbon()
     Helper::setActionIcon(ui->actionExport_to_Word, QStringLiteral("ribbon-export-word"));
     Helper::setActionIcon(ui->actionRender_to_Images, QStringLiteral("ribbon-export-images"));
     Helper::setActionIcon(ui->actionBatchRecognizeText, QStringLiteral("ribbon-ocr-batch"));
+    Helper::setActionIcon(ui->actionBatchProcessing, QStringLiteral("ribbon-batch"));
     Helper::setActionIcon(ui->actionManageOCRLanguages, QStringLiteral("ribbon-ocr-languages"));
     Helper::setActionIcon(ui->actionPrepareScannedPages, QStringLiteral("ribbon-scan-prepare"));
     Helper::setActionIcon(ui->actionDeleteAnnotation, QStringLiteral("ribbon-annot-delete"));
@@ -1013,6 +1015,9 @@ void PDFEditorMainWindow::createRibbon()
 
     // Scanner (plugin) is in front of the optimization
     m_ribbon->getGroup("convert", "create", tr("Create"));
+
+    group = m_ribbon->getGroup("convert", "batch", tr("Batch"));
+    group->addLargeAction(ui->actionBatchProcessing, tr("Batch Process"));
 
     group = m_ribbon->getGroup("convert", "optimize", tr("Reduce Size"));
     group->addLargeAction(ui->actionOptimize);

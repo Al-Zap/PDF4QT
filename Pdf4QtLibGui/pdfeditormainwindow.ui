@@ -180,6 +180,7 @@
     <addaction name="actionPrepareScannedPages"/>
     <addaction name="actionRecognizeText"/>
     <addaction name="actionBatchRecognizeText"/>
+    <addaction name="actionBatchProcessing"/>
     <addaction name="actionManageOCRLanguages"/>
    </widget>
    <widget class="QMenu" name="menuInsert">
@@ -1453,6 +1454,17 @@
    </property>
    <property name="statusTip">
     <string>Recognize the text of several PDF files and write the copies with a searchable text layer and the exports.</string>
+   </property>
+  </action>
+  <action name="actionBatchProcessing">
+   <property name="text">
+    <string>Batch &amp;Process...</string>
+   </property>
+   <property name="toolTip">
+    <string>Batch Process</string>
+   </property>
+   <property name="statusTip">
+    <string>Run a sequence of actions (headers and footers, Bates numbers, watermarks, flattening, OCR, optimization, password, conversion) on many PDF files at once.</string>
    </property>
   </action>
   <action name="actionManageOCRLanguages">
