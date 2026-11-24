@@ -129,6 +129,7 @@
         <file>resources/ribbon-export-images.svg</file>
         <file>resources/ribbon-stamp.svg</file>
         <file>resources/ribbon-ocr-batch.svg</file>
+        <file>resources/ribbon-batch.svg</file>
         <file>resources/ribbon-ocr-languages.svg</file>
         <file>resources/ribbon-scan-prepare.svg</file>
         <file>resources/ribbon-annot-delete.svg</file>
