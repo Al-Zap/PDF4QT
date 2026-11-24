@@ -96,6 +96,7 @@ private slots:
     void editorRibbonFitsNarrowWindow();
     void statusBarMessageIsNotCutOff();
     void bookmarkListOutlivesBookmarkManager();
+    void tabsAreOrganized();
 
 private:
     pdfviewer::PDFProgramController* controller() const { return m_window->getProgramController(); }
@@ -1043,6 +1044,80 @@ void RibbonTest::statusBarMessageIsNotCutOff()
     QVERIFY(slider->isVisible());
     statusBar->clearMessage();
     QVERIFY(slider->isVisible());
+}
+
+void RibbonTest::tabsAreOrganized()
+{
+    pdfviewer::PDFRibbon* ribbon = m_window->getRibbon();
+    QTabBar* tabBar = m_window->findChild<QTabBar*>("ribbonTabBar");
+    QVERIFY(tabBar);
+
+    // Lighting tools have their own tab, right after the general measuring
+    QStringList tabs;
+    for (int i = 0; i < tabBar->count(); ++i)
+    {
+        tabs << tabBar->tabText(i).remove('&');
+    }
+    QCOMPARE(tabs, QStringList({ "Home", "Edit", "Comment", "Measure", "Lighting", "Pages", "Forms", "Convert", "Protect", "View", "Advanced", "Help" }));
+
+    auto pageActions = [ribbon](const QString& pageId)
+    {
+        QSet<QAction*> actions;
+        for (pdfviewer::PDFRibbonButton* button : ribbon->getPage(pageId)->findChildren<pdfviewer::PDFRibbonButton*>())
+        {
+            if (button->getAction())
+            {
+                actions.insert(button->getAction());
+            }
+        }
+        return actions;
+    };
+
+    if (QAction* countAction = m_window->findChild<QAction*>("fixturecount_CountAction"))
+    {
+        QVERIFY(pageActions("lighting").contains(countAction));
+        QVERIFY(!pageActions("measure").contains(countAction));
+    }
+
+    // A command has one place outside of the Home tab (Home is a selection of the commands
+    // used most). The exceptions are the commands, which finish the work of a tab (save,
+    // print, the tools for filling the forms) and the text tools used for comments and edits.
+    const QStringList sharedCommands = { "actionSave", "actionSaveFlattenedCopy", "actionPrint", "actionHandTool",
+                                         "actionCreateTypewriter", "actionInlineText", "actionSelectText" };
+    QHash<QAction*, QString> placeOfAction;
+    for (QObject* child : ribbon->findChildren<pdfviewer::PDFRibbonPage*>())
+    {
+        const QString pageId = static_cast<pdfviewer::PDFRibbonPage*>(child)->getId();
+        if (pageId == "home")
+        {
+            continue;
+        }
+
+        for (QAction* action : pageActions(pageId))
+        {
+            if (sharedCommands.contains(action->objectName()))
+            {
+                continue;
+            }
+
+            QVERIFY2(!placeOfAction.contains(action), qPrintable(QString("'%1' is on the tabs '%2' and '%3'").arg(action->objectName(), placeOfAction.value(action), pageId)));
+            placeOfAction.insert(action, pageId);
+        }
+    }
+
+    // The View tab shows the texts of all its buttons in a usual window
+    const QString currentPageId = ribbon->getCurrentPageId();
+    m_window->resize(1600, 900);
+    ribbon->setCurrentPage("view");
+    QCoreApplication::processEvents();
+    if (ribbon->width() >= 1600)
+    {
+        for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage("view")->getGroups())
+        {
+            QVERIFY2(group->getReduction() == pdfviewer::PDFRibbonGroup::Reduction::None, qPrintable(group->getTitle()));
+        }
+    }
+    ribbon->setCurrentPage(currentPageId);
 }
 
 QTEST_MAIN(RibbonTest)
