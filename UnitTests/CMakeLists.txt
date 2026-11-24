@@ -411,6 +411,16 @@ if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
     add_test(UnitTestsRibbon "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsRibbon")
     set_tests_properties(UnitTestsRibbon PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+    add_executable(UnitTestsPageStampDialog tst_pagestampdialogtest.cpp)
+    target_link_libraries(UnitTestsPageStampDialog PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
+    set_target_properties(UnitTestsPageStampDialog PROPERTIES
+        WIN32_EXECUTABLE OFF
+        MACOSX_BUNDLE OFF
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+    )
+    add_test(UnitTestsPageStampDialog "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsPageStampDialog")
+    set_tests_properties(UnitTestsPageStampDialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(UnitTestsFormFields tst_formfieldstest.cpp)
     target_link_libraries(UnitTestsFormFields PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
     set_target_properties(UnitTestsFormFields PROPERTIES
@@ -554,3 +564,13 @@ if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
     add_test(UnitTestsDiffOverlay "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsDiffOverlay")
     set_tests_properties(UnitTestsDiffOverlay PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
+
+add_executable(UnitTestsPageStamper tst_pagestampertest.cpp)
+target_link_libraries(UnitTestsPageStamper PRIVATE Pdf4QtLibCore Qt6::Core Qt6::Gui Qt6::Test)
+set_target_properties(UnitTestsPageStamper PROPERTIES
+    WIN32_EXECUTABLE OFF
+    MACOSX_BUNDLE OFF
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+)
+add_test(UnitTestsPageStamper "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsPageStamper")
+set_tests_properties(UnitTestsPageStamper PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

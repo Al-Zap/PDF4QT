@@ -246,6 +246,10 @@
     <addaction name="actionDeleteAnnotation"/>
     <addaction name="separator"/>
     <addaction name="actionInsertPageNumbers"/>
+    <addaction name="actionHeaderFooter"/>
+    <addaction name="actionBatesNumbering"/>
+    <addaction name="actionWatermark"/>
+    <addaction name="actionRemoveStamps"/>
    </widget>
    <addaction name="menuFile"/>
    <addaction name="menuEdit"/>
@@ -1291,6 +1295,54 @@
    </property>
    <property name="toolTip">
     <string>Sanitize document to remove sensitive information.</string>
+   </property>
+  </action>
+  <action name="actionHeaderFooter">
+   <property name="icon">
+    <iconset resource="pdf4qtlibgui.qrc">
+     <normaloff>:/resources/ribbon-header-footer.svg</normaloff>:/resources/ribbon-header-footer.svg</iconset>
+   </property>
+   <property name="text">
+    <string>&amp;Header and Footer...</string>
+   </property>
+   <property name="toolTip">
+    <string>Add headers and footers (page numbers, date, file name) to the pages.</string>
+   </property>
+  </action>
+  <action name="actionBatesNumbering">
+   <property name="icon">
+    <iconset resource="pdf4qtlibgui.qrc">
+     <normaloff>:/resources/ribbon-bates.svg</normaloff>:/resources/ribbon-bates.svg</iconset>
+   </property>
+   <property name="text">
+    <string>&amp;Bates Numbering...</string>
+   </property>
+   <property name="toolTip">
+    <string>Add Bates numbers (prefix, sequential number, suffix) to the pages.</string>
+   </property>
+  </action>
+  <action name="actionWatermark">
+   <property name="icon">
+    <iconset resource="pdf4qtlibgui.qrc">
+     <normaloff>:/resources/ribbon-watermark.svg</normaloff>:/resources/ribbon-watermark.svg</iconset>
+   </property>
+   <property name="text">
+    <string>&amp;Watermark...</string>
+   </property>
+   <property name="toolTip">
+    <string>Add a text or image watermark to the pages.</string>
+   </property>
+  </action>
+  <action name="actionRemoveStamps">
+   <property name="icon">
+    <iconset resource="pdf4qtlibgui.qrc">
+     <normaloff>:/resources/ribbon-stamp-remove.svg</normaloff>:/resources/ribbon-stamp-remove.svg</iconset>
+   </property>
+   <property name="text">
+    <string>Remove Headers, Footers and Watermarks...</string>
+   </property>
+   <property name="toolTip">
+    <string>Remove headers, footers, Bates numbers and watermarks added by this application.</string>
    </property>
   </action>
   <action name="actionRemoveExternalLinks">

@@ -39,6 +39,8 @@
 #include "pdfoptimizedocumentdialog.h"
 #include "pdfoptimizeimagesdialog.h"
 #include "pdfsanitizedocumentdialog.h"
+#include "pdfpagestampdialog.h"
+#include "pdfpagestamper.h"
 #include "pdfcreatebitonaldocumentdialog.h"
 #include "pdfocrdocumentdialog.h"
 #include "pdfscanpreparationdialog.h"
@@ -69,6 +71,7 @@
 #include <QPrinter>
 #include <QPrintDialog>
 #include <QMessageBox>
+#include <QFileInfo>
 #include <QDesktopServices>
 #include <QApplication>
 #include <QFileDialog>
@@ -597,6 +600,22 @@ void PDFProgramController::initialize(Features features,
     if (QAction* action = m_actionManager->getAction(PDFActionManager::RemoveExternalLinks))
     {
         connect(action, &QAction::triggered, this, &PDFProgramController::onActionRemoveExternalLinksTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::HeaderFooter))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionHeaderFooterTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::BatesNumbering))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionBatesNumberingTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::Watermark))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionWatermarkTriggered);
+    }
+    if (QAction* action = m_actionManager->getAction(PDFActionManager::RemoveStamps))
+    {
+        connect(action, &QAction::triggered, this, &PDFProgramController::onActionRemoveStampsTriggered);
     }
     if (QAction* action = m_actionManager->getAction(PDFActionManager::PageGeometry))
     {
@@ -2105,6 +2124,120 @@ void PDFProgramController::onActionRemoveExternalLinksTriggered()
     m_mainWindowInterface->setStatusBarMessage(tr("External link annotations removed: %1.").arg(annotationsToRemove.size()), 4000);
 }
 
+void PDFProgramController::onActionHeaderFooterTriggered()
+{
+    addPageStamp(int(PDFPageStampDialog::Mode::HeaderFooter));
+}
+
+void PDFProgramController::onActionBatesNumberingTriggered()
+{
+    addPageStamp(int(PDFPageStampDialog::Mode::Bates));
+}
+
+void PDFProgramController::onActionWatermarkTriggered()
+{
+    addPageStamp(int(PDFPageStampDialog::Mode::Watermark));
+}
+
+void PDFProgramController::addPageStamp(int mode)
+{
+    if (!m_pdfDocument || m_pdfDocument->getCatalog()->getPageCount() == 0)
+    {
+        return;
+    }
+
+    std::vector<pdf::PDFInteger> currentPages = m_pdfWidget->getDrawWidget()->getCurrentPages();
+    const pdf::PDFInteger currentPageIndex = !currentPages.empty() ? currentPages.front() : 0;
+    const QString fileName = !m_fileInfo.fileName.isEmpty() ? m_fileInfo.fileName : QFileInfo(m_fileInfo.originalFileName).fileName();
+
+    PDFPageStampDialog dialog(static_cast<PDFPageStampDialog::Mode>(mode), m_pdfDocument.data(), currentPageIndex, fileName, m_mainWindow);
+    if (dialog.exec() != QDialog::Accepted)
+    {
+        return;
+    }
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const pdf::PDFPageStamper::Result result = dialog.apply();
+    QApplication::restoreOverrideCursor();
+
+    if (!result.isSuccess())
+    {
+        QMessageBox::critical(m_mainWindow, dialog.windowTitle(), result.errorMessage);
+        return;
+    }
+
+    if (result.document)
+    {
+        onDocumentModified(pdf::PDFModifiedDocument(result.document, m_optionalContentActivity, result.flags));
+    }
+
+    QString message = tr("Pages stamped: %1.").arg(result.pageCount);
+    if (!result.firstBatesNumber.isEmpty())
+    {
+        message = tr("Bates numbers %1 to %2 added. The next document continues with the number %3.").arg(result.firstBatesNumber, result.lastBatesNumber).arg(result.nextBatesNumber);
+        QMessageBox::information(m_mainWindow, dialog.windowTitle(), message);
+    }
+    m_mainWindowInterface->setStatusBarMessage(message, 5000);
+}
+
+void PDFProgramController::onActionRemoveStampsTriggered()
+{
+    if (!m_pdfDocument)
+    {
+        return;
+    }
+
+    const pdf::PDFInteger headerFooterPages = pdf::PDFPageStamper::getStampedPageCount(m_pdfDocument.data(), pdf::PDFPageStamper::HeaderFooter);
+    const pdf::PDFInteger watermarkPages = pdf::PDFPageStamper::getStampedPageCount(m_pdfDocument.data(), pdf::PDFPageStamper::Watermark);
+    if (headerFooterPages == 0 && watermarkPages == 0)
+    {
+        QMessageBox::information(m_mainWindow, QApplication::applicationDisplayName(), tr("The document has no headers, footers, Bates numbers or watermarks added by this application."));
+        return;
+    }
+
+    QMessageBox messageBox(QMessageBox::Question, tr("Remove Headers, Footers and Watermarks"),
+                           tr("Headers, footers and Bates numbers are on %1 pages, watermarks on %2 pages. Which of them do you want to remove?").arg(headerFooterPages).arg(watermarkPages),
+                           QMessageBox::NoButton, m_mainWindow);
+    QPushButton* allButton = messageBox.addButton(tr("All"), QMessageBox::AcceptRole);
+    QPushButton* headerFooterButton = headerFooterPages > 0 ? messageBox.addButton(tr("Headers and Footers"), QMessageBox::AcceptRole) : nullptr;
+    QPushButton* watermarkButton = watermarkPages > 0 ? messageBox.addButton(tr("Watermarks"), QMessageBox::AcceptRole) : nullptr;
+    messageBox.addButton(QMessageBox::Cancel);
+    messageBox.setDefaultButton(allButton);
+    messageBox.exec();
+
+    pdf::PDFPageStamper::StampKinds kinds = pdf::PDFPageStamper::None;
+    if (messageBox.clickedButton() == allButton)
+    {
+        kinds = pdf::PDFPageStamper::AllKinds;
+    }
+    else if (headerFooterButton && messageBox.clickedButton() == headerFooterButton)
+    {
+        kinds = pdf::PDFPageStamper::HeaderFooter;
+    }
+    else if (watermarkButton && messageBox.clickedButton() == watermarkButton)
+    {
+        kinds = pdf::PDFPageStamper::Watermark;
+    }
+
+    if (kinds == pdf::PDFPageStamper::None)
+    {
+        return;
+    }
+
+    const pdf::PDFPageStamper::Result result = pdf::PDFPageStamper::removeStamps(m_pdfDocument.data(), kinds, { });
+    if (!result.isSuccess())
+    {
+        QMessageBox::critical(m_mainWindow, QApplication::applicationDisplayName(), result.errorMessage);
+        return;
+    }
+
+    if (result.document)
+    {
+        onDocumentModified(pdf::PDFModifiedDocument(result.document, m_optionalContentActivity, result.flags));
+    }
+    m_mainWindowInterface->setStatusBarMessage(tr("Stamps removed: %1 (pages: %2).").arg(result.removedStampCount).arg(result.pageCount), 5000);
+}
+
 void PDFProgramController::onActionPageGeometryTriggered()
 {
     if (!m_pdfDocument)
@@ -2610,6 +2743,10 @@ void PDFProgramController::updateActionsAvailability()
     m_actionManager->setEnabled(PDFActionManager::OptimizeImages, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::Sanitize, hasValidDocument);
     m_actionManager->setEnabled(PDFActionManager::RemoveExternalLinks, hasValidDocument);
+    m_actionManager->setEnabled(PDFActionManager::HeaderFooter, hasValidDocument && canModify);
+    m_actionManager->setEnabled(PDFActionManager::BatesNumbering, hasValidDocument && canModify);
+    m_actionManager->setEnabled(PDFActionManager::Watermark, hasValidDocument && canModify);
+    m_actionManager->setEnabled(PDFActionManager::RemoveStamps, hasValidDocument && canModify);
     m_actionManager->setEnabled(PDFActionManager::PageGeometry, hasValidDocument && canModify);
     m_actionManager->setEnabled(PDFActionManager::CreateBitonalDocument, hasValidDocument);
 
