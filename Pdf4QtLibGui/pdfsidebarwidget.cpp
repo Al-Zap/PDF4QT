@@ -1022,6 +1022,14 @@ void PDFSidebarWidget::updateNotes()
 
                 const pdf::PDFMarkupAnnotation* markupAnnotation = pageAnnotation.annotation->asMarkupAnnotation();
 
+                // Review states (Accepted, Completed, ...) are hidden replies, which store
+                // the status of a markup, they are not comments (see the markups list)
+                const pdf::PDFDictionary* annotationDictionary = m_document->getDictionaryFromObject(m_document->getObjectByReference(markupAnnotation->getSelfReference()));
+                if (markupAnnotation->getType() == pdf::AnnotationType::Text && markupAnnotation->getInReplyTo().isValid() && annotationDictionary && annotationDictionary->hasKey("State"))
+                {
+                    continue;
+                }
+
                 QString user = markupAnnotation->getWindowTitle();
 
                 if (user.isEmpty())

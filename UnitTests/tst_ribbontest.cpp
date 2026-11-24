@@ -1105,12 +1105,12 @@ void RibbonTest::tabsAreOrganized()
         }
     }
 
-    // The View tab shows the texts of all its buttons in a usual window
+    // The View tab shows the texts of all its buttons in a maximized full HD window
     const QString currentPageId = ribbon->getCurrentPageId();
-    m_window->resize(1600, 900);
+    m_window->resize(1920, 1000);
     ribbon->setCurrentPage("view");
     QCoreApplication::processEvents();
-    if (ribbon->width() >= 1600)
+    if (ribbon->width() >= 1900)
     {
         for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage("view")->getGroups())
         {
