@@ -21,11 +21,20 @@
 # SOFTWARE.
 
 add_library(FixtureCountPlugin SHARED
+    countlegend.cpp
     fixturecount.cpp
     fixturecountpanel.cpp
     fixturecountplugin.cpp
     fixturecounttool.cpp
+    fixtureschedule.cpp
     fixturesymbolfinder.cpp
+    footcandlestats.cpp
+    lightingdialogs.cpp
+    lightingshapetool.cpp
+    lightingtable.cpp
+    lightingtext.cpp
+    lightingtools.cpp
+    wiretakeoff.cpp
     icons.qrc
 )
 

@@ -24,6 +24,7 @@
 #include "fixturecountpanel.h"
 #include "fixturecounttool.h"
 #include "fixturesymbolfinder.h"
+#include "lightingtools.h"
 
 #include "pdfdocumentbuilder.h"
 #include "pdfdrawspacecontroller.h"
@@ -53,6 +54,7 @@ FixtureCountPlugin::FixtureCountPlugin() :
     pdf::PDFPlugin(nullptr),
     m_countTool(nullptr),
     m_panel(nullptr),
+    m_lightingTools(nullptr),
     m_countAction(nullptr),
     m_addTypeAction(nullptr),
     m_editTypeAction(nullptr),
@@ -116,6 +118,11 @@ void FixtureCountPlugin::setWidget(pdf::PDFWidget* widget)
     connect(m_showPanelAction, &QAction::triggered, this, &FixtureCountPlugin::onShowPanelTriggered);
     connect(widget->getDrawWidgetProxy(), &pdf::PDFDrawWidgetProxy::drawSpaceChanged, this, &FixtureCountPlugin::onDrawSpaceChanged);
 
+    m_lightingTools = new LightingTools(this);
+    m_lightingTools->initialize(widget, m_dataExchangeInterface);
+    m_lightingTools->setTypesProvider([this]() { return m_types; });
+    connect(m_lightingTools, &LightingTools::typesImported, this, &FixtureCountPlugin::onTypesImported);
+
     loadSettings();
     m_countTool->setMarkerSize(m_markerSize);
     updateUI();
@@ -136,12 +143,22 @@ void FixtureCountPlugin::setDocument(const pdf::PDFModifiedDocument& document)
     }
 
     mergeDocumentTypes();
+    if (m_lightingTools)
+    {
+        m_lightingTools->setDocument(m_document);
+    }
     updateUI();
 }
 
 std::vector<QAction*> FixtureCountPlugin::getActions() const
 {
-    return { m_countAction, m_findSimilarAction, m_showPanelAction, m_exportAction };
+    std::vector<QAction*> actions = { m_countAction, m_findSimilarAction, m_showPanelAction, m_exportAction };
+    if (m_lightingTools)
+    {
+        const std::vector<QAction*> lightingActions = m_lightingTools->getActions();
+        actions.insert(actions.end(), lightingActions.cbegin(), lightingActions.cend());
+    }
+    return actions;
 }
 
 std::vector<QAction*> FixtureCountPlugin::getToolbarActions() const
@@ -151,7 +168,7 @@ std::vector<QAction*> FixtureCountPlugin::getToolbarActions() const
 
 QString FixtureCountPlugin::getPluginMenuName() const
 {
-    return tr("Fi&xture Count");
+    return tr("&Lighting");
 }
 
 pdf::PDFPlugin::PluginMenuLocation FixtureCountPlugin::getPluginMenuLocation() const
@@ -161,7 +178,7 @@ pdf::PDFPlugin::PluginMenuLocation FixtureCountPlugin::getPluginMenuLocation() c
 
 QString FixtureCountPlugin::getToolbarSection() const
 {
-    return QStringLiteral("count");
+    return QStringLiteral("lighting");
 }
 
 void FixtureCountPlugin::onCountToolActivityChanged(bool active)
@@ -778,8 +795,31 @@ bool FixtureCountPlugin::canModifyDocument() const
     return true;
 }
 
+void FixtureCountPlugin::onTypesImported(const FixtureTypes& types)
+{
+    for (const FixtureType& type : types)
+    {
+        if (std::none_of(m_types.cbegin(), m_types.cend(), [&type](const FixtureType& item) { return item.name.compare(type.name, Qt::CaseInsensitive) == 0; }))
+        {
+            m_types.push_back(type);
+        }
+    }
+
+    if (m_currentTypeIndex < 0 && !m_types.empty())
+    {
+        m_currentTypeIndex = 0;
+    }
+
+    saveSettings();
+    showPanel();
+    updateUI();
+}
+
 void FixtureCountPlugin::finishModification(pdf::PDFDocumentModifier& modifier)
 {
+    // Legends on the sheets change together with the count (in the same step of the undo history)
+    LightingTools::updateTables(modifier.getBuilder(), m_types, LightingTools::loadTakeoffSettings());
+
     modifier.markAnnotationsChanged();
     if (modifier.finalize())
     {

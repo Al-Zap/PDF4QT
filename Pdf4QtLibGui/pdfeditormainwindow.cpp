@@ -818,6 +818,7 @@ void PDFEditorMainWindow::createRibbon()
     m_ribbon->addPage("edit", tr("Edit"));
     m_ribbon->addPage("comment", tr("Comment"));
     m_ribbon->addPage("measure", tr("Measure"));
+    m_ribbon->addPage("lighting", tr("Lighting"));
     m_ribbon->addPage("pages", tr("Pages"));
     m_ribbon->addPage("forms", tr("Forms"));
     m_ribbon->addPage("convert", tr("Convert"));
@@ -977,11 +978,17 @@ void PDFEditorMainWindow::createRibbon()
     group = m_ribbon->getGroup("comment", "compare", tr("Compare"));
     group->addLargeAction(m_compareDocumentsAction, tr("Compare Documents"));
 
-    // Measure: filled by the plugins (measuring and fixture count)
+    // Measure: filled by the measuring plugin (scale, lengths, areas, angles)
     m_ribbon->getGroup("measure", "scale", tr("Scale"));
     m_ribbon->getGroup("measure", "measure", tr("Measure"));
     m_ribbon->getGroup("measure", "results", tr("Measurements"));
-    m_ribbon->getGroup("measure", "count", tr("Fixture Count"));
+
+    // Lighting: tools made for the lighting plans (fixture count plugin)
+    m_ribbon->getGroup("lighting", "count", tr("Fixture Count"));
+    m_ribbon->getGroup("lighting", "legend", tr("Legend"));
+    m_ribbon->getGroup("lighting", "footcandles", tr("Footcandles"));
+    m_ribbon->getGroup("lighting", "schedule", tr("Schedule"));
+    m_ribbon->getGroup("lighting", "wire", tr("Wire Takeoff"));
 
     // Pages: organizing actions are added, when the navigation pane is created
     m_ribbon->getGroup("pages", "organize", tr("Organize"));
@@ -1416,10 +1423,23 @@ QMenu* PDFEditorMainWindow::addPluginUserInterface(pdf::PDFPlugin* plugin,
     else if (pluginName == QLatin1String("FixtureCount"))
     {
         std::vector<QAction*> remainingActions = actions;
-        PDFRibbonGroup* group = m_ribbon->getGroup("measure", "count", tr("Fixture Count"));
+        PDFRibbonGroup* group = m_ribbon->getGroup("lighting", "count", tr("Fixture Count"));
         Helper::placeActions(group, remainingActions,
                              { "fixturecount_CountAction", "fixturecount_FindSimilarAction", "fixturecount_ShowPanelAction", "fixturecount_ExportAction" }, { },
                              { { "fixturecount_CountAction", tr("Count") }, { "fixturecount_ShowPanelAction", tr("Count Panel") }, { "fixturecount_ExportAction", tr("Export") } });
+
+        // Lighting tools of the same plugin have their own groups on the Lighting tab
+        Helper::placeActions(m_ribbon->getGroup("lighting", "legend", tr("Legend")), remainingActions,
+                             { "lighting_PlaceSheetLegendAction", "lighting_PlaceSetLegendAction" }, { "lighting_UpdateTablesAction" },
+                             { { "lighting_PlaceSheetLegendAction", tr("Sheet Legend") }, { "lighting_PlaceSetLegendAction", tr("Set Legend") },
+                               { "lighting_UpdateTablesAction", tr("Update Tables") } });
+        Helper::placeActions(m_ribbon->getGroup("lighting", "footcandles", tr("Footcandles")), remainingActions,
+                             { "lighting_FootcandleStatsAction" }, { }, { { "lighting_FootcandleStatsAction", tr("Grid Stats") } });
+        Helper::placeActions(m_ribbon->getGroup("lighting", "schedule", tr("Schedule")), remainingActions,
+                             { "lighting_ReadScheduleAction" }, { }, { { "lighting_ReadScheduleAction", tr("Read Schedule") } });
+        Helper::placeActions(m_ribbon->getGroup("lighting", "wire", tr("Wire Takeoff")), remainingActions,
+                             { "lighting_WireRunAction", "lighting_WireTakeoffAction" }, { },
+                             { { "lighting_WireRunAction", tr("Wire Run") }, { "lighting_WireTakeoffAction", tr("Takeoff") } });
         Helper::placeRemainingActions(group, remainingActions, tr("More"), moreIcon);
     }
     else if (pluginName == QLatin1String("Editor"))

@@ -39,12 +39,16 @@ namespace pdfplugin
 
 class FixtureCountPanel;
 class FixtureCountTool;
+class LightingTools;
 
-/// Counts the fixtures on lighting plans. Fixtures are tagged by a click with
-/// a marker of the fixture type (A1, B2, ...). Each type has its own color and
-/// shape. The panel displays the counts on the current sheet and in the whole
-/// set and the count can be exported to a CSV file. Markers are annotations
-/// of the document, so they are saved with it and the undo works for them.
+/// Tools of the Lighting tab. Counts the fixtures on lighting plans: fixtures
+/// are tagged by a click with a marker of the fixture type (A1, B2, ...). Each
+/// type has its own color and shape. The panel displays the counts on the
+/// current sheet and in the whole set and the count can be exported to a CSV
+/// file. Markers are annotations of the document, so they are saved with it
+/// and the undo works for them. The other lighting tools (count legends,
+/// footcandle grid statistics, fixture schedules, wire takeoff) are provided
+/// by \p LightingTools.
 class FixtureCountPlugin : public pdf::PDFPlugin
 {
     Q_OBJECT
@@ -79,6 +83,7 @@ private:
     void onDrawSpaceChanged();
     void onSampleSelected(pdf::PDFInteger pageIndex, QRectF sampleRect);
     void onFindSimilarTriggered();
+    void onTypesImported(const FixtureTypes& types);
 
     /// Renders the page and finds the symbols similar to the sample symbol.
     /// Returns the centers of the found symbols in the page coordinate system.
@@ -117,6 +122,7 @@ private:
 
     FixtureCountTool* m_countTool;
     FixtureCountPanel* m_panel;
+    LightingTools* m_lightingTools;
 
     QAction* m_countAction;
     QAction* m_addTypeAction;

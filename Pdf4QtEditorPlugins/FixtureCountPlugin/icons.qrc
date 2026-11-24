@@ -7,5 +7,12 @@
         <file>export.svg</file>
         <file>panel.svg</file>
         <file>find-similar.svg</file>
+        <file>legend.svg</file>
+        <file>legend-set.svg</file>
+        <file>update-legend.svg</file>
+        <file>footcandle.svg</file>
+        <file>schedule.svg</file>
+        <file>wire-run.svg</file>
+        <file>takeoff.svg</file>
     </qresource>
 </RCC>
