@@ -1107,11 +1107,13 @@ void RibbonTest::tabsAreOrganized()
     }
 
     // The View tab shows the texts of all its buttons in a maximized full HD window.
-    // The width is given for a font 14 pixels high (9 points at 96 dpi), platforms
-    // with a larger font (the offscreen platform of Windows) get a wider window.
+    // The width is given for a font 14 pixels high with characters 6 pixels wide
+    // (9 points at 96 dpi), platforms with a larger font (the offscreen platform
+    // of Windows has no real fonts) get a wider window.
     const QString currentPageId = ribbon->getCurrentPageId();
-    const int fontHeight = QFontMetrics(ribbon->font()).height();
-    const int fullHdWidth = qMax(1920, qRound(1920.0 * fontHeight / 14.0));
+    const QFontMetrics ribbonFontMetrics(ribbon->font());
+    const double fontScale = qMax(1.0, qMax(ribbonFontMetrics.height() / 14.0, ribbonFontMetrics.averageCharWidth() / 6.0));
+    const int fullHdWidth = qRound(1920.0 * fontScale);
     m_window->resize(fullHdWidth, 1000);
     ribbon->setCurrentPage("view");
     QCoreApplication::processEvents();
