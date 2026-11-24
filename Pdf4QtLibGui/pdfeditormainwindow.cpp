@@ -1121,8 +1121,8 @@ void PDFEditorMainWindow::createRibbon()
 
     group = m_ribbon->getGroup("view", "bookmarks", tr("Bookmarks"));
     group->addLargeAction(ui->actionBookmarkPage);
-    group->addSmallAction(ui->actionGotoNextBookmark, tr("Next Bookmark"));
-    group->addSmallAction(ui->actionGotoPreviousBookmark, tr("Previous Bookmark"));
+    group->addSmallAction(ui->actionGotoNextBookmark, tr("Next"));
+    group->addSmallAction(ui->actionGotoPreviousBookmark, tr("Previous"));
     group->addMenu(Size::Small, tr("Settings"), Helper::getThemedIcon(QStringLiteral("settings")), ui->menuBookmarkSettings);
 
     group = m_ribbon->getGroup("view", "display", tr("Display"));

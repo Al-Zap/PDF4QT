@@ -1125,8 +1125,8 @@ void RibbonTest::tabsAreOrganized()
             }
             return true;
         };
-        QTRY_VERIFY_WITH_TIMEOUT(isNotReduced(), 2000);
-        if (!isNotReduced())
+        const bool fitted = QTest::qWaitFor(isNotReduced, 2000);
+        if (!fitted || qEnvironmentVariableIsSet("PDF4QT_RIBBON_DUMP"))
         {
             QStringList widths;
             for (pdfviewer::PDFRibbonGroup* group : ribbon->getPage("view")->getGroups())
