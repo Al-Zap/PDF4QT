@@ -212,7 +212,7 @@ RedactTest::TestDocument RedactTest::createTestDocument(bool tagged)
     for (int i = 0; i < 20 * 20; ++i)
     {
         imageData.append(char(0x00));
-        imageData.append(char(0xFF));
+        imageData.append('\xFF');
         imageData.append(char(0x00));
     }
     result.image = builder.addObject(createStream({ { "Type", pdf::PDFObject::createName("XObject") },
