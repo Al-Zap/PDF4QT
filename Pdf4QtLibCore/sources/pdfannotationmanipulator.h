@@ -393,6 +393,35 @@ public:
     /// Mime type of the serialized annotations
     static const char* getMimeType() { return "application/x-pdf4qt-annotations"; }
 
+    /// Quantity, which must be distinguished from another quantity measured by the same annotation
+    enum class MeasuredQuantity
+    {
+        Unknown,
+        Length,
+        Area
+    };
+
+    /// Value measured by a measurement annotation
+    struct MeasuredValue
+    {
+        PDFReal value = 0.0;                                    ///< Value in the displayed units
+        MeasuredQuantity quantity = MeasuredQuantity::Unknown;  ///< Quantity, if the annotation measures several quantities (perimeter and area of a polygon)
+        QString unit;                                           ///< Label of the unit defined by the measure (can be empty)
+        QString text;                                           ///< Value formatted by the number format of the measure (can be empty)
+    };
+
+    /// Returns the quantities measured by a measurement annotation - length of
+    /// a dimension line or of a polyline, angle of an angular dimension, perimeter
+    /// and area of a polygon. Returns empty array, if the annotation is not
+    /// a measurement. The values are in the units of the measure, or in the units
+    /// of the default user space, if the measure is not valid. The displayed
+    /// shape is measured (the path has precedence over the vertices).
+    static std::vector<MeasuredValue> getMeasuredValues(const PDFAnnotation* annotation, const PDFMeasure& measure);
+
+    /// Returns true, if the annotation is an angular measurement (dimension
+    /// polyline with three points, the second point is the vertex of the angle)
+    static bool isAngularMeasurement(const PDFAnnotation* annotation);
+
 private:
     /// Reads a normalized rectangle from the dictionary
     static QRectF readRectangle(const PDFObjectStorage* storage, const PDFDictionary* dictionary, const char* key);
@@ -468,10 +497,6 @@ private:
     /// Returns the numbers as points
     static std::vector<QPointF> getPointsFromNumbers(const std::vector<PDFReal>& numbers);
 
-    /// Returns true, if the annotation is an angular measurement (dimension
-    /// polyline with three points, the second point is the vertex of the angle)
-    static bool isAngularMeasurement(const PDFAnnotation* annotation);
-
     /// Returns the points of the displayed shape of a polygon (polyline). The path
     /// has precedence over the vertices, as it has, when the annotation is drawn.
     /// Returns empty array, if the path contains curves.
@@ -500,31 +525,6 @@ private:
 
     /// Formats the value the same way, as the number token is formatted
     static QString formatNumberToken(const NumberToken& token, PDFReal value);
-
-    /// Quantity, which must be distinguished from another quantity measured by the same annotation
-    enum class MeasuredQuantity
-    {
-        Unknown,
-        Length,
-        Area
-    };
-
-    /// Value measured by a measurement annotation
-    struct MeasuredValue
-    {
-        PDFReal value = 0.0;                                    ///< Value in the displayed units
-        MeasuredQuantity quantity = MeasuredQuantity::Unknown;  ///< Quantity, if the annotation measures several quantities (perimeter and area of a polygon)
-        QString unit;                                           ///< Label of the unit defined by the measure (can be empty)
-        QString text;                                           ///< Value formatted by the number format of the measure (can be empty)
-    };
-
-    /// Returns the quantities measured by a measurement annotation - length of
-    /// a dimension line or of a polyline, angle of an angular dimension, perimeter
-    /// and area of a polygon. Returns empty array, if the annotation is not
-    /// a measurement. The values are in the units of the measure, or in the units
-    /// of the default user space, if the measure is not valid. The displayed
-    /// shape is measured (the path has precedence over the vertices).
-    static std::vector<MeasuredValue> getMeasuredValues(const PDFAnnotation* annotation, const PDFMeasure& measure);
 
     /// Returns the quantity, which the number in the text displays according to the text
     /// around the number - symbol of the quantity before it ("A = "), unit of area after it.
