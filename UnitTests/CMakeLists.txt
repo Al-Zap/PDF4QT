@@ -416,6 +416,16 @@ if(NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
     add_test(UnitTestsMarkupsList "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsMarkupsList")
     set_tests_properties(UnitTestsMarkupsList PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+    add_executable(UnitTestsToolChest tst_toolchesttest.cpp)
+    target_link_libraries(UnitTestsToolChest PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
+    set_target_properties(UnitTestsToolChest PROPERTIES
+        WIN32_EXECUTABLE OFF
+        MACOSX_BUNDLE OFF
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}
+    )
+    add_test(UnitTestsToolChest "${CMAKE_BINARY_DIR}/${PDF4QT_INSTALL_BIN_DIR}/UnitTestsToolChest")
+    set_tests_properties(UnitTestsToolChest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(UnitTestsThumbnailsDragDrop tst_thumbnailsdragdroptest.cpp)
     target_link_libraries(UnitTestsThumbnailsDragDrop PRIVATE Pdf4QtLibGui Pdf4QtLibWidgets Pdf4QtLibCore Qt6::Widgets Qt6::Test)
     set_target_properties(UnitTestsThumbnailsDragDrop PROPERTIES

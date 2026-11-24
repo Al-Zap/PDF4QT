@@ -81,6 +81,10 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfmeasure.h
     sources/pdfmarkupslist.cpp
     sources/pdfmarkupslist.h
+    sources/pdfcustomstamp.cpp
+    sources/pdfcustomstamp.h
+    sources/pdftoolchest.cpp
+    sources/pdftoolchest.h
     sources/pdfmultimedia.cpp
     sources/pdfmultimedia.h
     sources/pdfobject.cpp
