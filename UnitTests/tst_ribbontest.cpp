@@ -122,6 +122,7 @@ private:
     };
 
     static void createTestRibbon(TestRibbon& testRibbon);
+    static void resizeTestRibbon(TestRibbon& testRibbon, int width);
     static std::vector<pdfviewer::PDFRibbonGroup::Reduction> getReductions(const TestRibbon& testRibbon);
 
     QTemporaryDir m_directory;
@@ -604,11 +605,9 @@ QIcon RibbonTest::createIcon(QColor color)
 
 void RibbonTest::createTestRibbon(TestRibbon& testRibbon)
 {
-    QVBoxLayout* layout = new QVBoxLayout(&testRibbon.window);
-    layout->setContentsMargins(0, 0, 0, 0);
+    // The ribbon is resized directly, not by the window: the platform can limit the
+    // size of a window to the size of the screen, a child widget can be wider
     testRibbon.ribbon = new pdfviewer::PDFRibbon(&testRibbon.window);
-    layout->addWidget(testRibbon.ribbon);
-    layout->addStretch(1);
 
     testRibbon.page = testRibbon.ribbon->addPage("home", "Home");
 
@@ -637,10 +636,17 @@ void RibbonTest::createTestRibbon(TestRibbon& testRibbon)
     }
 
     testRibbon.ribbon->updateGroups();
-    testRibbon.window.resize(3000, 200);
+    testRibbon.window.resize(400, 200);
     testRibbon.window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&testRibbon.window));
+    resizeTestRibbon(testRibbon, 3000);
+}
+
+void RibbonTest::resizeTestRibbon(TestRibbon& testRibbon, int width)
+{
+    testRibbon.ribbon->resize(width, testRibbon.ribbon->sizeHint().height());
     QCoreApplication::processEvents();
+    QCOMPARE(testRibbon.ribbon->width(), width);
 }
 
 std::vector<pdfviewer::PDFRibbonGroup::Reduction> RibbonTest::getReductions(const TestRibbon& testRibbon)
@@ -677,8 +683,7 @@ void RibbonTest::groupsShrinkStepByStep()
     QVERIFY(testRibbon.groups.front()->getReducedWidth(Reduction::SmallButtons) < testRibbon.groups.front()->getReducedWidth(Reduction::None));
 
     // Slightly narrower window: only the last group gets small buttons
-    testRibbon.window.resize(fullWidth - 10, 200);
-    QCoreApplication::processEvents();
+    resizeTestRibbon(testRibbon, fullWidth - 10);
     std::vector<Reduction> reductions = getReductions(testRibbon);
     QCOMPARE(reductions.back(), Reduction::SmallButtons);
     QCOMPARE(reductions.front(), Reduction::None);
@@ -688,8 +693,7 @@ void RibbonTest::groupsShrinkStepByStep()
     std::vector<Reduction> previousReductions = reductions;
     for (int width = fullWidth - 10; width >= 4 * collapsedWidth + 10; width -= 15)
     {
-        testRibbon.window.resize(width, 200);
-        QCoreApplication::processEvents();
+        resizeTestRibbon(testRibbon, width);
 
         reductions = getReductions(testRibbon);
         const Reduction maximum = *std::max_element(reductions.cbegin(), reductions.cend());
@@ -746,21 +750,18 @@ void RibbonTest::groupsShrinkStepByStep()
     {
         allCollapsedWidth += group->getReducedWidth(Reduction::Collapsed);
     }
-    testRibbon.window.resize(allCollapsedWidth + 2, 200);
-    QCoreApplication::processEvents();
+    resizeTestRibbon(testRibbon, allCollapsedWidth + 2);
     for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
     {
         QCOMPARE(group->getReduction(), Reduction::Collapsed);
     }
 
     // Too narrow even for the collapsed groups: the page can be scrolled again
-    testRibbon.window.resize(allCollapsedWidth - 20, 200);
-    QCoreApplication::processEvents();
+    resizeTestRibbon(testRibbon, allCollapsedWidth - 20);
     QVERIFY(testRibbon.ribbon->findChild<QScrollArea*>("ribbonPages")->horizontalScrollBar()->maximum() > 0);
 
     // Wide window again: full size of all groups, large buttons
-    testRibbon.window.resize(3000, 200);
-    QCoreApplication::processEvents();
+    resizeTestRibbon(testRibbon, 3000);
     for (pdfviewer::PDFRibbonGroup* group : testRibbon.groups)
     {
         QCOMPARE(group->getReduction(), Reduction::None);
@@ -783,8 +784,7 @@ void RibbonTest::collapsedGroupOpensDropDown()
 
     pdfviewer::PDFRibbonGroup* group = testRibbon.groups.back();
     const int collapsedWidth = group->getReducedWidth(Reduction::Collapsed);
-    testRibbon.window.resize(4 * collapsedWidth + 10, 200);
-    QCoreApplication::processEvents();
+    resizeTestRibbon(testRibbon, 4 * collapsedWidth + 10);
     QCOMPARE(group->getReduction(), Reduction::Collapsed);
 
     pdfviewer::PDFRibbonButton* collapsedButton = group->getCollapsedButton();
@@ -818,8 +818,7 @@ void RibbonTest::collapsedGroupOpensDropDown()
     QVERIFY(menu->sizeHint().width() >= content->sizeHint().width());
 
     // The window is too narrow, but the window of the collapsed group keeps its content
-    testRibbon.window.resize(4 * collapsedWidth + 20, 200);
-    QCoreApplication::processEvents();
+    resizeTestRibbon(testRibbon, 4 * collapsedWidth + 20);
     QCOMPARE(content->window(), static_cast<QWidget*>(menu));
 
     // A click on a button triggers the action and closes the window, the buttons return to the group
@@ -832,8 +831,7 @@ void RibbonTest::collapsedGroupOpensDropDown()
     QVERIFY(collapsedButton->isVisible());
 
     // The group gets its buttons back in a wide window
-    testRibbon.window.resize(3000, 200);
-    QCoreApplication::processEvents();
+    resizeTestRibbon(testRibbon, 3000);
     QCOMPARE(group->getReduction(), Reduction::None);
     QVERIFY(content->isVisible());
     QVERIFY(!collapsedButton->isVisible());
@@ -853,8 +851,7 @@ void RibbonTest::groupWidthFollowsButtonText()
     }
 
     const int fullWidth = testRibbon.page->sizeHint().width();
-    testRibbon.window.resize(fullWidth + 5, 200);
-    QCoreApplication::processEvents();
+    resizeTestRibbon(testRibbon, fullWidth + 5);
     QCOMPARE(testRibbon.groups.back()->getReduction(), Reduction::None);
 
     // A longer text of a button makes the page wider, the ribbon reduces the last group
