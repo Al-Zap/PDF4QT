@@ -79,6 +79,8 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfjsonhelper.h
     sources/pdfmeasure.cpp
     sources/pdfmeasure.h
+    sources/pdfmarkupslist.cpp
+    sources/pdfmarkupslist.h
     sources/pdfmultimedia.cpp
     sources/pdfmultimedia.h
     sources/pdfobject.cpp
