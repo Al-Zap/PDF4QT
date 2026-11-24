@@ -98,6 +98,8 @@ add_library(Pdf4QtLibGui SHARED
     pdfocrcompressionpreviewdialog.h
     pdfocrbatchdialog.cpp
     pdfocrbatchdialog.h
+    pdfbatchprocessingdialog.cpp
+    pdfbatchprocessingdialog.h
     pdfocrbackgroundtask.cpp
     pdfocrbackgroundtask.h
     pdfocrmakesearchable.cpp
