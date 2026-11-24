@@ -73,6 +73,7 @@ private slots:
     void pageSelection();
     void replaceIsOfferedForExistingStamps();
     void previewShowsStamp();
+    void previewOfLargeDrawingShowsReadableText();
     void settingsAreRemembered();
     void ribbonActions();
     void watermarkActionWithUndo();
@@ -407,6 +408,60 @@ void PageStampDialogTest::previewShowsStamp()
     const QImage watermarkPreview = watermarkDialog.getPreviewImage().convertToFormat(QImage::Format_RGB32);
     const QColor center = watermarkPreview.pixelColor(watermarkPreview.width() / 2, watermarkPreview.height() / 2);
     QVERIFY(center.red() > 150);
+}
+
+void PageStampDialogTest::previewOfLargeDrawingShowsReadableText()
+{
+    QSettings().clear();
+
+    // ARCH D sheet (36 x 24 in) stored in portrait and rotated, as AutoCAD writes it
+    pdf::PDFDocumentBuilder builder;
+    const pdf::PDFObjectReference pageReference = builder.appendPage(QRectF(0, 0, 1728, 2592));
+    pdf::PDFObjectFactory factory;
+    factory.beginDictionary();
+    factory.beginDictionaryItem("Rotate");
+    factory << pdf::PDFInteger(270);
+    factory.endDictionaryItem();
+    factory.endDictionary();
+    builder.mergeTo(pageReference, factory.takeObject());
+    const pdf::PDFDocument drawing = builder.build();
+
+    // Nothing is written: no detail
+    pdfviewer::PDFPageStampDialog dialog(pdfviewer::PDFPageStampDialog::Mode::HeaderFooter, &drawing, 0, QString(), nullptr);
+    dialog.updatePreview();
+    QVERIFY(dialog.getDetailImage().isNull());
+    const QImage preview = dialog.getPreviewImage();
+    QVERIFY(qAbs(qreal(preview.width()) / preview.height() - 2592.0 / 1728.0) < 0.02);
+
+    // A 10 pt text is about 1 pixel high in the preview of the whole sheet, so
+    // the header and the footer are shown once more at a readable size
+    child<QPlainTextEdit>(&dialog, "header-left")->setPlainText("PROJECT 2026-17");
+    child<QPlainTextEdit>(&dialog, "footer-right")->setPlainText("Sheet {page} of {pages}");
+    dialog.updatePreview();
+    QImage detail = dialog.getDetailImage();
+    QVERIFY(!detail.isNull());
+    detail = detail.convertToFormat(QImage::Format_RGB32);
+
+    // Two parts, header above the footer, both with text at least 8 pixels high
+    QVERIFY(detail.height() >= 2 * 8);
+    QVERIFY(detail.width() <= preview.width() + 1);
+    QVERIFY(hasDarkPixel(detail, QRect(0, 0, detail.width(), detail.height() / 2)));
+    QVERIFY(hasDarkPixel(detail, QRect(0, detail.height() / 2, detail.width(), detail.height() - detail.height() / 2)));
+
+    // Large text is readable in the preview itself: no detail
+    child<QDoubleSpinBox>(&dialog, "fontSizeSpinBox")->setValue(100.0);
+    dialog.updatePreview();
+    QVERIFY(dialog.getDetailImage().isNull());
+
+    // Bates numbers of the drawing are shown at a readable size too
+    pdfviewer::PDFPageStampDialog batesDialog(pdfviewer::PDFPageStampDialog::Mode::Bates, &drawing, 0, QString(), nullptr);
+    batesDialog.updatePreview();
+    QVERIFY(!batesDialog.getDetailImage().isNull());
+
+    // Watermarks are large, they have no detail
+    pdfviewer::PDFPageStampDialog watermarkDialog(pdfviewer::PDFPageStampDialog::Mode::Watermark, &drawing, 0, QString(), nullptr);
+    watermarkDialog.updatePreview();
+    QVERIFY(watermarkDialog.getDetailImage().isNull());
 }
 
 void PageStampDialogTest::settingsAreRemembered()

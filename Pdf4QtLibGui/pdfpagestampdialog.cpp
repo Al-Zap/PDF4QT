@@ -58,6 +58,8 @@
 #include <QDoubleSpinBox>
 #include <QDialogButtonBox>
 
+#include <array>
+
 #include "pdfdbgheap.h"
 
 namespace pdfviewer
@@ -73,6 +75,26 @@ public:
 
     /// Renders the first page of the document into an image fitting the size
     static QImage renderPage(const pdf::PDFDocument* document, QSize maximalSize);
+
+    /// Renders an area of the first page of the document at the given scale
+    /// \param document Document
+    /// \param area Area of the displayed page (rotated crop box) in points, origin top left
+    /// \param scale Pixels per point
+    static QImage renderPageArea(const pdf::PDFDocument* document, const QRectF& area, qreal scale);
+
+    /// Renders the headers and footers of the first page of the document so large,
+    /// that the text can be read, also when the page is a large drawing. Each group
+    /// of the text in the left, middle and right third of the header and of the footer
+    /// is cut out, the parts are placed next to each other, the header above the footer.
+    /// Returns a null image, when nothing is written.
+    /// \param document Document
+    /// \param fontSize Font size of the text in points
+    /// \param margins Distances of the text from the edges of the page
+    /// \param maximalWidth Maximal width of the image in pixels
+    static QImage renderHeaderFooterDetail(const pdf::PDFDocument* document, pdf::PDFReal fontSize, const QMarginsF& margins, int maximalWidth);
+
+    /// Returns the bounding rectangle of the dark pixels in the given rectangle of the image
+    static QRect getInkRect(const QImage& image, const QRect& rect);
 
     /// Creates a text edit of a header/footer position (two lines high)
     static QPlainTextEdit* createPositionEdit(QWidget* parent, const QString& objectName);
@@ -122,6 +144,30 @@ QImage PDFPageStampDialogHelper::renderPage(const pdf::PDFDocument* document, QS
     }
 
     const QSize imageSize = pageSize.scaled(QSizeF(maximalSize), Qt::KeepAspectRatio).toSize().expandedTo(QSize(1, 1));
+    QImage image = renderPageArea(document, QRectF(QPointF(0, 0), pageSize), imageSize.width() / pageSize.width());
+    if (image.isNull())
+    {
+        return image;
+    }
+
+    QPainter painter(&image);
+    painter.setPen(QPen(Qt::gray, 1.0));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(QRectF(QPointF(0.5, 0.5), QSizeF(image.size()) - QSizeF(1.0, 1.0)));
+    painter.end();
+
+    return image;
+}
+
+QImage PDFPageStampDialogHelper::renderPageArea(const pdf::PDFDocument* document, const QRectF& area, qreal scale)
+{
+    const pdf::PDFPage* page = document->getCatalog()->getPage(0);
+    if (!page || area.isEmpty() || scale <= 0.0)
+    {
+        return QImage();
+    }
+
+    const QSize imageSize = (area.size() * scale).toSize().expandedTo(QSize(1, 1));
     QImage image(imageSize, QImage::Format_ARGB32_Premultiplied);
     image.fill(Qt::white);
 
@@ -133,12 +179,12 @@ QImage PDFPageStampDialogHelper::renderPage(const pdf::PDFDocument* document, QS
     pdf::PDFCMSGeneric cms;
     pdf::PDFRenderer renderer(document, &fontCache, &iccProfileCache, &cms, &optionalContentActivity, pdf::PDFRenderer::getDefaultFeatures(), pdf::PDFMeshQualitySettings());
 
-    // The visible part of the page (crop box) fills the image
+    // The visible part of the page (crop box) is placed so, that the area
+    // starts at the origin of the image
     const QRectF mediaBox = page->getRotatedMediaBox();
     const QRectF cropBox = page->getRotatedCropBox();
-    const qreal scale = imageSize.width() / cropBox.width();
-    const QRectF targetRect(-(cropBox.left() - mediaBox.left()) * scale,
-                            -(mediaBox.bottom() - cropBox.bottom()) * scale,
+    const QRectF targetRect(-(cropBox.left() - mediaBox.left() + area.left()) * scale,
+                            -(mediaBox.bottom() - cropBox.bottom() + area.top()) * scale,
                             mediaBox.width() * scale,
                             mediaBox.height() * scale);
 
@@ -146,10 +192,147 @@ QImage PDFPageStampDialogHelper::renderPage(const pdf::PDFDocument* document, QS
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setRenderHint(QPainter::TextAntialiasing);
     renderer.render(&painter, targetRect, 0);
-    painter.setPen(QPen(Qt::gray, 1.0));
-    painter.setBrush(Qt::NoBrush);
-    painter.drawRect(QRectF(QPointF(0.5, 0.5), QSizeF(imageSize) - QSizeF(1.0, 1.0)));
     painter.end();
+
+    return image;
+}
+
+QRect PDFPageStampDialogHelper::getInkRect(const QImage& image, const QRect& rect)
+{
+    int left = rect.right() + 1;
+    int right = rect.left() - 1;
+    int top = rect.bottom() + 1;
+    int bottom = rect.top() - 1;
+
+    const QRect clippedRect = rect.intersected(image.rect());
+    for (int y = clippedRect.top(); y <= clippedRect.bottom(); ++y)
+    {
+        const QRgb* line = reinterpret_cast<const QRgb*>(image.constScanLine(y));
+        for (int x = clippedRect.left(); x <= clippedRect.right(); ++x)
+        {
+            if (qGray(line[x]) < 224)
+            {
+                left = qMin(left, x);
+                right = qMax(right, x);
+                top = qMin(top, y);
+                bottom = qMax(bottom, y);
+            }
+        }
+    }
+
+    if (left > right || top > bottom)
+    {
+        return QRect();
+    }
+
+    return QRect(QPoint(left, top), QPoint(right, bottom));
+}
+
+QImage PDFPageStampDialogHelper::renderHeaderFooterDetail(const pdf::PDFDocument* document, pdf::PDFReal fontSize, const QMarginsF& margins, int maximalWidth)
+{
+    const pdf::PDFPage* page = document->getCatalog()->getPage(0);
+    if (!page || fontSize <= 0.0 || maximalWidth <= 0)
+    {
+        return QImage();
+    }
+
+    const QSizeF pageSize = page->getRotatedCropBox().size();
+    if (pageSize.isEmpty())
+    {
+        return QImage();
+    }
+
+    // Capital letters about 12 pixels high, the image of a band of the largest
+    // drawings (ISO A0, ARCH E) is still only a few megabytes
+    const qreal scale = qBound(0.25, 16.0 / fontSize, 4.0);
+    const qreal headerHeight = qMin(pageSize.height() * 0.5, margins.top() + 6.0 * fontSize);
+    const qreal footerHeight = qMin(pageSize.height() * 0.5, margins.bottom() + 6.0 * fontSize);
+    const std::array<QRectF, 2> bands = { QRectF(0.0, 0.0, pageSize.width(), headerHeight),
+                                          QRectF(0.0, pageSize.height() - footerHeight, pageSize.width(), footerHeight) };
+
+    constexpr int PADDING = 6;
+    constexpr int SPACING = 8;
+
+    std::array<std::vector<QImage>, 2> parts;
+    for (size_t bandIndex = 0; bandIndex < bands.size(); ++bandIndex)
+    {
+        const QImage bandImage = renderPageArea(document, bands[bandIndex], scale);
+        if (bandImage.isNull())
+        {
+            continue;
+        }
+
+        // Texts of the left, middle and right position are searched in the thirds of the band
+        const int width = bandImage.width();
+        for (int third = 0; third < 3; ++third)
+        {
+            const int left = width * third / 3;
+            const int right = width * (third + 1) / 3;
+            const QRect inkRect = getInkRect(bandImage, QRect(left, 0, right - left, bandImage.height()));
+            if (inkRect.isValid())
+            {
+                parts[bandIndex].push_back(bandImage.copy(inkRect.adjusted(-PADDING, -PADDING, PADDING, PADDING)));
+            }
+        }
+    }
+
+    int imageWidth = 0;
+    int imageHeight = 0;
+    for (const std::vector<QImage>& row : parts)
+    {
+        if (row.empty())
+        {
+            continue;
+        }
+
+        int rowWidth = 0;
+        int rowHeight = 0;
+        for (const QImage& part : row)
+        {
+            rowWidth += part.width() + SPACING;
+            rowHeight = qMax(rowHeight, part.height());
+        }
+
+        imageWidth = qMax(imageWidth, rowWidth - SPACING);
+        imageHeight += rowHeight + SPACING;
+    }
+
+    if (imageWidth <= 0 || imageHeight <= 0)
+    {
+        return QImage();
+    }
+
+    imageHeight -= SPACING;
+    QImage image(imageWidth, imageHeight, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+
+    QPainter painter(&image);
+    painter.setPen(QPen(Qt::gray, 1.0));
+    int y = 0;
+    for (const std::vector<QImage>& row : parts)
+    {
+        if (row.empty())
+        {
+            continue;
+        }
+
+        int x = 0;
+        int rowHeight = 0;
+        for (const QImage& part : row)
+        {
+            painter.drawImage(x, y, part);
+            painter.drawRect(QRectF(x + 0.5, y + 0.5, part.width() - 1.0, part.height() - 1.0));
+            x += part.width() + SPACING;
+            rowHeight = qMax(rowHeight, part.height());
+        }
+        y += rowHeight + SPACING;
+    }
+    painter.end();
+
+    if (image.width() > maximalWidth)
+    {
+        image = image.scaledToWidth(maximalWidth, Qt::SmoothTransformation);
+    }
 
     return image;
 }
@@ -222,6 +405,15 @@ PDFPageStampDialog::PDFPageStampDialog(Mode mode, const pdf::PDFDocument* docume
     m_previewLabel->setAlignment(Qt::AlignCenter);
     m_previewLabel->setMinimumSize(pdf::PDFWidgetUtils::scaleDPI(this, QSize(260, 300)));
     previewLayout->addWidget(m_previewLabel, 1);
+    m_detailCaptionLabel = new QLabel(tr("Text at a readable size:"), previewGroupBox);
+    m_detailCaptionLabel->setObjectName("detailCaptionLabel");
+    m_detailCaptionLabel->setVisible(false);
+    previewLayout->addWidget(m_detailCaptionLabel);
+    m_detailLabel = new QLabel(previewGroupBox);
+    m_detailLabel->setObjectName("detailLabel");
+    m_detailLabel->setAlignment(Qt::AlignCenter);
+    m_detailLabel->setVisible(false);
+    previewLayout->addWidget(m_detailLabel);
     mainLayout->addWidget(previewGroupBox);
 
     QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
@@ -931,10 +1123,39 @@ void PDFPageStampDialog::updatePreview()
         result = pdf::PDFPageStamper::addHeaderFooter(&previewDocument, settings, { 0 }, false);
     }
 
-    const QSize maximalSize = m_previewLabel->contentsRect().size().expandedTo(m_previewLabel->minimumSize()) * m_previewLabel->devicePixelRatioF();
-    m_previewImage = PDFPageStampDialogHelper::renderPage(result.document ? result.document.data() : &previewDocument, maximalSize);
-    m_previewImage.setDevicePixelRatio(m_previewLabel->devicePixelRatioF());
+    const pdf::PDFDocument* stampedDocument = result.document ? result.document.data() : &previewDocument;
+    const qreal devicePixelRatio = m_previewLabel->devicePixelRatioF();
+    const QSize maximalSize = m_previewLabel->contentsRect().size().expandedTo(m_previewLabel->minimumSize()) * devicePixelRatio;
+    m_previewImage = PDFPageStampDialogHelper::renderPage(stampedDocument, maximalSize);
+
+    // Headers and footers of large drawings are only a few pixels high in the
+    // preview of the whole page, so they are shown once more at a readable size
+    m_detailImage = QImage();
+    const pdf::PDFPage* stampedPage = stampedDocument->getCatalog()->getPage(0);
+    if (m_mode != Mode::Watermark && stampedPage && !m_previewImage.isNull())
+    {
+        const pdf::PDFHeaderFooterSettings settings = getHeaderFooterSettings();
+        const qreal previewScale = m_previewImage.width() / devicePixelRatio / stampedPage->getRotatedCropBox().width();
+        if (settings.style.fontSize * previewScale < MINIMAL_READABLE_PREVIEW_FONT_SIZE)
+        {
+            m_detailImage = PDFPageStampDialogHelper::renderHeaderFooterDetail(stampedDocument, settings.style.fontSize, settings.margins, maximalSize.width());
+        }
+    }
+
+    m_previewImage.setDevicePixelRatio(devicePixelRatio);
     m_previewLabel->setPixmap(QPixmap::fromImage(m_previewImage));
+
+    if (!m_detailImage.isNull())
+    {
+        m_detailImage.setDevicePixelRatio(devicePixelRatio);
+        m_detailLabel->setPixmap(QPixmap::fromImage(m_detailImage));
+    }
+    else
+    {
+        m_detailLabel->clear();
+    }
+    m_detailLabel->setVisible(!m_detailImage.isNull());
+    m_detailCaptionLabel->setVisible(!m_detailImage.isNull());
 }
 
 QString PDFPageStampDialog::getSettingsGroup() const
